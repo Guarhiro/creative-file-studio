@@ -13,6 +13,7 @@ const state = {
   libraryStatus: "all",
   libraryCharacterId: "all",
   librarySort: "newest",
+  promptUseMemo: true,
   generatedPrompts: []
 };
 
@@ -576,6 +577,9 @@ function renderPromptLab() {
           <label class="full">補足
             <textarea id="prompt-notes" placeholder="絵柄や構図、NG要素、統一したい衣装など"></textarea>
           </label>
+          <button class="ghost full ${state.promptUseMemo ? "active-toggle" : ""}" data-action="toggle-prompt-memo" type="button">
+            キャラメモを加味: ${state.promptUseMemo ? "ON" : "OFF"}
+          </button>
           <button class="accent full" data-action="generate-prompts" ${selectedChar ? "" : "disabled"}>一括生成</button>
         </div>
       </section>
@@ -909,6 +913,12 @@ function bindPromptLab() {
     state.selectedWorkId = event.target.value || null;
     render();
   });
+  document.querySelector("[data-action='toggle-prompt-memo']")?.addEventListener("click", () => {
+    state.promptUseMemo = !state.promptUseMemo;
+    const button = document.querySelector("[data-action='toggle-prompt-memo']");
+    button.textContent = `キャラメモを加味: ${state.promptUseMemo ? "ON" : "OFF"}`;
+    button.classList.toggle("active-toggle", state.promptUseMemo);
+  });
   document.querySelector("[data-action='generate-prompts']")?.addEventListener("click", generatePrompts);
   document.querySelector("[data-action='copy-all-prompts']")?.addEventListener("click", () => copyText(
     state.generatedPrompts.map(formatPromptForCopy).join("\n\n")
@@ -923,6 +933,7 @@ async function generatePrompts() {
   const char = byId(state.db.characters, charId);
   const variations = document.querySelector("#prompt-variations").value.split(/\n+/).map((line) => line.trim()).filter(Boolean);
   const notes = document.querySelector("#prompt-notes").value.trim();
+  const memoContext = state.promptUseMemo ? char.memo : "";
   if (!char || !variations.length) {
     toast("キャラと差分指定を入力してください。");
     return;
@@ -940,7 +951,7 @@ async function generatePrompts() {
         },
         {
           role: "user",
-          content: `キャラ名: ${char.name}\nプロンプト形式: ${promptFormatOf(char)}\nベースプロンプト: ${char.basePrompt}\nネガティブプロンプト: ${char.negativePrompt}\nメモ: ${char.memo}\n補足: ${notes}\n差分指定: ${JSON.stringify(variations)}\n返答形式: {"items":[{"title":"指定名","prompt":"指定形式の生成プロンプト","negativePrompt":"指定形式のネガティブプロンプト"}]}`
+          content: `キャラ名: ${char.name}\nプロンプト形式: ${promptFormatOf(char)}\nベースプロンプト: ${char.basePrompt}\nネガティブプロンプト: ${char.negativePrompt}\nメモを加味する: ${state.promptUseMemo ? "yes" : "no"}\nメモ: ${memoContext}\n補足: ${notes}\n差分指定: ${JSON.stringify(variations)}\n返答形式: {"items":[{"title":"指定名","prompt":"指定形式の生成プロンプト","negativePrompt":"指定形式のネガティブプロンプト"}]}`
         }
       ]
     });
