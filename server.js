@@ -189,15 +189,29 @@ async function handleUpload(req, res) {
 async function handleMoveUpload(req, res) {
   const { url, workName, characterName } = await readJson(req);
   if (!url) return sendJson(res, 400, { error: "画像URLが必要です。" });
-  const moved = await moveUploadToFolders(url, workName, characterName);
-  sendJson(res, 200, moved);
+  try {
+    const moved = await moveUploadToFolders(url, workName, characterName);
+    sendJson(res, 200, moved);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return sendJson(res, 404, { error: "画像ファイルが見つかりません。", missing: true, url });
+    }
+    throw error;
+  }
 }
 
 async function handleRevealUpload(req, res) {
   const { url } = await readJson(req);
   if (!url) return sendJson(res, 400, { error: "画像URLが必要です。" });
   const filePath = uploadPathFromUrl(url);
-  await fs.access(filePath);
+  try {
+    await fs.access(filePath);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return sendJson(res, 404, { error: "画像ファイルが見つかりません。", missing: true, path: filePath });
+    }
+    throw error;
+  }
   if (process.platform === "darwin") {
     spawn("open", ["-R", filePath], { detached: true, stdio: "ignore" }).unref();
   } else if (process.platform === "win32") {
@@ -259,19 +273,19 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/api/upload") {
-      return handleUpload(req, res);
+      return await handleUpload(req, res);
     }
 
     if (req.method === "POST" && url.pathname === "/api/move-upload") {
-      return handleMoveUpload(req, res);
+      return await handleMoveUpload(req, res);
     }
 
     if (req.method === "POST" && url.pathname === "/api/reveal-upload") {
-      return handleRevealUpload(req, res);
+      return await handleRevealUpload(req, res);
     }
 
     if (req.method === "POST" && url.pathname === "/api/openrouter/chat") {
-      return handleOpenRouter(req, res);
+      return await handleOpenRouter(req, res);
     }
 
     if ((req.method === "GET" || req.method === "HEAD") && url.pathname.startsWith("/uploads/")) {
