@@ -196,21 +196,59 @@ function toast(message) {
   window.setTimeout(() => node.remove(), 3200);
 }
 
-function parseAiJson(content) {
-  const text = String(content || "").trim().replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
-  try {
-    return JSON.parse(text);
-  } catch {
-    const start = Math.min(
-      ...["{", "["].map((mark) => {
-        const index = text.indexOf(mark);
-        return index === -1 ? Number.POSITIVE_INFINITY : index;
-      })
-    );
-    const end = Math.max(text.lastIndexOf("}"), text.lastIndexOf("]"));
-    if (Number.isFinite(start) && end > start) return JSON.parse(text.slice(start, end + 1));
-    throw new Error("AI応答を JSON として読み取れませんでした。");
+function cleanJsonCandidate(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .replace(/,\s*([}\]])/g, "$1")
+    .trim();
+}
+
+function findBalancedJson(text) {
+  const source = String(text || "");
+  const start = source.search(/[\[{]/);
+  if (start === -1) return "";
+  const opener = source[start];
+  const closer = opener === "{" ? "}" : "]";
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < source.length; index += 1) {
+    const char = source[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (char === opener) depth += 1;
+    if (char === closer) depth -= 1;
+    if (depth === 0) return source.slice(start, index + 1);
   }
+  return "";
+}
+
+function parseAiJson(content) {
+  const text = String(content || "").trim();
+  const codeBlocks = [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map((match) => match[1]);
+  const candidates = [text, ...codeBlocks, findBalancedJson(text)].filter(Boolean).map(cleanJsonCandidate);
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // Try the next extraction strategy.
+    }
+  }
+  const preview = text.slice(0, 180).replace(/\s+/g, " ");
+  throw new Error(`AI応答を JSON として読み取れませんでした。応答の先頭: ${preview || "空の応答"}`);
 }
 
 async function callOpenRouter({ messages, responseFormat, temperature = 0.2, maxTokens = 1800, textOnly = false }) {
@@ -880,7 +918,7 @@ async function classifyAsset(asset, knownDataUrl = null, fallbackPromptFormat = 
     messages: [
       {
         role: "system",
-        content: "あなたは創作支援アプリの画像整理AIです。候補キャラから最も近い人物を選び、画像生成向けの短いプロンプトも抽出します。必ずJSONだけを返してください。"
+        content: "あなたは創作支援アプリの画像整理AIです。候補キャラから最も近い人物を選び、画像生成向けの短いプロンプトも抽出します。説明文やMarkdownを付けず、必ずJSONオブジェクトだけを返してください。"
       },
       {
         role: "user",
@@ -947,7 +985,7 @@ async function generatePrompts() {
       messages: [
         {
           role: "system",
-          content: `あなたは画像生成向けプロンプトの編集者です。ベースプロンプトの人物同一性を守り、指定ごとに完成度の高い生成プロンプトを作ります。${promptFormatInstruction(promptFormatOf(char))} 必ずJSONだけを返してください。`
+          content: `あなたは画像生成向けプロンプトの編集者です。ベースプロンプトの人物同一性を守り、指定ごとに完成度の高い生成プロンプトを作ります。${promptFormatInstruction(promptFormatOf(char))} 説明文やMarkdownを付けず、必ずJSONオブジェクトだけを返してください。`
         },
         {
           role: "user",
@@ -1174,7 +1212,7 @@ async function extractPromptFromImage(dataUrl, name, promptFormat = "natural") {
     messages: [
       {
         role: "system",
-        content: `あなたは画像生成プロンプトを抽出する編集者です。人物の外見、髪、服、雰囲気を簡潔にまとめます。${formatInstruction} 必ずJSONだけを返してください。`
+        content: `あなたは画像生成プロンプトを抽出する編集者です。人物の外見、髪、服、雰囲気を簡潔にまとめます。${formatInstruction} 説明文やMarkdownを付けず、必ずJSONオブジェクトだけを返してください。`
       },
       {
         role: "user",
@@ -1190,7 +1228,15 @@ async function extractPromptFromImage(dataUrl, name, promptFormat = "natural") {
     responseFormat: { type: "json_object" },
     maxTokens: 1100
   });
-  return parseAiJson(content);
+  try {
+    return parseAiJson(content);
+  } catch {
+    return {
+      basePrompt: String(content || "").trim(),
+      negativePrompt: "",
+      memo: "AI応答がJSON形式ではなかったため、応答本文をベースプロンプトとして保存しました。"
+    };
+  }
 }
 
 function openAssetModal(asset) {
