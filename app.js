@@ -10,6 +10,7 @@ const state = {
   importFiles: [],
   importAutoClassify: true,
   importPromptFormat: "natural",
+  importCharacterId: "",
   libraryStatus: "all",
   libraryCharacterId: "all",
   librarySort: "newest",
@@ -387,6 +388,9 @@ function renderCharacterCard(char) {
 }
 
 function renderImport() {
+  const importWorkId = state.selectedWorkId || "";
+  const importCharacters = charactersForWork(importWorkId);
+  const selectedImportCharacter = byId(state.db.characters, state.importCharacterId);
   return `
     <div class="split">
       <section class="panel">
@@ -395,7 +399,13 @@ function renderImport() {
           <label class="full">作品フォルダ
             <select id="import-work">
               <option value="">指定なし（全キャラから判別）</option>
-              ${state.db.works.map((work) => `<option value="${work.id}" ${state.selectedWorkId === work.id ? "selected" : ""}>${escapeHtml(work.name)}</option>`).join("")}
+              ${state.db.works.map((work) => `<option value="${work.id}" ${importWorkId === work.id ? "selected" : ""}>${escapeHtml(work.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="full">取り込み先キャラ
+            <select id="import-character">
+              <option value="">手動指定なし</option>
+              ${importCharacters.map((char) => `<option value="${char.id}" ${state.importCharacterId === char.id ? "selected" : ""}>${escapeHtml(char.name)}</option>`).join("")}
             </select>
           </label>
           <label class="full">AI判別
@@ -410,7 +420,7 @@ function renderImport() {
               <option value="tags" ${state.importPromptFormat === "tags" ? "selected" : ""}>タグ</option>
             </select>
           </label>
-          <div class="full meta">作品を指定した場合、その作品に登録されたキャラだけを候補にします。</div>
+          <div class="full meta">${selectedImportCharacter ? `手動指定中: ${escapeHtml(selectedImportCharacter.name)} に直接保存します。` : "作品を指定した場合、その作品に登録されたキャラだけを候補にします。"}</div>
         </div>
       </section>
       <section>
@@ -433,11 +443,7 @@ function renderImport() {
 }
 
 function renderLibrary() {
-  const assets = state.db.assets
-    .filter((asset) => !state.selectedWorkId || asset.workId === state.selectedWorkId)
-    .filter((asset) => state.libraryStatus === "all" || asset.status === state.libraryStatus)
-    .filter((asset) => state.libraryCharacterId === "all" || (state.libraryCharacterId === "unassigned" ? !asset.characterId : asset.characterId === state.libraryCharacterId))
-    .sort(sortLibraryAssets);
+  const assets = getVisibleLibraryAssets();
   const libraryCharacters = charactersForWork(state.selectedWorkId);
   return `
     <div class="toolbar">
@@ -462,10 +468,21 @@ function renderLibrary() {
           <option value="character" ${state.librarySort === "character" ? "selected" : ""}>キャラ順</option>
         </select>
       </div>
-      <button data-action="classify-visible" ${assets.length ? "" : "disabled"}>表示中をAI判別</button>
+      <div class="group">
+        <button data-action="classify-visible" ${assets.length ? "" : "disabled"}>表示中をAI判別</button>
+        <button class="ghost danger-outline" data-action="delete-visible-history" ${assets.length ? "" : "disabled"}>表示中の履歴削除</button>
+      </div>
     </div>
     ${assets.length ? `<div class="grid">${assets.map(renderAssetCard).join("")}</div>` : `<div class="empty">条件に合う画像がありません。</div>`}
   `;
+}
+
+function getVisibleLibraryAssets() {
+  return state.db.assets
+    .filter((asset) => !state.selectedWorkId || asset.workId === state.selectedWorkId)
+    .filter((asset) => state.libraryStatus === "all" || asset.status === state.libraryStatus)
+    .filter((asset) => state.libraryCharacterId === "all" || (state.libraryCharacterId === "unassigned" ? !asset.characterId : asset.characterId === state.libraryCharacterId))
+    .sort(sortLibraryAssets);
 }
 
 function sortLibraryAssets(a, b) {
@@ -497,6 +514,7 @@ function renderAssetCard(asset) {
         <button class="ghost" data-action="classify-one" data-id="${asset.id}">AI再判定</button>
         <button class="ghost" data-action="reveal-asset" data-id="${asset.id}">Finder</button>
         <button class="ghost" data-action="view-asset" data-id="${asset.id}">詳細</button>
+        <button class="ghost danger-outline" data-action="delete-asset-history" data-id="${asset.id}">履歴削除</button>
       </div>
     </article>
   `;
@@ -739,6 +757,17 @@ function bindImport() {
   });
   document.querySelector("#import-work")?.addEventListener("change", (event) => {
     state.selectedWorkId = event.target.value || null;
+    const validCharacters = charactersForWork(state.selectedWorkId);
+    if (state.importCharacterId && !validCharacters.some((char) => char.id === state.importCharacterId)) {
+      state.importCharacterId = "";
+    }
+    render();
+  });
+  document.querySelector("#import-character")?.addEventListener("change", (event) => {
+    state.importCharacterId = event.target.value;
+    const char = byId(state.db.characters, state.importCharacterId);
+    if (char) state.selectedWorkId = char.workId;
+    render();
   });
   document.querySelector("#auto-classify")?.addEventListener("change", (event) => {
     state.importAutoClassify = event.target.value === "on";
@@ -761,26 +790,29 @@ async function loadImportFiles(files) {
 
 async function runImport() {
   const workId = document.querySelector("#import-work")?.value || "";
-  const targetWorkId = workId || null;
+  const selectedCharacterId = document.querySelector("#import-character")?.value || "";
+  const targetCharacter = byId(state.db.characters, selectedCharacterId);
+  const targetWorkId = targetCharacter?.workId || workId || null;
+  const targetWork = byId(state.db.works, targetWorkId);
   const created = [];
   try {
     for (const item of state.importFiles) {
-      const work = byId(state.db.works, targetWorkId);
       const uploaded = await postJson("/api/upload", {
         dataUrl: item.preview,
         name: item.name,
-        workName: work?.name
+        workName: targetWork?.name,
+        characterName: targetCharacter?.name
       });
       const asset = {
         id: uid(),
         workId: targetWorkId,
-        characterId: null,
+        characterId: targetCharacter?.id || null,
         name: item.name,
         url: uploaded.url,
-        status: "unassigned",
-        confidence: null,
+        status: targetCharacter ? "matched" : "unassigned",
+        confidence: targetCharacter ? 1 : null,
         aiPrompt: "",
-        aiPromptFormat: state.importPromptFormat,
+        aiPromptFormat: targetCharacter ? promptFormatOf(targetCharacter) : state.importPromptFormat,
         aiReason: "",
         createdAt: new Date().toISOString()
       };
@@ -789,7 +821,9 @@ async function runImport() {
     }
     await saveDb();
     toast(`${created.length} 件を取り込みました。`);
-    if (state.importAutoClassify && created.length) {
+    if (targetCharacter) {
+      toast(`${created.length} 件を ${targetCharacter.name} に取り込みました。`);
+    } else if (state.importAutoClassify && created.length) {
       for (const item of created) {
         await classifyAsset(item.asset, item.dataUrl, state.importPromptFormat);
         await relocateAsset(item.asset);
@@ -846,17 +880,24 @@ function bindLibrary() {
     });
   });
   document.querySelector("[data-action='classify-visible']")?.addEventListener("click", async () => {
-    const visible = state.db.assets
-      .filter((asset) => !state.selectedWorkId || asset.workId === state.selectedWorkId)
-      .filter((asset) => state.libraryStatus === "all" || asset.status === state.libraryStatus)
-      .filter((asset) => state.libraryCharacterId === "all" || (state.libraryCharacterId === "unassigned" ? !asset.characterId : asset.characterId === state.libraryCharacterId))
-      .sort(sortLibraryAssets);
+    const visible = getVisibleLibraryAssets();
     for (const asset of visible) {
       await classifyAsset(asset);
       await relocateAsset(asset);
     }
     await saveDb();
     toast("表示中の画像を判別しました。");
+    render();
+  });
+  document.querySelector("[data-action='delete-visible-history']")?.addEventListener("click", async () => {
+    const visible = getVisibleLibraryAssets();
+    if (!visible.length) return;
+    const ok = window.confirm(`表示中の ${visible.length} 件の履歴を削除します。画像ファイル本体とキャラ設定の立ち絵は削除されません。`);
+    if (!ok) return;
+    const ids = new Set(visible.map((asset) => asset.id));
+    state.db.assets = state.db.assets.filter((asset) => !ids.has(asset.id));
+    await saveDb();
+    toast(`${visible.length} 件の履歴を削除しました。`);
     render();
   });
   document.querySelectorAll("[data-action='view-asset']").forEach((button) => {
@@ -869,6 +910,18 @@ function bindLibrary() {
       } catch (error) {
         toast(error.message);
       }
+    });
+  });
+  document.querySelectorAll("[data-action='delete-asset-history']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const asset = byId(state.db.assets, button.dataset.id);
+      if (!asset) return;
+      const ok = window.confirm(`「${asset.name}」の履歴を削除します。画像ファイル本体とキャラ設定の立ち絵は削除されません。`);
+      if (!ok) return;
+      state.db.assets = state.db.assets.filter((item) => item.id !== asset.id);
+      await saveDb();
+      toast("履歴を削除しました。");
+      render();
     });
   });
 }

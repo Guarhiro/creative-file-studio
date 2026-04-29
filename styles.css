@@ -41,6 +41,8 @@ button {
   cursor: pointer;
   min-height: 38px;
   padding: 0 14px;
+  text-align: center;
+  white-space: nowrap;
 }
 
 button:hover {
@@ -60,6 +62,11 @@ button:disabled {
 
 .danger {
   background: #a4322e;
+}
+
+.danger-outline {
+  border-color: rgba(164, 50, 46, 0.35);
+  color: #8d2926;
 }
 
 .accent {
@@ -256,6 +263,17 @@ button:disabled {
   white-space: nowrap;
 }
 
+.asset-name {
+  display: -webkit-box;
+  min-height: 2.45em;
+  line-height: 1.22;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .meta {
   color: var(--muted);
   font-size: 12px;
@@ -292,16 +310,44 @@ button:disabled {
   padding: 12px;
   display: grid;
   gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.asset-card .body > *,
+.character-card .body > *,
+.prompt-card .body > * {
+  min-width: 0;
+}
+
+.asset-card .meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .card-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+  width: 100%;
+  min-width: 0;
 }
 
 .card-actions button {
+  width: 100%;
   padding: 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.asset-card button,
+.asset-card select {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .gallery-group {
