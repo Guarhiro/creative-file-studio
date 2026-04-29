@@ -143,6 +143,18 @@ async function moveUploadToFolders(uploadUrl, workName, characterName) {
   return { url: uploadUrlFor(target), path: target };
 }
 
+async function pruneEmptyUploadDirs(startDir) {
+  let current = path.dirname(startDir);
+  while (current.startsWith(uploadDir) && current !== uploadDir) {
+    try {
+      await fs.rmdir(current);
+      current = path.dirname(current);
+    } catch {
+      break;
+    }
+  }
+}
+
 async function serveFile(req, res, filePath) {
   try {
     const stat = await fs.stat(filePath);
@@ -222,6 +234,22 @@ async function handleRevealUpload(req, res) {
   sendJson(res, 200, { ok: true, path: filePath });
 }
 
+async function handleDeleteUpload(req, res) {
+  const { url } = await readJson(req);
+  if (!url) return sendJson(res, 400, { error: "画像URLが必要です。" });
+  const filePath = uploadPathFromUrl(url);
+  try {
+    await fs.unlink(filePath);
+    await pruneEmptyUploadDirs(filePath);
+    sendJson(res, 200, { ok: true, deleted: true, path: filePath });
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return sendJson(res, 200, { ok: true, deleted: false, missing: true, path: filePath });
+    }
+    throw error;
+  }
+}
+
 async function handleOpenRouter(req, res) {
   const { apiKey, model, messages, response_format, temperature = 0.2, max_tokens = 1800 } = await readJson(req);
   if (!apiKey) return sendJson(res, 400, { error: "OpenRouter API キーが未設定です。" });
@@ -282,6 +310,10 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/reveal-upload") {
       return await handleRevealUpload(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/delete-upload") {
+      return await handleDeleteUpload(req, res);
     }
 
     if (req.method === "POST" && url.pathname === "/api/openrouter/chat") {

@@ -7,6 +7,7 @@ const state = {
   selectedWorkId: null,
   galleryWorkId: null,
   galleryCharacterId: "",
+  galleryFiltersCollapsed: false,
   importFiles: [],
   importAutoClassify: true,
   importPromptFormat: "natural",
@@ -145,6 +146,30 @@ async function relocateAssetsForCharacter(characterId) {
 async function revealUpload(asset) {
   const result = await postJson("/api/reveal-upload", { url: asset.url });
   toast(`Finderで表示しました: ${result.path}`);
+}
+
+function isUploadUrlReferenced(url, excludingAssetId = null) {
+  return state.db.characters.some((char) => char.portraitUrl === url)
+    || state.db.assets.some((asset) => asset.id !== excludingAssetId && asset.url === url);
+}
+
+async function deleteAssetCompletely(asset) {
+  if (!asset) return;
+  const shared = isUploadUrlReferenced(asset.url, asset.id);
+  const ok = window.confirm(
+    shared
+      ? `「${asset.name}」の登録を削除します。この画像ファイルは他の登録またはキャラ立ち絵で使われているため、ファイル本体は残します。`
+      : `「${asset.name}」の登録と画像ファイル本体を削除します。この操作は元に戻せません。`
+  );
+  if (!ok) return;
+
+  if (!shared) {
+    await postJson("/api/delete-upload", { url: asset.url });
+  }
+  state.db.assets = state.db.assets.filter((item) => item.id !== asset.id);
+  await saveDb();
+  toast(shared ? "登録を削除しました。画像ファイル本体は残しました。" : "登録と画像ファイル本体を削除しました。");
+  render();
 }
 
 async function normalizeStoredUploads() {
@@ -528,10 +553,13 @@ function renderGallery() {
     .filter((asset) => !state.galleryCharacterId || (state.galleryCharacterId === "unassigned" ? !asset.characterId : asset.characterId === state.galleryCharacterId));
   const grouped = groupAssetsByCharacter(assets);
   return `
-    <div class="layout">
-      <section class="panel">
-        <div class="panel-header"><h2>表示条件</h2></div>
-        <div class="panel-body form-grid">
+    <div class="gallery-layout ${state.galleryFiltersCollapsed ? "filters-collapsed" : ""}">
+      <section class="panel gallery-filter-panel">
+        <div class="panel-header">
+          <h2>表示条件</h2>
+          <button class="ghost" data-action="toggle-gallery-filters">${state.galleryFiltersCollapsed ? "開く" : "閉じる"}</button>
+        </div>
+        <div class="panel-body form-grid ${state.galleryFiltersCollapsed ? "is-hidden" : ""}">
           <label class="full">作品
             <select id="gallery-work">
               <option value="">全作品</option>
@@ -554,6 +582,7 @@ function renderGallery() {
             <h2 class="section-title">${assets.length} 画像</h2>
             <div class="meta">${galleryWorkId ? escapeHtml(byId(state.db.works, galleryWorkId)?.name || "") : "全作品"}</div>
           </div>
+          ${state.galleryFiltersCollapsed ? `<button class="ghost" data-action="toggle-gallery-filters">表示条件</button>` : ""}
         </div>
         ${assets.length ? grouped.map(renderGalleryGroup).join("") : `<div class="empty">表示できる画像がありません。</div>`}
       </section>
@@ -602,6 +631,7 @@ function renderGalleryAsset(asset) {
         <div class="card-actions">
           <button class="ghost" data-action="reveal-asset" data-id="${asset.id}">Finder</button>
           <button class="ghost" data-action="view-asset" data-id="${asset.id}">詳細</button>
+          <button class="ghost danger-outline" data-action="delete-asset-completely" data-id="${asset.id}">完全削除</button>
         </div>
       </div>
     </article>
@@ -927,6 +957,12 @@ function bindLibrary() {
 }
 
 function bindGallery() {
+  document.querySelectorAll("[data-action='toggle-gallery-filters']").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.galleryFiltersCollapsed = !state.galleryFiltersCollapsed;
+      render();
+    });
+  });
   document.querySelector("#gallery-work")?.addEventListener("change", (event) => {
     state.galleryWorkId = event.target.value || null;
     state.selectedWorkId = state.galleryWorkId;
@@ -944,6 +980,15 @@ function bindGallery() {
     button.addEventListener("click", async () => {
       try {
         await revealUpload(byId(state.db.assets, button.dataset.id));
+      } catch (error) {
+        toast(error.message);
+      }
+    });
+  });
+  document.querySelectorAll("[data-action='delete-asset-completely']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        await deleteAssetCompletely(byId(state.db.assets, button.dataset.id));
       } catch (error) {
         toast(error.message);
       }

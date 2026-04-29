@@ -198,6 +198,25 @@ button:disabled {
   align-items: start;
 }
 
+.gallery-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.gallery-layout.filters-collapsed {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.gallery-layout.filters-collapsed .gallery-filter-panel {
+  display: none;
+}
+
+.is-hidden {
+  display: none !important;
+}
+
 .panel {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -577,6 +596,7 @@ textarea {
   }
 
   .layout,
+  .gallery-layout,
   .split,
   .form-grid {
     grid-template-columns: 1fr;
