@@ -7,11 +7,15 @@ const state = {
   selectedWorkId: null,
   galleryWorkId: null,
   galleryCharacterId: "",
+  galleryFiltersCollapsed: false,
   importFiles: [],
   importAutoClassify: true,
+  importPromptFormat: "natural",
+  importCharacterId: "",
   libraryStatus: "all",
   libraryCharacterId: "all",
   librarySort: "newest",
+  promptUseMemo: true,
   generatedPrompts: []
 };
 
@@ -40,6 +44,21 @@ const charactersForWork = (workId) => state.db.characters.filter((char) => !work
 const assetsForWork = (workId) => state.db.assets.filter((asset) => !workId || asset.workId === workId);
 const apiKey = () => localStorage.getItem("openrouter_api_key") || "";
 
+function promptFormatOf(char) {
+  return char?.promptFormat === "tags" ? "tags" : "natural";
+}
+
+function promptFormatLabel(format) {
+  return format === "tags" ? "タグ" : "自然言語";
+}
+
+function promptFormatInstruction(format) {
+  if (format === "tags") {
+    return "Danbooru/Stable Diffusion系のカンマ区切りタグで返してください。短い英語タグを中心にし、文章にはしないでください。";
+  }
+  return "自然言語の文章で返してください。生成したい絵の内容、人物、表情、服装、構図、雰囲気を読みやすい英文または日本語文でまとめてください。";
+}
+
 function workForAsset(asset) {
   return byId(state.db.works, asset.workId);
 }
@@ -55,6 +74,50 @@ function fileToDataUrl(file) {
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
+}
+
+function getImageInfo(dataUrl) {
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => {
+      const width = image.naturalWidth;
+      const height = image.naturalHeight;
+      const aspectRatio = width && height ? Number((width / height).toFixed(4)) : null;
+      resolve({
+        width,
+        height,
+        aspectRatio,
+        aspectRatioText: formatAspectRatio(width, height)
+      });
+    };
+    image.onerror = () => resolve({ width: null, height: null, aspectRatio: null, aspectRatioText: "" });
+    image.src = dataUrl;
+  });
+}
+
+function gcd(a, b) {
+  let x = Math.abs(Number(a) || 0);
+  let y = Math.abs(Number(b) || 0);
+  while (y) {
+    const next = x % y;
+    x = y;
+    y = next;
+  }
+  return x || 1;
+}
+
+function formatAspectRatio(width, height) {
+  if (!width || !height) return "";
+  const divisor = gcd(width, height);
+  const simpleWidth = width / divisor;
+  const simpleHeight = height / divisor;
+  if (simpleWidth <= 30 && simpleHeight <= 30) return `${simpleWidth}:${simpleHeight}`;
+  return `${(width / height).toFixed(2)}:1`;
+}
+
+function assetDimensionLabel(asset) {
+  if (!asset?.width || !asset?.height) return "";
+  return `${asset.width}x${asset.height}${asset.aspectRatioText ? ` / ${asset.aspectRatioText}` : ""}`;
 }
 
 async function imageUrlToDataUrl(url) {
@@ -129,8 +192,45 @@ async function revealUpload(asset) {
   toast(`Finderで表示しました: ${result.path}`);
 }
 
+function isUploadUrlReferenced(url, excludingAssetId = null) {
+  return state.db.characters.some((char) => char.portraitUrl === url)
+    || state.db.assets.some((asset) => asset.id !== excludingAssetId && asset.url === url);
+}
+
+async function deleteAssetCompletely(asset) {
+  if (!asset) return;
+  const shared = isUploadUrlReferenced(asset.url, asset.id);
+  const ok = window.confirm(
+    shared
+      ? `「${asset.name}」の登録を削除します。この画像ファイルは他の登録またはキャラ立ち絵で使われているため、ファイル本体は残します。`
+      : `「${asset.name}」の登録と画像ファイル本体を削除します。この操作は元に戻せません。`
+  );
+  if (!ok) return;
+
+  if (!shared) {
+    await postJson("/api/delete-upload", { url: asset.url });
+  }
+  state.db.assets = state.db.assets.filter((item) => item.id !== asset.id);
+  await saveDb();
+  toast(shared ? "登録を削除しました。画像ファイル本体は残しました。" : "登録と画像ファイル本体を削除しました。");
+  render();
+}
+
 async function normalizeStoredUploads() {
   let changed = false;
+  for (const char of state.db.characters) {
+    if (!char.promptFormat) {
+      char.promptFormat = "natural";
+      changed = true;
+    }
+  }
+  for (const asset of state.db.assets) {
+    if (!asset.aiPromptFormat) {
+      const char = characterForAsset(asset);
+      asset.aiPromptFormat = promptFormatOf(char);
+      changed = true;
+    }
+  }
   for (const char of state.db.characters) {
     if (!char.portraitUrl) continue;
     const work = byId(state.db.works, char.workId);
@@ -166,21 +266,59 @@ function toast(message) {
   window.setTimeout(() => node.remove(), 3200);
 }
 
-function parseAiJson(content) {
-  const text = String(content || "").trim().replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
-  try {
-    return JSON.parse(text);
-  } catch {
-    const start = Math.min(
-      ...["{", "["].map((mark) => {
-        const index = text.indexOf(mark);
-        return index === -1 ? Number.POSITIVE_INFINITY : index;
-      })
-    );
-    const end = Math.max(text.lastIndexOf("}"), text.lastIndexOf("]"));
-    if (Number.isFinite(start) && end > start) return JSON.parse(text.slice(start, end + 1));
-    throw new Error("AI応答を JSON として読み取れませんでした。");
+function cleanJsonCandidate(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .replace(/,\s*([}\]])/g, "$1")
+    .trim();
+}
+
+function findBalancedJson(text) {
+  const source = String(text || "");
+  const start = source.search(/[\[{]/);
+  if (start === -1) return "";
+  const opener = source[start];
+  const closer = opener === "{" ? "}" : "]";
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < source.length; index += 1) {
+    const char = source[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (char === opener) depth += 1;
+    if (char === closer) depth -= 1;
+    if (depth === 0) return source.slice(start, index + 1);
   }
+  return "";
+}
+
+function parseAiJson(content) {
+  const text = String(content || "").trim();
+  const codeBlocks = [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map((match) => match[1]);
+  const candidates = [text, ...codeBlocks, findBalancedJson(text)].filter(Boolean).map(cleanJsonCandidate);
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // Try the next extraction strategy.
+    }
+  }
+  const preview = text.slice(0, 180).replace(/\s+/g, " ");
+  throw new Error(`AI応答を JSON として読み取れませんでした。応答の先頭: ${preview || "空の応答"}`);
 }
 
 async function callOpenRouter({ messages, responseFormat, temperature = 0.2, maxTokens = 1800, textOnly = false }) {
@@ -305,6 +443,7 @@ function renderCharacterCard(char) {
           <div class="meta">${escapeHtml(work?.name || "未所属")} / ${assetCount} 画像</div>
         </div>
         <div class="tag-row">
+          <span class="tag">${promptFormatLabel(promptFormatOf(char))}</span>
           ${char.basePrompt ? `<span class="tag">base prompt</span>` : ""}
           ${char.negativePrompt ? `<span class="tag">negative</span>` : ""}
         </div>
@@ -318,6 +457,9 @@ function renderCharacterCard(char) {
 }
 
 function renderImport() {
+  const importWorkId = state.selectedWorkId || "";
+  const importCharacters = charactersForWork(importWorkId);
+  const selectedImportCharacter = byId(state.db.characters, state.importCharacterId);
   return `
     <div class="split">
       <section class="panel">
@@ -326,7 +468,13 @@ function renderImport() {
           <label class="full">作品フォルダ
             <select id="import-work">
               <option value="">指定なし（全キャラから判別）</option>
-              ${state.db.works.map((work) => `<option value="${work.id}" ${state.selectedWorkId === work.id ? "selected" : ""}>${escapeHtml(work.name)}</option>`).join("")}
+              ${state.db.works.map((work) => `<option value="${work.id}" ${importWorkId === work.id ? "selected" : ""}>${escapeHtml(work.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="full">取り込み先キャラ
+            <select id="import-character">
+              <option value="">手動指定なし</option>
+              ${importCharacters.map((char) => `<option value="${char.id}" ${state.importCharacterId === char.id ? "selected" : ""}>${escapeHtml(char.name)}</option>`).join("")}
             </select>
           </label>
           <label class="full">AI判別
@@ -335,7 +483,13 @@ function renderImport() {
               <option value="off" ${!state.importAutoClassify ? "selected" : ""}>取り込みだけ行う</option>
             </select>
           </label>
-          <div class="full meta">作品を指定した場合、その作品に登録されたキャラだけを候補にします。</div>
+          <label class="full">未割当時の分析形式
+            <select id="import-prompt-format">
+              <option value="natural" ${state.importPromptFormat === "natural" ? "selected" : ""}>自然言語</option>
+              <option value="tags" ${state.importPromptFormat === "tags" ? "selected" : ""}>タグ</option>
+            </select>
+          </label>
+          <div class="full meta">${selectedImportCharacter ? `手動指定中: ${escapeHtml(selectedImportCharacter.name)} に直接保存します。` : "作品を指定した場合、その作品に登録されたキャラだけを候補にします。"}</div>
         </div>
       </section>
       <section>
@@ -347,7 +501,12 @@ function renderImport() {
             <button data-action="choose-files">画像を選択</button>
           </div>
         </div>
-        ${state.importFiles.length ? `<div class="preview-strip">${state.importFiles.map((file) => `<img src="${escapeHtml(file.preview)}" alt="${escapeHtml(file.name)}">`).join("")}</div>` : ""}
+        ${state.importFiles.length ? `<div class="preview-strip">${state.importFiles.map((file) => `
+          <div class="preview-item">
+            <img src="${escapeHtml(file.preview)}" alt="${escapeHtml(file.name)}">
+            <div class="meta">${escapeHtml(file.imageInfo.aspectRatioText || "")} ${file.imageInfo.width ? `/${file.imageInfo.width}x${file.imageInfo.height}` : ""}</div>
+          </div>
+        `).join("")}</div>` : ""}
         <div class="toolbar" style="margin-top:18px;">
           <div class="meta">${state.importFiles.length} 件選択中</div>
           <button class="accent" data-action="run-import" ${state.importFiles.length ? "" : "disabled"}>取り込む</button>
@@ -358,11 +517,7 @@ function renderImport() {
 }
 
 function renderLibrary() {
-  const assets = state.db.assets
-    .filter((asset) => !state.selectedWorkId || asset.workId === state.selectedWorkId)
-    .filter((asset) => state.libraryStatus === "all" || asset.status === state.libraryStatus)
-    .filter((asset) => state.libraryCharacterId === "all" || (state.libraryCharacterId === "unassigned" ? !asset.characterId : asset.characterId === state.libraryCharacterId))
-    .sort(sortLibraryAssets);
+  const assets = getVisibleLibraryAssets();
   const libraryCharacters = charactersForWork(state.selectedWorkId);
   return `
     <div class="toolbar">
@@ -387,10 +542,21 @@ function renderLibrary() {
           <option value="character" ${state.librarySort === "character" ? "selected" : ""}>キャラ順</option>
         </select>
       </div>
-      <button data-action="classify-visible" ${assets.length ? "" : "disabled"}>表示中をAI判別</button>
+      <div class="group">
+        <button data-action="classify-visible" ${assets.length ? "" : "disabled"}>表示中をAI判別</button>
+        <button class="ghost danger-outline" data-action="delete-visible-history" ${assets.length ? "" : "disabled"}>表示中の履歴削除</button>
+      </div>
     </div>
     ${assets.length ? `<div class="grid">${assets.map(renderAssetCard).join("")}</div>` : `<div class="empty">条件に合う画像がありません。</div>`}
   `;
+}
+
+function getVisibleLibraryAssets() {
+  return state.db.assets
+    .filter((asset) => !state.selectedWorkId || asset.workId === state.selectedWorkId)
+    .filter((asset) => state.libraryStatus === "all" || asset.status === state.libraryStatus)
+    .filter((asset) => state.libraryCharacterId === "all" || (state.libraryCharacterId === "unassigned" ? !asset.characterId : asset.characterId === state.libraryCharacterId))
+    .sort(sortLibraryAssets);
 }
 
 function sortLibraryAssets(a, b) {
@@ -406,6 +572,7 @@ function renderAssetCard(asset) {
   const char = byId(state.db.characters, asset.characterId);
   const workChars = charactersForWork(asset.workId);
   const statusLabel = asset.status === "matched" ? "判別済み" : asset.status === "failed" ? "判別失敗" : "未設定";
+  const dimensions = assetDimensionLabel(asset);
   return `
     <article class="asset-card">
       <img class="asset-thumb" src="${escapeHtml(asset.url)}" alt="">
@@ -413,6 +580,7 @@ function renderAssetCard(asset) {
         <div>
           <div class="asset-name">${escapeHtml(asset.name)}</div>
           <div class="meta">${escapeHtml(char?.name || "未割当")} ${asset.confidence ? `/ confidence ${Math.round(asset.confidence * 100)}%` : ""}</div>
+          ${dimensions ? `<div class="meta">${escapeHtml(dimensions)}</div>` : ""}
         </div>
         <div class="tag-row"><span class="tag status-${asset.status}">${statusLabel}</span></div>
         <select data-action="assign-asset" data-id="${asset.id}">
@@ -422,6 +590,7 @@ function renderAssetCard(asset) {
         <button class="ghost" data-action="classify-one" data-id="${asset.id}">AI再判定</button>
         <button class="ghost" data-action="reveal-asset" data-id="${asset.id}">Finder</button>
         <button class="ghost" data-action="view-asset" data-id="${asset.id}">詳細</button>
+        <button class="ghost danger-outline" data-action="delete-asset-history" data-id="${asset.id}">履歴削除</button>
       </div>
     </article>
   `;
@@ -435,10 +604,13 @@ function renderGallery() {
     .filter((asset) => !state.galleryCharacterId || (state.galleryCharacterId === "unassigned" ? !asset.characterId : asset.characterId === state.galleryCharacterId));
   const grouped = groupAssetsByCharacter(assets);
   return `
-    <div class="layout">
-      <section class="panel">
-        <div class="panel-header"><h2>表示条件</h2></div>
-        <div class="panel-body form-grid">
+    <div class="gallery-layout ${state.galleryFiltersCollapsed ? "filters-collapsed" : ""}">
+      <section class="panel gallery-filter-panel">
+        <div class="panel-header">
+          <h2>表示条件</h2>
+          <button class="ghost" data-action="toggle-gallery-filters">${state.galleryFiltersCollapsed ? "開く" : "閉じる"}</button>
+        </div>
+        <div class="panel-body form-grid ${state.galleryFiltersCollapsed ? "is-hidden" : ""}">
           <label class="full">作品
             <select id="gallery-work">
               <option value="">全作品</option>
@@ -461,6 +633,7 @@ function renderGallery() {
             <h2 class="section-title">${assets.length} 画像</h2>
             <div class="meta">${galleryWorkId ? escapeHtml(byId(state.db.works, galleryWorkId)?.name || "") : "全作品"}</div>
           </div>
+          ${state.galleryFiltersCollapsed ? `<button class="ghost" data-action="toggle-gallery-filters">表示条件</button>` : ""}
         </div>
         ${assets.length ? grouped.map(renderGalleryGroup).join("") : `<div class="empty">表示できる画像がありません。</div>`}
       </section>
@@ -498,6 +671,7 @@ function renderGalleryGroup(group) {
 function renderGalleryAsset(asset) {
   const work = workForAsset(asset);
   const char = characterForAsset(asset);
+  const dimensions = assetDimensionLabel(asset);
   return `
     <article class="asset-card">
       <img class="asset-thumb" src="${escapeHtml(asset.url)}" alt="">
@@ -505,10 +679,12 @@ function renderGalleryAsset(asset) {
         <div>
           <div class="asset-name">${escapeHtml(asset.name)}</div>
           <div class="meta">${escapeHtml(work?.name || "未分類")} / ${escapeHtml(char?.name || "未割当")}</div>
+          ${dimensions ? `<div class="meta">${escapeHtml(dimensions)}</div>` : ""}
         </div>
         <div class="card-actions">
           <button class="ghost" data-action="reveal-asset" data-id="${asset.id}">Finder</button>
           <button class="ghost" data-action="view-asset" data-id="${asset.id}">詳細</button>
+          <button class="ghost danger-outline" data-action="delete-asset-completely" data-id="${asset.id}">完全削除</button>
         </div>
       </div>
     </article>
@@ -540,6 +716,9 @@ function renderPromptLab() {
           <label class="full">補足
             <textarea id="prompt-notes" placeholder="絵柄や構図、NG要素、統一したい衣装など"></textarea>
           </label>
+          <button class="ghost full ${state.promptUseMemo ? "active-toggle" : ""}" data-action="toggle-prompt-memo" type="button">
+            キャラメモを加味: ${state.promptUseMemo ? "ON" : "OFF"}
+          </button>
           <button class="accent full" data-action="generate-prompts" ${selectedChar ? "" : "disabled"}>一括生成</button>
         </div>
       </section>
@@ -661,45 +840,71 @@ function bindImport() {
   });
   document.querySelector("#import-work")?.addEventListener("change", (event) => {
     state.selectedWorkId = event.target.value || null;
+    const validCharacters = charactersForWork(state.selectedWorkId);
+    if (state.importCharacterId && !validCharacters.some((char) => char.id === state.importCharacterId)) {
+      state.importCharacterId = "";
+    }
+    render();
+  });
+  document.querySelector("#import-character")?.addEventListener("change", (event) => {
+    state.importCharacterId = event.target.value;
+    const char = byId(state.db.characters, state.importCharacterId);
+    if (char) state.selectedWorkId = char.workId;
+    render();
   });
   document.querySelector("#auto-classify")?.addEventListener("change", (event) => {
     state.importAutoClassify = event.target.value === "on";
+  });
+  document.querySelector("#import-prompt-format")?.addEventListener("change", (event) => {
+    state.importPromptFormat = event.target.value;
   });
   document.querySelector("[data-action='run-import']")?.addEventListener("click", runImport);
 }
 
 async function loadImportFiles(files) {
   const images = [...files].filter((file) => file.type.startsWith("image/"));
-  state.importFiles = await Promise.all(images.map(async (file) => ({
-    name: file.name,
-    file,
-    preview: await fileToDataUrl(file)
-  })));
+  state.importFiles = await Promise.all(images.map(async (file) => {
+    const preview = await fileToDataUrl(file);
+    return {
+      name: file.name,
+      file,
+      preview,
+      imageInfo: await getImageInfo(preview)
+    };
+  }));
   render();
 }
 
 async function runImport() {
   const workId = document.querySelector("#import-work")?.value || "";
-  const targetWorkId = workId || null;
+  const selectedCharacterId = document.querySelector("#import-character")?.value || "";
+  const targetCharacter = byId(state.db.characters, selectedCharacterId);
+  const targetWorkId = targetCharacter?.workId || workId || null;
+  const targetWork = byId(state.db.works, targetWorkId);
   const created = [];
   try {
     for (const item of state.importFiles) {
-      const work = byId(state.db.works, targetWorkId);
       const uploaded = await postJson("/api/upload", {
         dataUrl: item.preview,
         name: item.name,
-        workName: work?.name
+        workName: targetWork?.name,
+        characterName: targetCharacter?.name
       });
       const asset = {
         id: uid(),
         workId: targetWorkId,
-        characterId: null,
+        characterId: targetCharacter?.id || null,
         name: item.name,
         url: uploaded.url,
-        status: "unassigned",
-        confidence: null,
+        status: targetCharacter ? "matched" : "unassigned",
+        confidence: targetCharacter ? 1 : null,
         aiPrompt: "",
+        aiPromptFormat: targetCharacter ? promptFormatOf(targetCharacter) : state.importPromptFormat,
         aiReason: "",
+        width: item.imageInfo.width,
+        height: item.imageInfo.height,
+        aspectRatio: item.imageInfo.aspectRatio,
+        aspectRatioText: item.imageInfo.aspectRatioText,
         createdAt: new Date().toISOString()
       };
       state.db.assets.unshift(asset);
@@ -707,9 +912,11 @@ async function runImport() {
     }
     await saveDb();
     toast(`${created.length} 件を取り込みました。`);
-    if (state.importAutoClassify && created.length) {
+    if (targetCharacter) {
+      toast(`${created.length} 件を ${targetCharacter.name} に取り込みました。`);
+    } else if (state.importAutoClassify && created.length) {
       for (const item of created) {
-        await classifyAsset(item.asset, item.dataUrl);
+        await classifyAsset(item.asset, item.dataUrl, state.importPromptFormat);
         await relocateAsset(item.asset);
       }
       await saveDb();
@@ -764,17 +971,24 @@ function bindLibrary() {
     });
   });
   document.querySelector("[data-action='classify-visible']")?.addEventListener("click", async () => {
-    const visible = state.db.assets
-      .filter((asset) => !state.selectedWorkId || asset.workId === state.selectedWorkId)
-      .filter((asset) => state.libraryStatus === "all" || asset.status === state.libraryStatus)
-      .filter((asset) => state.libraryCharacterId === "all" || (state.libraryCharacterId === "unassigned" ? !asset.characterId : asset.characterId === state.libraryCharacterId))
-      .sort(sortLibraryAssets);
+    const visible = getVisibleLibraryAssets();
     for (const asset of visible) {
       await classifyAsset(asset);
       await relocateAsset(asset);
     }
     await saveDb();
     toast("表示中の画像を判別しました。");
+    render();
+  });
+  document.querySelector("[data-action='delete-visible-history']")?.addEventListener("click", async () => {
+    const visible = getVisibleLibraryAssets();
+    if (!visible.length) return;
+    const ok = window.confirm(`表示中の ${visible.length} 件の履歴を削除します。画像ファイル本体とキャラ設定の立ち絵は削除されません。`);
+    if (!ok) return;
+    const ids = new Set(visible.map((asset) => asset.id));
+    state.db.assets = state.db.assets.filter((asset) => !ids.has(asset.id));
+    await saveDb();
+    toast(`${visible.length} 件の履歴を削除しました。`);
     render();
   });
   document.querySelectorAll("[data-action='view-asset']").forEach((button) => {
@@ -789,9 +1003,27 @@ function bindLibrary() {
       }
     });
   });
+  document.querySelectorAll("[data-action='delete-asset-history']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const asset = byId(state.db.assets, button.dataset.id);
+      if (!asset) return;
+      const ok = window.confirm(`「${asset.name}」の履歴を削除します。画像ファイル本体とキャラ設定の立ち絵は削除されません。`);
+      if (!ok) return;
+      state.db.assets = state.db.assets.filter((item) => item.id !== asset.id);
+      await saveDb();
+      toast("履歴を削除しました。");
+      render();
+    });
+  });
 }
 
 function bindGallery() {
+  document.querySelectorAll("[data-action='toggle-gallery-filters']").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.galleryFiltersCollapsed = !state.galleryFiltersCollapsed;
+      render();
+    });
+  });
   document.querySelector("#gallery-work")?.addEventListener("change", (event) => {
     state.galleryWorkId = event.target.value || null;
     state.selectedWorkId = state.galleryWorkId;
@@ -814,9 +1046,18 @@ function bindGallery() {
       }
     });
   });
+  document.querySelectorAll("[data-action='delete-asset-completely']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        await deleteAssetCompletely(byId(state.db.assets, button.dataset.id));
+      } catch (error) {
+        toast(error.message);
+      }
+    });
+  });
 }
 
-async function classifyAsset(asset, knownDataUrl = null) {
+async function classifyAsset(asset, knownDataUrl = null, fallbackPromptFormat = state.importPromptFormat) {
   const candidates = charactersForWork(asset.workId);
   if (!candidates.length) {
     asset.status = "failed";
@@ -827,21 +1068,23 @@ async function classifyAsset(asset, knownDataUrl = null) {
   const candidateText = candidates.map((char) => ({
     id: char.id,
     name: char.name,
+    promptFormat: promptFormatOf(char),
     basePrompt: char.basePrompt,
     memo: char.memo
   }));
+  const fallbackInstruction = promptFormatInstruction(fallbackPromptFormat);
   const content = await callOpenRouter({
     messages: [
       {
         role: "system",
-        content: "あなたは創作支援アプリの画像整理AIです。候補キャラから最も近い人物を選び、画像生成向けの短いプロンプトも抽出します。必ずJSONだけを返してください。"
+        content: "あなたは創作支援アプリの画像整理AIです。候補キャラから最も近い人物を選び、画像生成向けの短いプロンプトも抽出します。説明文やMarkdownを付けず、必ずJSONオブジェクトだけを返してください。"
       },
       {
         role: "user",
         content: [
           {
             type: "text",
-            text: `候補キャラ: ${JSON.stringify(candidateText)}\n返答形式: {"characterId": "候補idまたはnull", "confidence": 0から1, "generatedPrompt": "画像の生成プロンプト", "negativePrompt": "必要なら", "reason": "短い理由"}\n0.55未満の自信なら characterId は null にしてください。`
+            text: `候補キャラ: ${JSON.stringify(candidateText)}\n返答形式: {"characterId": "候補idまたはnull", "confidence": 0から1, "promptFormat": "naturalまたはtags", "generatedPrompt": "画像の生成プロンプト", "negativePrompt": "必要なら", "reason": "短い理由"}\n0.55未満の自信なら characterId は null にしてください。\n一致した候補がある場合は、その候補の promptFormat に従って generatedPrompt を作ってください。未判別の場合は ${fallbackPromptFormat} 形式で作ってください。${fallbackInstruction}`
           },
           { type: "image_url", image_url: { url: dataUrl } }
         ]
@@ -856,6 +1099,7 @@ async function classifyAsset(asset, knownDataUrl = null) {
   if (asset.characterId && match?.workId) asset.workId = match.workId;
   asset.status = asset.characterId ? "matched" : "failed";
   asset.confidence = Number(result.confidence) || null;
+  asset.aiPromptFormat = asset.characterId ? promptFormatOf(match) : (result.promptFormat === "tags" ? "tags" : fallbackPromptFormat);
   asset.aiPrompt = result.generatedPrompt || "";
   asset.aiNegativePrompt = result.negativePrompt || "";
   asset.aiReason = result.reason || "";
@@ -865,6 +1109,12 @@ function bindPromptLab() {
   document.querySelector("#prompt-work")?.addEventListener("change", (event) => {
     state.selectedWorkId = event.target.value || null;
     render();
+  });
+  document.querySelector("[data-action='toggle-prompt-memo']")?.addEventListener("click", () => {
+    state.promptUseMemo = !state.promptUseMemo;
+    const button = document.querySelector("[data-action='toggle-prompt-memo']");
+    button.textContent = `キャラメモを加味: ${state.promptUseMemo ? "ON" : "OFF"}`;
+    button.classList.toggle("active-toggle", state.promptUseMemo);
   });
   document.querySelector("[data-action='generate-prompts']")?.addEventListener("click", generatePrompts);
   document.querySelector("[data-action='copy-all-prompts']")?.addEventListener("click", () => copyText(
@@ -880,6 +1130,7 @@ async function generatePrompts() {
   const char = byId(state.db.characters, charId);
   const variations = document.querySelector("#prompt-variations").value.split(/\n+/).map((line) => line.trim()).filter(Boolean);
   const notes = document.querySelector("#prompt-notes").value.trim();
+  const memoContext = state.promptUseMemo ? char.memo : "";
   if (!char || !variations.length) {
     toast("キャラと差分指定を入力してください。");
     return;
@@ -893,11 +1144,11 @@ async function generatePrompts() {
       messages: [
         {
           role: "system",
-          content: "あなたは画像生成向けプロンプトの編集者です。ベースプロンプトの人物同一性を守り、指定ごとに完成度の高い生成プロンプトを作ります。必ずJSONだけを返してください。"
+          content: `あなたは画像生成向けプロンプトの編集者です。ベースプロンプトの人物同一性を守り、指定ごとに完成度の高い生成プロンプトを作ります。${promptFormatInstruction(promptFormatOf(char))} 説明文やMarkdownを付けず、必ずJSONオブジェクトだけを返してください。`
         },
         {
           role: "user",
-          content: `キャラ名: ${char.name}\nベースプロンプト: ${char.basePrompt}\nネガティブプロンプト: ${char.negativePrompt}\nメモ: ${char.memo}\n補足: ${notes}\n差分指定: ${JSON.stringify(variations)}\n返答形式: {"items":[{"title":"指定名","prompt":"生成プロンプト","negativePrompt":"ネガティブプロンプト"}]}`
+          content: `キャラ名: ${char.name}\nプロンプト形式: ${promptFormatOf(char)}\nベースプロンプト: ${char.basePrompt}\nネガティブプロンプト: ${char.negativePrompt}\nメモを加味する: ${state.promptUseMemo ? "yes" : "no"}\nメモ: ${memoContext}\n補足: ${notes}\n差分指定: ${JSON.stringify(variations)}\n返答形式: {"items":[{"title":"指定名","prompt":"指定形式の生成プロンプト","negativePrompt":"指定形式のネガティブプロンプト"}]}`
         }
       ]
     });
@@ -1028,6 +1279,12 @@ function openCharacterModal(char = null) {
           </select>
         </label>
         <label>キャラ名<input id="char-name" value="${escapeHtml(char?.name || "")}"></label>
+        <label>プロンプト形式
+          <select id="char-prompt-format">
+            <option value="natural" ${promptFormatOf(char) === "natural" ? "selected" : ""}>自然言語</option>
+            <option value="tags" ${promptFormatOf(char) === "tags" ? "selected" : ""}>タグ</option>
+          </select>
+        </label>
         <label class="full">基本立ち絵<input id="char-portrait" type="file" accept="image/*"></label>
         <div class="full">${char?.portraitUrl ? `<img class="portrait" style="max-width:220px;" src="${escapeHtml(char.portraitUrl)}" alt="">` : `<div class="empty">立ち絵プレビュー</div>`}</div>
         <label class="full">ベースプロンプト<textarea id="char-base">${escapeHtml(char?.basePrompt || "")}</textarea></label>
@@ -1048,7 +1305,11 @@ function openCharacterModal(char = null) {
         try {
           const source = portraitDataUrl || (char?.portraitUrl ? await imageUrlToDataUrl(char.portraitUrl) : null);
           if (!source) return toast("先に立ち絵を設定してください。");
-          const result = await extractPromptFromImage(source, modal.querySelector("#char-name").value.trim());
+          const result = await extractPromptFromImage(
+            source,
+            modal.querySelector("#char-name").value.trim(),
+            modal.querySelector("#char-prompt-format").value
+          );
           modal.querySelector("#char-base").value = result.basePrompt || "";
           modal.querySelector("#char-negative").value = result.negativePrompt || "";
           toast("立ち絵からプロンプトを抽出しました。");
@@ -1073,6 +1334,7 @@ function openCharacterModal(char = null) {
           id: char?.id || uid(),
           workId: modal.querySelector("#char-work").value,
           name: targetName,
+          promptFormat: modal.querySelector("#char-prompt-format").value,
           portraitUrl,
           basePrompt: modal.querySelector("#char-base").value.trim(),
           negativePrompt: modal.querySelector("#char-negative").value.trim(),
@@ -1103,19 +1365,20 @@ function openCharacterModal(char = null) {
   );
 }
 
-async function extractPromptFromImage(dataUrl, name) {
+async function extractPromptFromImage(dataUrl, name, promptFormat = "natural") {
+  const formatInstruction = promptFormatInstruction(promptFormat);
   const content = await callOpenRouter({
     messages: [
       {
         role: "system",
-        content: "あなたは画像生成プロンプトを抽出する編集者です。人物の外見、髪、服、雰囲気を簡潔にまとめます。必ずJSONだけを返してください。"
+        content: `あなたは画像生成プロンプトを抽出する編集者です。人物の外見、髪、服、雰囲気を簡潔にまとめます。${formatInstruction} 説明文やMarkdownを付けず、必ずJSONオブジェクトだけを返してください。`
       },
       {
         role: "user",
         content: [
           {
             type: "text",
-            text: `キャラ名: ${name || "unknown"}\n返答形式: {"basePrompt":"英語中心の生成プロンプト","negativePrompt":"破綻や不要要素のネガティブプロンプト","memo":"日本語の短い観察メモ"}`
+            text: `キャラ名: ${name || "unknown"}\nプロンプト形式: ${promptFormat}\n返答形式: {"basePrompt":"指定形式の生成プロンプト","negativePrompt":"指定形式に合うネガティブプロンプト","memo":"日本語の短い観察メモ"}`
           },
           { type: "image_url", image_url: { url: dataUrl } }
         ]
@@ -1124,11 +1387,20 @@ async function extractPromptFromImage(dataUrl, name) {
     responseFormat: { type: "json_object" },
     maxTokens: 1100
   });
-  return parseAiJson(content);
+  try {
+    return parseAiJson(content);
+  } catch {
+    return {
+      basePrompt: String(content || "").trim(),
+      negativePrompt: "",
+      memo: "AI応答がJSON形式ではなかったため、応答本文をベースプロンプトとして保存しました。"
+    };
+  }
 }
 
 function openAssetModal(asset) {
   const char = byId(state.db.characters, asset.characterId);
+  const dimensions = assetDimensionLabel(asset);
   openModal(
     "画像詳細",
     `
@@ -1136,9 +1408,16 @@ function openAssetModal(asset) {
         <img class="asset-thumb" src="${escapeHtml(asset.url)}" alt="">
         <div class="form-grid">
           <label class="full">名前<input value="${escapeHtml(asset.name)}" id="asset-name"></label>
+          <label class="full">プロンプト形式
+            <select id="asset-prompt-format">
+              <option value="natural" ${(asset.aiPromptFormat || "natural") === "natural" ? "selected" : ""}>自然言語</option>
+              <option value="tags" ${asset.aiPromptFormat === "tags" ? "selected" : ""}>タグ</option>
+            </select>
+          </label>
           <label class="full">AI抽出プロンプト<textarea id="asset-prompt">${escapeHtml(asset.aiPrompt || "")}</textarea></label>
           <label class="full">AI理由<textarea id="asset-reason">${escapeHtml(asset.aiReason || "")}</textarea></label>
           <div class="full meta">割当: ${escapeHtml(char?.name || "未割当")}</div>
+          <div class="full meta">画像情報: ${escapeHtml(dimensions || "未取得")}</div>
         </div>
       </div>
     `,
@@ -1146,6 +1425,7 @@ function openAssetModal(asset) {
     (modal, close) => {
       modal.querySelector("[data-action='save-asset-detail']").addEventListener("click", async () => {
         asset.name = modal.querySelector("#asset-name").value.trim() || asset.name;
+        asset.aiPromptFormat = modal.querySelector("#asset-prompt-format").value;
         asset.aiPrompt = modal.querySelector("#asset-prompt").value.trim();
         asset.aiReason = modal.querySelector("#asset-reason").value.trim();
         await saveDb();
