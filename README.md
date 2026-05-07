@@ -34,6 +34,73 @@ chmod +x start-mac.command
 
 起動に失敗した場合は、同じフォルダに `creative-file-studio-start.log` が作成されます。そこに表示されたエラー内容を確認してください。
 
+## ユーザーデータを保持したまま更新
+
+GitHub Releasesの最新版ZIP、手元の更新用ZIP、または展開済みの最新版フォルダを使って、`data/` を残したままアプリ本体だけ更新できます。
+
+最新版ZIPのRelease添付URL:
+
+```text
+https://github.com/Guarhiro/creative-file-studio/releases/latest/download/creative-file-studio-upload.zip
+```
+
+保持されるもの:
+
+- `data/db.json`
+- `data/uploads/`
+- `.env`
+- `node_modules/`
+- `creative-file-studio-start.log`
+
+### Windowsで更新
+
+`update-windows.bat` をダブルクリックします。
+
+- Enterだけ押す: GitHub Releasesから最新版を自動取得して更新
+- パスを入力する: 手元の更新ZIPまたは展開済み最新版フォルダから更新
+
+### Macで更新
+
+初回だけ実行権限を付けます。
+
+```bash
+chmod +x update-mac.command
+```
+
+その後は `update-mac.command` をダブルクリックします。
+
+- Enterだけ押す: GitHub Releasesから最新版を自動取得して更新
+- ZIP/フォルダをドラッグしてEnter: 手元の更新ZIPまたは展開済み最新版フォルダから更新
+
+更新後、起動中のサーバーがある場合は `Ctrl + C` で停止してから再起動してください。
+
+## Release ZIPの作成
+
+GitHub Releasesには、最新版の公開構成を `creative-file-studio-upload.zip` という名前で添付します。
+
+ZIPに含めるもの:
+
+- `.gitignore`
+- `.env.example`
+- `README.md`
+- `package.json`
+- `server.js`
+- `start-mac.command`
+- `start-windows.bat`
+- `update-mac.command`
+- `update-windows.bat`
+- `public/`
+- `data/.gitkeep`
+
+ZIPに含めないもの:
+
+- `data/db.json`
+- `data/uploads/`
+- `.env`
+- `node_modules/`
+- `.DS_Store`
+- `creative-file-studio-start.log`
+
 ## 主な機能
 
 - 作品ごとのキャラ管理
