@@ -44,6 +44,14 @@ GitHub Releasesの最新版ZIP、手元の更新用ZIP、または展開済み�
 https://github.com/Guarhiro/creative-file-studio/releases/latest/download/creative-file-studio-upload.zip
 ```
 
+mainブランチにZIPを置く場合の直接ダウンロードURL:
+
+```text
+https://github.com/Guarhiro/creative-file-studio/raw/main/creative-file-studio-upload.zip
+```
+
+GitHub画面上の詳細ページURLである `/blob/main/...` は、ダウンロード用URLではありません。
+
 保持されるもの:
 
 - `data/db.json`

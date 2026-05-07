@@ -12,6 +12,7 @@ set /p SOURCE="> "
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ErrorActionPreference='Stop';" ^
   "$releaseUrl='https://github.com/Guarhiro/creative-file-studio/releases/latest/download/creative-file-studio-upload.zip';" ^
+  "$rawMainUrl='https://github.com/Guarhiro/creative-file-studio/raw/main/creative-file-studio-upload.zip';" ^
   "$app=(Get-Location).Path;" ^
   "$src='%SOURCE%'.Trim();" ^
   "$src=$src.Trim([char]34).Trim([char]39);" ^
@@ -22,7 +23,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "  $src=Join-Path $temp 'creative-file-studio-upload.zip';" ^
   "  Write-Host 'GitHub Releasesから最新版をダウンロードしています...';" ^
   "  Write-Host $releaseUrl;" ^
-  "  Invoke-WebRequest -Uri $releaseUrl -OutFile $src;" ^
+  "  try { Invoke-WebRequest -Uri $releaseUrl -OutFile $src -ErrorAction Stop } catch { Write-Host 'Releaseからの取得に失敗しました。mainブランチ上のZIPを試します...'; Write-Host $rawMainUrl; Invoke-WebRequest -Uri $rawMainUrl -OutFile $src -ErrorAction Stop }" ^
   "}" ^
   "if(-not (Test-Path -LiteralPath $src)){ throw '指定されたファイルまたはフォルダが見つかりません。' }" ^
   "if(Test-Path -LiteralPath $src -PathType Leaf){" ^

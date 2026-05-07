@@ -3,6 +3,7 @@ cd "$(dirname "$0")" || exit 1
 
 PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
 RELEASE_URL="https://github.com/Guarhiro/creative-file-studio/releases/latest/download/creative-file-studio-upload.zip"
+RAW_MAIN_URL="https://github.com/Guarhiro/creative-file-studio/raw/main/creative-file-studio-upload.zip"
 
 echo "Creative File Studio Updater"
 echo "Project: $(pwd)"
@@ -32,10 +33,15 @@ if [ -z "${SOURCE}" ]; then
   echo "GitHub Releasesから最新版をダウンロードしています..."
   echo "${RELEASE_URL}"
   if ! curl -fL "${RELEASE_URL}" -o "${SOURCE}"; then
-    echo "最新版ZIPのダウンロードに失敗しました。Releaseに creative-file-studio-upload.zip が添付されているか確認してください。"
-    echo
-    read -r -p "Enterキーで閉じます..."
-    exit 1
+    echo "Releaseからの取得に失敗しました。mainブランチ上のZIPを試します..."
+    echo "${RAW_MAIN_URL}"
+    if ! curl -fL "${RAW_MAIN_URL}" -o "${SOURCE}"; then
+      echo "最新版ZIPのダウンロードに失敗しました。"
+      echo "Releaseに creative-file-studio-upload.zip を添付するか、mainブランチに同名ZIPを配置してください。"
+      echo
+      read -r -p "Enterキーで閉じます..."
+      exit 1
+    fi
   fi
 fi
 
