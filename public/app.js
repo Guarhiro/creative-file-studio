@@ -16,6 +16,19 @@ const state = {
   libraryStatus: "all",
   libraryCharacterId: "all",
   librarySort: "newest",
+  videoWorkId: null,
+  videoCharacterId: "",
+  videoReferenceKind: "all",
+  videoSelectedReferenceIds: [],
+  videoReferenceRoles: {},
+  videoChatMessages: [
+    { role: "assistant", content: "Seedance用の動画生成エージェントです。作りたい場面、秒数、縦横比、使いたい参照素材を教えてください。" }
+  ],
+  videoPromptDraft: null,
+  videoIsThinking: false,
+  videoIsGenerating: false,
+  videoPollingJobId: "",
+  seedanceGuide: "",
   worldSheetFile: null,
   promptUseMemo: true,
   generatedPrompts: [],
@@ -28,6 +41,7 @@ const navItems = [
   ["studio", "作品とキャラ"],
   ["import", "画像取込"],
   ["gallery", "画像一覧"],
+  ["video", "動画生成"],
   ["library", "画像整理"],
   ["prompt", "Prompt Lab"],
   ["settings", "設定"]
@@ -53,6 +67,19 @@ const fallbackOpenRouterModels = [
   { id: "google/gemini-3.1-pro-preview", name: "Gemini 3.1 Pro Preview", architecture: { input_modalities: ["text", "image"], output_modalities: ["text"] } }
 ];
 
+const seedanceApiBaseOptions = [
+  {
+    label: "公式 BytePlus / Volcengine",
+    value: "https://ark.ap-southeast.bytepluses.com/api/v3",
+    defaultModel: "dreamina-seedance-2-0-260128"
+  },
+  {
+    label: "OpenRouter",
+    value: "https://openrouter.ai/api/v1/videos",
+    defaultModel: "bytedance/seedance-2.0"
+  }
+];
+
 const escapeHtml = (value = "") =>
   String(value)
     .replaceAll("&", "&amp;")
@@ -67,6 +94,10 @@ const charactersForWork = (workId) => state.db.characters.filter((char) => !work
 const worldItemsForWork = (workId) => (state.db.worldItems || []).filter((item) => !workId || item.workId === workId);
 const assetsForWork = (workId) => state.db.assets.filter((asset) => !workId || asset.workId === workId);
 const apiKey = () => localStorage.getItem("openrouter_api_key") || "";
+const seedanceApiKey = () => localStorage.getItem("seedance_api_key") || "";
+const isOpenRouterSeedanceBaseUrl = (value = state.db?.settings?.seedanceBaseUrl) => String(value || "").includes("openrouter.ai");
+const activeSeedanceApiKey = (baseUrl = state.db?.settings?.seedanceBaseUrl) =>
+  isOpenRouterSeedanceBaseUrl(baseUrl) ? (apiKey() || seedanceApiKey()) : seedanceApiKey();
 
 const WORLD_SETTING_READING_TEMPLATE = `# 世界観設定資料＋キャラクター設定資料 読解ログ
 
@@ -737,9 +768,14 @@ function normalizeSettings() {
     defaultModel: "google/gemini-2.5-flash",
     textModel: "google/gemini-2.5-flash",
     worldModel: state.db.settings?.defaultModel || "google/gemini-2.5-flash",
+    videoAgentModel: state.db.settings?.textModel || state.db.settings?.defaultModel || "google/gemini-2.5-flash",
+    seedanceBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3",
+    seedanceModel: "dreamina-seedance-2-0-260128",
+    seedanceResolution: "720p",
     ...(state.db.settings || {})
   };
   if (!state.db.settings.worldModel) state.db.settings.worldModel = state.db.settings.defaultModel || state.db.settings.textModel;
+  if (!state.db.settings.videoAgentModel) state.db.settings.videoAgentModel = state.db.settings.textModel || state.db.settings.defaultModel;
 }
 
 function modelModalities(model, key) {
@@ -779,6 +815,21 @@ function renderModelSelect(id, label, value, purpose) {
     <label>${label}
       <select id="${id}">
         ${choices.map((model) => `<option value="${escapeHtml(model.id)}" ${model.id === value ? "selected" : ""}>${escapeHtml(model.name || model.id)} (${escapeHtml(model.id)})</option>`).join("")}
+      </select>
+    </label>
+  `;
+}
+
+function seedanceApiBasePreset(value) {
+  return seedanceApiBaseOptions.find((option) => option.value === value) || seedanceApiBaseOptions[0];
+}
+
+function renderSeedanceApiBaseSelect(value) {
+  const current = seedanceApiBasePreset(value).value;
+  return `
+    <label class="full">API Base URL
+      <select id="setting-seedance-base-url">
+        ${seedanceApiBaseOptions.map((option) => `<option value="${escapeHtml(option.value)}" ${option.value === current ? "selected" : ""}>${escapeHtml(option.label)} (${escapeHtml(option.value)})</option>`).join("")}
       </select>
     </label>
   `;
@@ -1011,6 +1062,14 @@ async function normalizeStoredUploads() {
     state.db.worldItems = [];
     changed = true;
   }
+  if (!Array.isArray(state.db.videoMedia)) {
+    state.db.videoMedia = [];
+    changed = true;
+  }
+  if (!Array.isArray(state.db.videoJobs)) {
+    state.db.videoJobs = [];
+    changed = true;
+  }
   const oldWorldItems = JSON.stringify(state.db.worldItems);
   state.db.worldItems = state.db.worldItems.map(normalizeWorldItem);
   if (JSON.stringify(state.db.worldItems) !== oldWorldItems) changed = true;
@@ -1135,6 +1194,7 @@ function parseAiJson(content) {
 
 function selectedOpenRouterModel({ textOnly = false, purpose = "" } = {}) {
   if (purpose === "world") return state.db.settings.worldModel || state.db.settings.defaultModel || state.db.settings.textModel;
+  if (purpose === "video") return state.db.settings.videoAgentModel || state.db.settings.textModel || state.db.settings.defaultModel;
   if (textOnly || purpose === "text") return state.db.settings.textModel || state.db.settings.defaultModel;
   return state.db.settings.defaultModel || state.db.settings.textModel;
 }
@@ -1167,7 +1227,7 @@ function render() {
           ${navItems.map(([id, label]) => `<button class="${state.view === id ? "active" : ""}" data-view="${id}">${label}</button>`).join("")}
         </nav>
         <div class="sidebar-meta">
-          ${state.db.works.length} 作品 / ${state.db.characters.length} キャラ / ${state.db.worldItems?.length || 0} その他 / ${state.db.assets.length} 画像
+          ${state.db.works.length} 作品 / ${state.db.characters.length} キャラ / ${state.db.worldItems?.length || 0} その他 / ${state.db.assets.length} 画像 / ${state.db.videoJobs?.length || 0} 動画
         </div>
       </aside>
       <main class="main">
@@ -1190,6 +1250,7 @@ function currentTitle() {
   if (state.view === "studio") return ["作品とキャラ", "作品単位でキャラ設定と立ち絵を管理します。"];
   if (state.view === "import") return ["画像取込", "複数画像を取り込み、AIでキャラ別に振り分けます。"];
   if (state.view === "gallery") return ["画像一覧", "作品ごと、キャラごとに保存済み画像を閲覧します。"];
+  if (state.view === "video") return ["動画生成", "Seedance向けの指示書作成と生成を行います。"];
   if (state.view === "library") return ["画像整理", "取り込んだ画像を作品・キャラ・状態で確認します。"];
   if (state.view === "prompt") return ["Prompt Lab", "差分やシーン案から生成プロンプトをまとめて作ります。"];
   return ["設定", "OpenRouter の接続情報とモデルを設定します。"];
@@ -1199,6 +1260,7 @@ function renderView() {
   if (state.view === "studio") return renderStudio();
   if (state.view === "import") return renderImport();
   if (state.view === "gallery") return renderGallery();
+  if (state.view === "video") return renderVideoAgent();
   if (state.view === "library") return renderLibrary();
   if (state.view === "prompt") return renderPromptLab();
   return renderSettings();
@@ -1636,6 +1698,748 @@ function renderGalleryAsset(asset) {
   `;
 }
 
+function mediaKindFromFile(file) {
+  if (file.type.startsWith("video/")) return "video";
+  if (file.type.startsWith("audio/")) return "audio";
+  return "image";
+}
+
+function seedanceRoleForKind(kind, mode = "reference") {
+  if (mode === "first_frame" && kind === "image") return "first_frame";
+  if (kind === "video") return "reference_video";
+  if (kind === "audio") return "reference_audio";
+  return "reference_image";
+}
+
+function seedanceRoleLabel(role) {
+  return {
+    first_frame: "開始フレーム",
+    last_frame: "終了フレーム",
+    reference_image: "参照画像",
+    reference_video: "参照動画",
+    reference_audio: "参照音声"
+  }[role] || role;
+}
+
+function allVideoReferences() {
+  const items = [];
+  const seen = new Set();
+  const push = (item) => {
+    if (!item.url || seen.has(item.key)) return;
+    seen.add(item.key);
+    items.push(item);
+  };
+  state.db.assets.forEach((asset) => {
+    push({
+      key: `asset:${asset.id}`,
+      source: "asset",
+      kind: "image",
+      id: asset.id,
+      workId: asset.workId,
+      characterId: asset.characterId || null,
+      worldItemId: asset.worldItemId || null,
+      name: asset.name,
+      url: asset.url,
+      subject: subjectLabelForAsset(asset),
+      prompt: asset.aiPrompt || "",
+      dimensions: assetDimensionLabel(asset),
+      createdAt: asset.createdAt
+    });
+  });
+  state.db.characters.forEach((char) => {
+    if (!char.portraitUrl) return;
+    push({
+      key: `character:${char.id}`,
+      source: "character",
+      kind: "image",
+      id: char.id,
+      workId: char.workId,
+      characterId: char.id,
+      worldItemId: null,
+      name: `${char.name} 立ち絵`,
+      url: char.portraitUrl,
+      subject: char.name,
+      prompt: char.basePrompt || "",
+      dimensions: "",
+      createdAt: char.createdAt
+    });
+  });
+  (state.db.worldItems || []).forEach((item) => {
+    if (!item.referenceUrl) return;
+    push({
+      key: `world:${item.id}`,
+      source: "world",
+      kind: "image",
+      id: item.id,
+      workId: item.workId,
+      characterId: null,
+      worldItemId: item.id,
+      name: `${item.name} 参考画像`,
+      url: item.referenceUrl,
+      subject: `${worldItemCategoryLabel(item.category)}: ${item.name}`,
+      prompt: item.basePrompt || item.description || "",
+      dimensions: "",
+      createdAt: item.createdAt
+    });
+  });
+  (state.db.videoMedia || []).forEach((media) => {
+    push({
+      key: `media:${media.id}`,
+      source: "media",
+      kind: media.kind || "image",
+      id: media.id,
+      workId: media.workId,
+      characterId: media.characterId || null,
+      worldItemId: media.worldItemId || null,
+      name: media.name,
+      url: media.url,
+      subject: media.subject || "動画生成素材",
+      prompt: media.memo || "",
+      dimensions: media.width && media.height ? `${media.width}x${media.height}${media.aspectRatioText ? ` / ${media.aspectRatioText}` : ""}` : "",
+      createdAt: media.createdAt
+    });
+  });
+  return items.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+}
+
+function videoCharacterOptions() {
+  return state.db.characters.filter((char) => !state.videoWorkId || char.workId === state.videoWorkId);
+}
+
+function sortVideoReferencesForDisplay(items) {
+  const selectedOrder = new Map(state.videoSelectedReferenceIds.map((key, index) => [key, index]));
+  return items
+    .map((item, index) => ({ item, index, selectedIndex: selectedOrder.has(item.key) ? selectedOrder.get(item.key) : null }))
+    .sort((a, b) => {
+      const aSelected = a.selectedIndex !== null;
+      const bSelected = b.selectedIndex !== null;
+      if (aSelected && bSelected) return a.selectedIndex - b.selectedIndex;
+      if (aSelected) return -1;
+      if (bSelected) return 1;
+      return a.index - b.index;
+    })
+    .map((entry) => entry.item);
+}
+
+function filteredVideoReferences() {
+  const selectedKeys = new Set(state.videoSelectedReferenceIds);
+  const visible = allVideoReferences()
+    .filter((item) => !state.videoWorkId || item.workId === state.videoWorkId || !item.workId)
+    .filter((item) => !state.videoCharacterId || item.characterId === state.videoCharacterId || selectedKeys.has(item.key))
+    .filter((item) => state.videoReferenceKind === "all" || item.kind === state.videoReferenceKind);
+  return sortVideoReferencesForDisplay(visible);
+}
+
+function selectedVideoReferences() {
+  const map = new Map(allVideoReferences().map((item) => [item.key, item]));
+  return state.videoSelectedReferenceIds.map((key) => map.get(key)).filter(Boolean);
+}
+
+function selectedVideoReferenceCounts(nextItems = selectedVideoReferences()) {
+  return nextItems.reduce((counts, item) => {
+    counts[item.kind] = (counts[item.kind] || 0) + 1;
+    return counts;
+  }, { image: 0, video: 0, audio: 0 });
+}
+
+function seedanceReferenceLabel(item, selectedItems = selectedVideoReferences()) {
+  let index = 0;
+  for (const candidate of selectedItems) {
+    if (candidate.kind === item.kind) index += 1;
+    if (candidate.key === item.key) break;
+  }
+  if (item.kind === "video") return `@Video${index}`;
+  if (item.kind === "audio") return `@Audio${index}`;
+  return `@Image${index}`;
+}
+
+function renderVideoReferenceRoleSelect(item) {
+  if (!state.videoSelectedReferenceIds.includes(item.key)) return "";
+  const currentRole = state.videoReferenceRoles[item.key] || seedanceRoleForKind(item.kind, state.videoPromptDraft?.mode || "reference");
+  const options = item.kind === "image"
+    ? ["reference_image", "first_frame", "last_frame"]
+    : item.kind === "video"
+      ? ["reference_video"]
+      : ["reference_audio"];
+  return `
+    <select data-action="change-video-ref-role" data-id="${item.key}">
+      ${options.map((role) => `<option value="${role}" ${currentRole === role ? "selected" : ""}>${seedanceRoleLabel(role)}</option>`).join("")}
+    </select>
+  `;
+}
+
+function renderVideoReferenceCard(item) {
+  const checked = state.videoSelectedReferenceIds.includes(item.key);
+  const selectedItems = selectedVideoReferences();
+  const label = checked ? seedanceReferenceLabel(item, selectedItems) : "";
+  const preview = item.kind === "video"
+    ? `<video class="reference-thumb" src="${escapeHtml(item.url)}" muted playsinline></video>`
+    : item.kind === "audio"
+      ? `<div class="reference-thumb audio-thumb">Audio</div>`
+      : `<img class="reference-thumb" src="${escapeHtml(item.url)}" alt="">`;
+  return `
+    <article class="reference-card ${checked ? "selected" : ""}">
+      ${preview}
+      <div class="body">
+        <label class="reference-check">
+          <input type="checkbox" data-action="toggle-video-reference" data-id="${escapeHtml(item.key)}" ${checked ? "checked" : ""}>
+          <span>${escapeHtml(label || (item.kind === "image" ? "Image" : item.kind === "video" ? "Video" : "Audio"))}</span>
+        </label>
+        <div class="asset-name">${escapeHtml(item.name || "reference")}</div>
+        <div class="meta">${escapeHtml(item.subject || "")}${item.dimensions ? ` / ${escapeHtml(item.dimensions)}` : ""}</div>
+        ${renderVideoReferenceRoleSelect(item)}
+      </div>
+    </article>
+  `;
+}
+
+function videoControlValue(id, fallback = "") {
+  return document.querySelector(`#${id}`)?.value ?? fallback;
+}
+
+function videoControlsFromDom() {
+  return {
+    workId: videoControlValue("video-work", state.videoWorkId || state.selectedWorkId || ""),
+    mode: videoControlValue("video-mode", state.videoPromptDraft?.mode || "reference"),
+    model: videoControlValue("video-seedance-model", state.db.settings.seedanceModel || "dreamina-seedance-2-0-260128"),
+    duration: Number(videoControlValue("video-duration", state.videoPromptDraft?.duration || 5)) || 5,
+    ratio: videoControlValue("video-ratio", state.videoPromptDraft?.ratio || "16:9"),
+    resolution: videoControlValue("video-resolution", state.videoPromptDraft?.resolution || state.db.settings.seedanceResolution || "720p"),
+    generateAudio: videoControlValue("video-generate-audio", String(state.videoPromptDraft?.generateAudio ?? true)) === "true",
+    cameraFixed: videoControlValue("video-camera-fixed", String(state.videoPromptDraft?.cameraFixed ?? false)) === "true",
+    watermark: videoControlValue("video-watermark", String(state.videoPromptDraft?.watermark ?? false)) === "true",
+    returnLastFrame: videoControlValue("video-return-last-frame", String(state.videoPromptDraft?.returnLastFrame ?? false)) === "true",
+    seed: Number(videoControlValue("video-seed", state.videoPromptDraft?.seed ?? -1)),
+    characterId: videoControlValue("video-character", state.videoCharacterId || ""),
+    prompt: document.querySelector("#video-prompt-text")?.value.trim() || state.videoPromptDraft?.prompt || ""
+  };
+}
+
+function buildVideoReferenceContext(selectedItems, controls) {
+  if (!selectedItems.length) return "参照素材: なし";
+  const counters = { image: 0, video: 0, audio: 0 };
+  const lines = selectedItems.map((item) => {
+    counters[item.kind] += 1;
+    const label = item.kind === "image" ? `@Image${counters.image}` : item.kind === "video" ? `@Video${counters.video}` : `@Audio${counters.audio}`;
+    const role = state.videoReferenceRoles[item.key] || seedanceRoleForKind(item.kind, controls.mode);
+    return `${label}: ${item.kind}, role=${role}, name=${item.name || ""}, subject=${item.subject || ""}, prompt=${compactPromptText(item.prompt, 300)}`;
+  });
+  return `参照素材:\n- ${lines.join("\n- ")}`;
+}
+
+async function loadSeedanceGuide() {
+  if (state.seedanceGuide) return state.seedanceGuide;
+  const payload = await getJson("/api/seedance/guide");
+  state.seedanceGuide = payload.text || "";
+  return state.seedanceGuide;
+}
+
+function buildSeedanceAgentSystemPrompt(guideText) {
+  return `あなたはSeedance 2.0向けの動画監督エージェントです。ユーザーのチャット、作品情報、世界観、キャラ情報、参照素材を読み、足りない情報があれば短く聞き取り、十分ならAPI送信用プロンプト案を作ります。
+
+必ず次のJSONだけを返してください。
+{
+  "message": "ユーザーに見せる日本語の返答。聞き取り、意図の整理、または生成に入れる状態の説明。",
+  "ready": true または false,
+  "questions": ["必要な確認事項"],
+  "draft": {
+    "title": "短いタイトル",
+    "prompt": "Seedance APIに送る英語プロンプト。参照素材がある場合は @Image1 / @Video1 / @Audio1 を使う。",
+    "mode": "text|first_frame|first_last|reference",
+    "duration": 4から15の整数,
+    "ratio": "16:9|9:16|1:1|4:3|3:4|21:9|adaptive",
+    "resolution": "480p|720p|1080p|2K",
+    "generateAudio": true または false,
+    "cameraFixed": true または false,
+    "watermark": false,
+    "returnLastFrame": false
+  }
+}
+
+Seedanceプロンプトの優先ルール:
+- プロンプトは絵の説明ではなく撮影指示書として書く。
+- Subject -> Action -> Environment -> Camera -> Style -> Constraints の順にまとめる。
+- 主カメラ指示は1つだけにする。
+- ネガティブプロンプト欄はないので Avoid 文で制約する。
+- Image-to-Videoでは画像の見た目を長く再説明せず、動き・感情変化・カメラを優先する。
+- 1プロンプトに主役と演出意図を詰め込みすぎない。
+
+添付ガイド抜粋:
+${String(guideText || "").slice(0, 14000)}`;
+}
+
+function buildVideoAgentText(inputText, controls, selectedItems) {
+  const selectedChar = byId(state.db.characters, controls.characterId || state.videoCharacterId);
+  const work = byId(state.db.works, selectedChar?.workId) || byId(state.db.works, controls.workId) || byId(state.db.works, state.selectedWorkId);
+  const chars = selectedChar ? [selectedChar] : work ? charactersForWork(work.id) : [];
+  const charText = chars.map((char) => [
+    `名前=${char.name}`,
+    `メモ=${compactPromptText(char.memo, 420)}`,
+    `生成プロンプト=${compactPromptText(char.basePrompt, 620)}`,
+    `NG=${compactPromptText(char.negativePrompt, 260)}`
+  ].join(" / ")).join("\n");
+  const history = state.videoChatMessages.slice(-10).map((message) => `${message.role}: ${message.content}`).join("\n");
+  return `ユーザー入力:
+${inputText}
+
+現在の設定:
+mode=${controls.mode}, duration=${controls.duration}, ratio=${controls.ratio}, resolution=${controls.resolution}, generateAudio=${controls.generateAudio}, cameraFixed=${controls.cameraFixed}, watermark=${controls.watermark}
+
+作品情報 / 世界観:
+${buildPromptLabWorldContext(work)}
+
+登場キャラ:
+${charText || "未指定"}
+
+${buildVideoReferenceContext(selectedItems, controls)}
+
+直近チャット:
+${history}
+
+返答では、足りない情報がある場合も、今ある情報で暫定案が作れるなら draft を入れてください。`;
+}
+
+async function buildVideoAgentUserContent(inputText, controls, selectedItems) {
+  const parts = [{ type: "text", text: buildVideoAgentText(inputText, controls, selectedItems) }];
+  const imageRefs = selectedItems.filter((item) => item.kind === "image").slice(0, 6);
+  for (const item of imageRefs) {
+    try {
+      parts.push({ type: "image_url", image_url: { url: await imageUrlToDataUrl(item.url) } });
+    } catch {
+      // The text metadata still gives the agent a usable reference trail.
+    }
+  }
+  return parts;
+}
+
+function mergeVideoDraft(result, fallbackControls) {
+  const source = result?.draft || result?.proposal || result?.seedance || {};
+  if (!source.prompt && result?.prompt) source.prompt = result.prompt;
+  if (!source.prompt) return null;
+  return {
+    title: source.title || "Seedance video",
+    prompt: source.prompt || "",
+    mode: source.mode || fallbackControls.mode || "reference",
+    duration: Number(source.duration || fallbackControls.duration || 5),
+    ratio: source.ratio || fallbackControls.ratio || "16:9",
+    resolution: source.resolution || fallbackControls.resolution || "720p",
+    generateAudio: source.generateAudio ?? source.generate_audio ?? fallbackControls.generateAudio,
+    cameraFixed: source.cameraFixed ?? source.camera_fixed ?? fallbackControls.cameraFixed,
+    watermark: source.watermark ?? fallbackControls.watermark ?? false,
+    returnLastFrame: source.returnLastFrame ?? source.return_last_frame ?? fallbackControls.returnLastFrame ?? false,
+    seed: Number(source.seed ?? fallbackControls.seed ?? -1)
+  };
+}
+
+async function handleVideoAgentMessage(forceDraft = false) {
+  const input = document.querySelector("#video-chat-input")?.value.trim();
+  const message = input || (forceDraft ? "ここまでの会話と選択素材から、Seedance API送信用のプロンプト案を作ってください。" : "");
+  if (!message) return toast("メッセージを入力してください。");
+  const controls = videoControlsFromDom();
+  state.videoWorkId = controls.workId || null;
+  state.videoChatMessages.push({ role: "user", content: message });
+  state.videoIsThinking = true;
+  render();
+  try {
+    const guide = await loadSeedanceGuide();
+    const selectedItems = selectedVideoReferences();
+    const content = await callOpenRouter({
+      purpose: "video",
+      temperature: 0.4,
+      maxTokens: 3600,
+      responseFormat: { type: "json_object" },
+      messages: [
+        { role: "system", content: buildSeedanceAgentSystemPrompt(guide) },
+        { role: "user", content: await buildVideoAgentUserContent(message, controls, selectedItems) }
+      ]
+    });
+    const result = parseAiJson(content);
+    const assistantMessage = result.message || result.answer || "プロンプト案を更新しました。";
+    state.videoChatMessages.push({ role: "assistant", content: assistantMessage });
+    const draft = mergeVideoDraft(result, controls);
+    if (draft) state.videoPromptDraft = draft;
+    state.videoIsThinking = false;
+    render();
+  } catch (error) {
+    state.videoIsThinking = false;
+    state.videoChatMessages.push({ role: "assistant", content: `エラー: ${error.message}` });
+    render();
+  }
+}
+
+function referencesForSeedance(controls) {
+  const selected = selectedVideoReferences();
+  const images = selected.filter((item) => item.kind === "image");
+  if (controls.mode === "text") return [];
+  if (controls.mode === "first_frame") {
+    if (!images.length) throw new Error("開始フレーム用の画像を1枚選択してください。");
+    return [{ ...images[0], role: "first_frame" }];
+  }
+  if (controls.mode === "first_last") {
+    if (images.length < 2) throw new Error("開始フレームと終了フレーム用に画像を2枚選択してください。");
+    return [
+      { ...images[0], role: "first_frame" },
+      { ...images[1], role: "last_frame" }
+    ];
+  }
+  return selected.map((item) => ({
+    ...item,
+    role: state.videoReferenceRoles[item.key] || seedanceRoleForKind(item.kind, controls.mode)
+  }));
+}
+
+function validateSeedanceReferenceLimits(references) {
+  const counts = selectedVideoReferenceCounts(references);
+  if (counts.image > 9) throw new Error("参照画像は最大9枚までです。");
+  if (counts.video > 3) throw new Error("参照動画は最大3本までです。");
+  if (counts.audio > 3) throw new Error("参照音声は最大3本までです。");
+}
+
+async function startSeedanceGeneration() {
+  const controls = videoControlsFromDom();
+  const prompt = controls.prompt;
+  const seedanceKey = activeSeedanceApiKey();
+  if (!seedanceKey) return toast(isOpenRouterSeedanceBaseUrl() ? "設定画面で OpenRouter API キーを保存してください。" : "設定画面で Seedance API キーを保存してください。");
+  if (!prompt) return toast("API送信用プロンプトを入力してください。");
+  try {
+    state.db.settings.seedanceModel = controls.model;
+    state.db.settings.seedanceResolution = controls.resolution;
+    const references = referencesForSeedance(controls);
+    validateSeedanceReferenceLimits(references);
+    const job = {
+      id: uid(),
+      workId: controls.workId || null,
+      title: state.videoPromptDraft?.title || "Seedance video",
+      prompt,
+      status: "submitting",
+      providerTaskId: "",
+      providerPayload: null,
+      request: null,
+      settings: {
+        ...controls,
+        baseUrl: state.db.settings.seedanceBaseUrl
+      },
+      references: references.map((item) => ({
+        key: item.key,
+        kind: item.kind,
+        role: item.role,
+        name: item.name,
+        url: item.url
+      })),
+      videoUrl: "",
+      localUrl: "",
+      localPath: "",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    state.db.videoJobs.unshift(job);
+    state.videoIsGenerating = true;
+    await saveDb();
+    render();
+    const payload = await postJson("/api/seedance/create", {
+      apiKey: seedanceKey,
+      baseUrl: state.db.settings.seedanceBaseUrl,
+      model: controls.model,
+      prompt,
+      ratio: controls.ratio,
+      duration: controls.duration,
+      resolution: controls.resolution,
+      generateAudio: controls.generateAudio,
+      cameraFixed: controls.cameraFixed,
+      watermark: controls.watermark,
+      seed: controls.seed,
+      returnLastFrame: controls.returnLastFrame,
+      references: references.map((item) => ({
+        kind: item.kind,
+        role: item.role,
+        url: item.url,
+        name: item.name
+      }))
+    });
+    job.providerTaskId = payload.id || payload.task_id || "";
+    job.status = payload.status || "submitted";
+    job.providerPayload = payload;
+    job.request = payload.request || null;
+    job.updatedAt = new Date().toISOString();
+    await saveDb();
+    render();
+    if (job.providerTaskId) {
+      toast("Seedance生成タスクを開始しました。");
+      await pollSeedanceJob(job.id);
+    } else {
+      throw new Error("Seedance の task id を取得できませんでした。");
+    }
+  } catch (error) {
+    state.videoIsGenerating = false;
+    toast(error.message);
+    const latest = state.db.videoJobs[0];
+    if (latest?.status === "submitting") {
+      latest.status = "failed";
+      latest.error = error.message;
+      latest.updatedAt = new Date().toISOString();
+      await saveDb();
+      render();
+    }
+  }
+}
+
+async function pollSeedanceJob(jobId) {
+  const job = byId(state.db.videoJobs || [], jobId);
+  const jobBaseUrl = job?.settings?.baseUrl || state.db.settings.seedanceBaseUrl;
+  const seedanceKey = activeSeedanceApiKey(jobBaseUrl);
+  if (!job?.providerTaskId || !seedanceKey) {
+    state.videoIsGenerating = false;
+    return;
+  }
+  state.videoPollingJobId = job.id;
+  render();
+  try {
+    const payload = await postJson("/api/seedance/status", {
+      apiKey: seedanceKey,
+      baseUrl: jobBaseUrl,
+      taskId: job.providerTaskId
+    });
+    job.status = payload.status || job.status;
+    job.videoUrl = payload.videoUrl || job.videoUrl || "";
+    job.localUrl = payload.localUrl || job.localUrl || "";
+    job.localPath = payload.localPath || job.localPath || "";
+    job.providerPayload = payload;
+    job.updatedAt = new Date().toISOString();
+    await saveDb();
+    const done = ["succeeded", "failed", "expired", "cancelled"].includes(job.status);
+    if (done) {
+      state.videoIsGenerating = false;
+      state.videoPollingJobId = "";
+      toast(job.status === "succeeded" ? "生成動画を保存しました。" : `生成タスクが ${job.status} で終了しました。`);
+      render();
+      return;
+    }
+    window.setTimeout(() => pollSeedanceJob(job.id), 12000);
+  } catch (error) {
+    state.videoIsGenerating = false;
+    state.videoPollingJobId = "";
+    job.error = error.message;
+    job.updatedAt = new Date().toISOString();
+    await saveDb();
+    toast(error.message);
+    render();
+  }
+}
+
+async function uploadVideoReferenceFiles(files) {
+  const selectedChar = byId(state.db.characters, state.videoCharacterId);
+  const work = byId(state.db.works, selectedChar?.workId || state.videoWorkId || state.selectedWorkId);
+  const accepted = [...files].filter((file) => file.type.startsWith("image/") || file.type.startsWith("video/") || file.type.startsWith("audio/"));
+  if (!accepted.length) return;
+  try {
+    for (const file of accepted) {
+      const dataUrl = await fileToDataUrl(file);
+      const kind = mediaKindFromFile(file);
+      const uploaded = await postJson("/api/media-upload", {
+        dataUrl,
+        name: file.name,
+        workName: work?.name
+      });
+      const info = kind === "image" ? await getImageInfo(dataUrl) : {};
+      state.db.videoMedia.unshift({
+        id: uid(),
+        workId: work?.id || null,
+        characterId: selectedChar?.id || null,
+        kind: uploaded.kind || kind,
+        name: file.name,
+        url: uploaded.url,
+        localPath: uploaded.path,
+        mimeType: uploaded.mimeType || file.type,
+        width: info.width || null,
+        height: info.height || null,
+        aspectRatio: info.aspectRatio || null,
+        aspectRatioText: info.aspectRatioText || "",
+        createdAt: new Date().toISOString()
+      });
+    }
+    await saveDb();
+    render();
+    toast(`${accepted.length} 件を参照素材に追加しました。`);
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+function renderVideoAgent() {
+  const work = byId(state.db.works, state.videoWorkId) || byId(state.db.works, state.selectedWorkId) || state.db.works[0] || null;
+  if (!state.videoWorkId && work) state.videoWorkId = work.id;
+  const referenceCharacters = videoCharacterOptions();
+  if (state.videoCharacterId && !referenceCharacters.some((char) => char.id === state.videoCharacterId)) {
+    state.videoCharacterId = "";
+  }
+  const controls = state.videoPromptDraft || {};
+  const references = filteredVideoReferences();
+  const selectedItems = selectedVideoReferences();
+  const counts = selectedVideoReferenceCounts(selectedItems);
+  const jobs = (state.db.videoJobs || [])
+    .filter((job) => !state.videoWorkId || job.workId === state.videoWorkId)
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
+    .slice(0, 12);
+  return `
+    <div class="video-layout">
+      <section class="panel">
+        <div class="panel-header"><h2>生成設定</h2></div>
+        <div class="panel-body form-grid">
+          <label class="full">作品
+            <select id="video-work">
+              <option value="">全作品</option>
+              ${state.db.works.map((item) => `<option value="${item.id}" ${state.videoWorkId === item.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label>モード
+            <select id="video-mode">
+              ${[
+                ["reference", "参照素材"],
+                ["text", "テキストのみ"],
+                ["first_frame", "開始フレーム"],
+                ["first_last", "開始＋終了"]
+              ].map(([value, label]) => `<option value="${value}" ${(controls.mode || "reference") === value ? "selected" : ""}>${label}</option>`).join("")}
+            </select>
+          </label>
+          <label>秒数<input id="video-duration" type="number" min="4" max="15" step="1" value="${escapeHtml(controls.duration || 5)}"></label>
+          <label>アスペクト比
+            <select id="video-ratio">
+              ${["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"].map((value) => `<option value="${value}" ${(controls.ratio || "16:9") === value ? "selected" : ""}>${value}</option>`).join("")}
+            </select>
+          </label>
+          <label>解像度
+            <select id="video-resolution">
+              ${["480p", "720p", "1080p", "2K"].map((value) => `<option value="${value}" ${(controls.resolution || state.db.settings.seedanceResolution || "720p") === value ? "selected" : ""}>${value}</option>`).join("")}
+            </select>
+          </label>
+          <label class="full">Seedanceモデル<input id="video-seedance-model" value="${escapeHtml(state.db.settings.seedanceModel || "dreamina-seedance-2-0-260128")}"></label>
+          <label>音声
+            <select id="video-generate-audio">
+              <option value="true" ${(controls.generateAudio ?? true) ? "selected" : ""}>生成する</option>
+              <option value="false" ${!(controls.generateAudio ?? true) ? "selected" : ""}>生成しない</option>
+            </select>
+          </label>
+          <label>カメラ固定
+            <select id="video-camera-fixed">
+              <option value="false" ${!(controls.cameraFixed ?? false) ? "selected" : ""}>OFF</option>
+              <option value="true" ${(controls.cameraFixed ?? false) ? "selected" : ""}>ON</option>
+            </select>
+          </label>
+          <label>透かし
+            <select id="video-watermark">
+              <option value="false" ${!(controls.watermark ?? false) ? "selected" : ""}>OFF</option>
+              <option value="true" ${(controls.watermark ?? false) ? "selected" : ""}>ON</option>
+            </select>
+          </label>
+          <label>最終フレーム返却
+            <select id="video-return-last-frame">
+              <option value="false" ${!(controls.returnLastFrame ?? false) ? "selected" : ""}>OFF</option>
+              <option value="true" ${(controls.returnLastFrame ?? false) ? "selected" : ""}>ON</option>
+            </select>
+          </label>
+          <label class="full">Seed<input id="video-seed" type="number" value="${escapeHtml(controls.seed ?? -1)}"></label>
+        </div>
+        <div class="panel-header compact-header">
+          <h2>参照素材</h2>
+          <input id="video-ref-file-input" type="file" accept="image/*,video/*,audio/*" multiple hidden>
+          <button class="ghost" data-action="choose-video-reference-files">追加</button>
+        </div>
+        <div class="panel-body">
+          <div class="toolbar slim-toolbar">
+            <select id="video-reference-kind">
+              ${[["all", "全素材"], ["image", "画像"], ["video", "動画"], ["audio", "音声"]].map(([value, label]) => `<option value="${value}" ${state.videoReferenceKind === value ? "selected" : ""}>${label}</option>`).join("")}
+            </select>
+            <label class="reference-filter-field">キャラ
+              <select id="video-character">
+                <option value="">全キャラ</option>
+                ${referenceCharacters.map((char) => {
+                  const optionWork = byId(state.db.works, char.workId);
+                  const label = state.videoWorkId ? char.name : `${char.name}${optionWork ? ` / ${optionWork.name}` : ""}`;
+                  return `<option value="${char.id}" ${state.videoCharacterId === char.id ? "selected" : ""}>${escapeHtml(label)}</option>`;
+                }).join("")}
+              </select>
+            </label>
+            <div class="meta">画像 ${counts.image}/9 / 動画 ${counts.video}/3 / 音声 ${counts.audio}/3</div>
+          </div>
+          ${references.length ? `<div class="reference-grid">${references.map(renderVideoReferenceCard).join("")}</div>` : `<div class="empty compact">参照素材がありません。</div>`}
+        </div>
+      </section>
+      <section class="video-main">
+        <section class="panel video-chat-panel">
+          <div class="panel-header">
+            <h2>エージェント</h2>
+            <button class="ghost" data-action="video-make-draft" ${state.videoIsThinking ? "disabled" : ""}>プロンプト案</button>
+          </div>
+          <div class="panel-body">
+            <div class="chat-log">
+              ${state.videoChatMessages.map((message) => `<div class="chat-message ${message.role}"><div>${escapeHtml(message.content)}</div></div>`).join("")}
+              ${state.videoIsThinking ? `<div class="chat-message assistant"><div>考えています...</div></div>` : ""}
+            </div>
+            <div class="chat-input-row">
+              <textarea id="video-chat-input" placeholder="例：雛森陽澄が雨の路地で振り返る、8秒、縦型、静かな不穏さ"></textarea>
+              <button data-action="video-send-message" ${state.videoIsThinking ? "disabled" : ""}>送信</button>
+            </div>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>API送信用プロンプト</h2>
+              <div class="meta">${escapeHtml(state.videoPromptDraft?.title || "手動入力できます。")}</div>
+            </div>
+            <div class="group">
+              <button class="ghost" data-action="video-copy-prompt">コピー</button>
+              <button class="accent" data-action="video-start-generation" ${state.videoIsGenerating ? "disabled" : ""}>生成開始</button>
+            </div>
+          </div>
+          <div class="panel-body">
+            <textarea id="video-prompt-text" class="seedance-prompt-text" placeholder="Create a 6-second cinematic video...">${escapeHtml(state.videoPromptDraft?.prompt || "")}</textarea>
+            ${state.videoIsGenerating || state.videoPollingJobId ? renderSeedanceAnimation() : ""}
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-header"><h2>生成履歴</h2></div>
+          <div class="panel-body video-job-list">
+            ${jobs.length ? jobs.map(renderVideoJob).join("") : `<div class="empty compact">生成履歴はまだありません。</div>`}
+          </div>
+        </section>
+      </section>
+    </div>
+  `;
+}
+
+function renderSeedanceAnimation() {
+  return `
+    <div class="seedance-animation">
+      <div class="film-loader"><span></span><span></span><span></span><span></span></div>
+      <div>
+        <strong>Seedance生成中</strong>
+        <div class="meta">完了後に自動保存します。</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderVideoJob(job) {
+  const work = byId(state.db.works, job.workId);
+  return `
+    <article class="video-job ${job.status}">
+      <div>
+        <div class="char-name">${escapeHtml(job.title || "Seedance video")}</div>
+        <div class="meta">${escapeHtml(work?.name || "全作品")} / ${escapeHtml(job.status || "unknown")} / ${job.updatedAt ? escapeHtml(new Date(job.updatedAt).toLocaleString("ja-JP")) : ""}</div>
+      </div>
+      ${job.localUrl ? `<video class="generated-video" controls src="${escapeHtml(job.localUrl)}"></video>` : ""}
+      <div class="result-text">${escapeHtml(compactPromptText(job.prompt, 900))}</div>
+      <div class="card-actions">
+        <button class="ghost" data-action="refresh-video-job" data-id="${job.id}" ${["succeeded", "failed", "expired", "cancelled"].includes(job.status) ? "disabled" : ""}>更新</button>
+        <button class="ghost" data-action="copy-video-job-prompt" data-id="${job.id}">プロンプト</button>
+      </div>
+      ${job.localPath ? `<div class="meta">保存先: ${escapeHtml(job.localPath)}</div>` : ""}
+      ${job.error ? `<div class="meta danger-text">${escapeHtml(job.error)}</div>` : ""}
+    </article>
+  `;
+}
+
 function renderPromptLab() {
   const promptChars = charactersForWork(state.selectedWorkId);
   const selectedChar = promptChars[0];
@@ -1712,6 +2516,7 @@ function renderSettings() {
         ${renderModelSelect("setting-model", "画像判別モデル", state.db.settings.defaultModel || "", "image")}
         ${renderModelSelect("setting-text-model", "テキスト生成モデル", state.db.settings.textModel || "", "text")}
         ${renderModelSelect("setting-world-model", "世界観読み込みモデル", state.db.settings.worldModel || state.db.settings.defaultModel || "", "image")}
+        ${renderModelSelect("setting-video-agent-model", "動画エージェントモデル", state.db.settings.videoAgentModel || state.db.settings.textModel || "", "image")}
         <div class="full meta">${escapeHtml(statusText)}</div>
         <div class="full meta">キーはブラウザ内に保存されます。作品データと画像はこのアプリの data フォルダに保存されます。世界観読み込みモデルは設定シート画像の読解に使います。JSONが崩れる場合は、Gemini系やClaude Sonnet/Opus系など、長文と画像の両方に強いモデルを選ぶと安定しやすいです。</div>
         <div class="full toolbar">
@@ -1719,6 +2524,24 @@ function renderSettings() {
           <button class="ghost" data-action="test-openrouter">接続テスト</button>
           <button class="ghost" data-action="reload-openrouter-models">モデル一覧を再取得</button>
         </div>
+      </div>
+    </section>
+    <section class="panel settings-panel">
+      <div class="panel-header"><h2>Seedance</h2></div>
+      <div class="panel-body form-grid">
+        <label class="full">API キー
+          <input id="setting-seedance-api-key" type="password" placeholder="BytePlus / OpenRouter API key" value="${escapeHtml(seedanceApiKey())}">
+        </label>
+        ${renderSeedanceApiBaseSelect(state.db.settings.seedanceBaseUrl)}
+        <label>Seedance モデル
+          <input id="setting-seedance-model" value="${escapeHtml(state.db.settings.seedanceModel || "dreamina-seedance-2-0-260128")}">
+        </label>
+        <label>既定解像度
+          <select id="setting-seedance-resolution">
+            ${["480p", "720p", "1080p", "2K"].map((value) => `<option value="${value}" ${value === (state.db.settings.seedanceResolution || "720p") ? "selected" : ""}>${value}</option>`).join("")}
+          </select>
+        </label>
+        <div class="full meta">生成動画は完了後に data/videos に保存されます。OpenRouterを選んだ場合は、上のOpenRouter APIキー欄のキーを優先して使います。</div>
       </div>
     </section>
   `;
@@ -1741,6 +2564,7 @@ function bindView() {
   if (state.view === "studio") bindStudio();
   if (state.view === "import") bindImport();
   if (state.view === "gallery") bindGallery();
+  if (state.view === "video") bindVideoAgent();
   if (state.view === "library") bindLibrary();
   if (state.view === "prompt") bindPromptLab();
   if (state.view === "settings") bindSettings();
@@ -2097,6 +2921,109 @@ function bindGallery() {
   });
 }
 
+function bindVideoAgent() {
+  const persistVideoControls = () => {
+    const controls = videoControlsFromDom();
+    state.videoCharacterId = controls.characterId || "";
+    state.videoPromptDraft = {
+      ...(state.videoPromptDraft || {}),
+      mode: controls.mode,
+      duration: controls.duration,
+      ratio: controls.ratio,
+      resolution: controls.resolution,
+      generateAudio: controls.generateAudio,
+      cameraFixed: controls.cameraFixed,
+      watermark: controls.watermark,
+      returnLastFrame: controls.returnLastFrame,
+      seed: controls.seed,
+      prompt: controls.prompt
+    };
+    state.db.settings.seedanceModel = controls.model;
+    state.db.settings.seedanceResolution = controls.resolution;
+  };
+  ["#video-duration", "#video-ratio", "#video-resolution", "#video-seedance-model", "#video-generate-audio", "#video-camera-fixed", "#video-watermark", "#video-return-last-frame", "#video-seed", "#video-prompt-text"].forEach((selector) => {
+    document.querySelector(selector)?.addEventListener("change", persistVideoControls);
+  });
+  document.querySelector("#video-work")?.addEventListener("change", (event) => {
+    persistVideoControls();
+    state.videoWorkId = event.target.value || null;
+    state.selectedWorkId = state.videoWorkId;
+    if (state.videoCharacterId && !videoCharacterOptions().some((char) => char.id === state.videoCharacterId)) {
+      state.videoCharacterId = "";
+    }
+    state.videoSelectedReferenceIds = state.videoSelectedReferenceIds.filter((key) => {
+      const item = allVideoReferences().find((candidate) => candidate.key === key);
+      return !state.videoWorkId || !item?.workId || item.workId === state.videoWorkId;
+    });
+    render();
+  });
+  document.querySelector("#video-reference-kind")?.addEventListener("change", (event) => {
+    persistVideoControls();
+    state.videoReferenceKind = event.target.value;
+    render();
+  });
+  document.querySelector("#video-character")?.addEventListener("change", (event) => {
+    persistVideoControls();
+    state.videoCharacterId = event.target.value || "";
+    render();
+  });
+  document.querySelector("#video-mode")?.addEventListener("change", () => {
+    persistVideoControls();
+    render();
+  });
+  document.querySelector("[data-action='choose-video-reference-files']")?.addEventListener("click", () => {
+    document.querySelector("#video-ref-file-input")?.click();
+  });
+  document.querySelector("#video-ref-file-input")?.addEventListener("change", async (event) => {
+    await uploadVideoReferenceFiles(event.target.files);
+  });
+  document.querySelectorAll("[data-action='toggle-video-reference']").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => {
+      const id = checkbox.dataset.id;
+      const item = allVideoReferences().find((candidate) => candidate.key === id);
+      if (!item) return;
+      if (!checkbox.checked) {
+        persistVideoControls();
+        state.videoSelectedReferenceIds = state.videoSelectedReferenceIds.filter((key) => key !== id);
+        delete state.videoReferenceRoles[id];
+        render();
+        return;
+      }
+      const next = [...selectedVideoReferences(), item];
+      const counts = selectedVideoReferenceCounts(next);
+      if (counts.image > 9 || counts.video > 3 || counts.audio > 3) {
+        checkbox.checked = false;
+        return toast("参照素材の上限を超えています。");
+      }
+      persistVideoControls();
+      state.videoSelectedReferenceIds.push(id);
+      state.videoReferenceRoles[id] = seedanceRoleForKind(item.kind, videoControlValue("video-mode", "reference"));
+      render();
+    });
+  });
+  document.querySelectorAll("[data-action='change-video-ref-role']").forEach((select) => {
+    select.addEventListener("change", () => {
+      state.videoReferenceRoles[select.dataset.id] = select.value;
+    });
+  });
+  document.querySelector("[data-action='video-send-message']")?.addEventListener("click", () => handleVideoAgentMessage(false));
+  document.querySelector("[data-action='video-make-draft']")?.addEventListener("click", () => handleVideoAgentMessage(true));
+  document.querySelector("[data-action='video-copy-prompt']")?.addEventListener("click", () => {
+    const text = document.querySelector("#video-prompt-text")?.value || "";
+    copyText(text);
+  });
+  document.querySelector("[data-action='video-start-generation']")?.addEventListener("click", startSeedanceGeneration);
+  document.querySelectorAll("[data-action='refresh-video-job']").forEach((button) => {
+    button.addEventListener("click", () => pollSeedanceJob(button.dataset.id));
+  });
+  document.querySelectorAll("[data-action='copy-video-job-prompt']").forEach((button) => {
+    button.addEventListener("click", () => {
+      const job = byId(state.db.videoJobs || [], button.dataset.id);
+      if (job) copyText(job.prompt || "");
+    });
+  });
+}
+
 async function classifyAsset(asset, knownDataUrl = null, fallbackPromptFormat = state.importPromptFormat) {
   const candidates = charactersForWork(asset.workId);
   if (!candidates.length) {
@@ -2215,11 +3142,24 @@ async function copyText(text) {
 
 function bindSettings() {
   loadOpenRouterModels();
+  document.querySelector("#setting-seedance-base-url")?.addEventListener("change", (event) => {
+    const selected = seedanceApiBasePreset(event.target.value);
+    const modelInput = document.querySelector("#setting-seedance-model");
+    const knownDefaultModels = seedanceApiBaseOptions.map((option) => option.defaultModel);
+    if (modelInput && (!modelInput.value.trim() || knownDefaultModels.includes(modelInput.value.trim()))) {
+      modelInput.value = selected.defaultModel;
+    }
+  });
   document.querySelector("[data-action='save-settings']")?.addEventListener("click", async () => {
     localStorage.setItem("openrouter_api_key", document.querySelector("#setting-api-key").value.trim());
+    localStorage.setItem("seedance_api_key", document.querySelector("#setting-seedance-api-key")?.value.trim() || "");
     state.db.settings.defaultModel = document.querySelector("#setting-model").value.trim();
     state.db.settings.textModel = document.querySelector("#setting-text-model").value.trim();
     state.db.settings.worldModel = document.querySelector("#setting-world-model").value.trim();
+    state.db.settings.videoAgentModel = document.querySelector("#setting-video-agent-model").value.trim();
+    state.db.settings.seedanceBaseUrl = document.querySelector("#setting-seedance-base-url")?.value.trim() || "https://ark.ap-southeast.bytepluses.com/api/v3";
+    state.db.settings.seedanceModel = document.querySelector("#setting-seedance-model")?.value.trim() || "dreamina-seedance-2-0-260128";
+    state.db.settings.seedanceResolution = document.querySelector("#setting-seedance-resolution")?.value || "720p";
     await saveDb();
     toast("設定を保存しました。");
   });
@@ -2228,6 +3168,7 @@ function bindSettings() {
     state.db.settings.defaultModel = document.querySelector("#setting-model").value.trim();
     state.db.settings.textModel = document.querySelector("#setting-text-model").value.trim();
     state.db.settings.worldModel = document.querySelector("#setting-world-model").value.trim();
+    state.db.settings.videoAgentModel = document.querySelector("#setting-video-agent-model").value.trim();
     try {
       await callOpenRouter({
         textOnly: true,
@@ -2905,9 +3846,12 @@ async function boot() {
   try {
     state.db = await getJson("/api/db");
     state.selectedWorkId = state.db.works[0]?.id || null;
+    state.videoWorkId = state.selectedWorkId;
     state.galleryWorkId = state.selectedWorkId;
     await normalizeStoredUploads();
     render();
+    const activeJob = (state.db.videoJobs || []).find((job) => job.providerTaskId && ["submitting", "submitted", "pending", "queued", "running", "processing"].includes(job.status));
+    if (activeJob) window.setTimeout(() => pollSeedanceJob(activeJob.id), 1200);
   } catch (error) {
     app.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
   }
