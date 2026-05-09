@@ -12,6 +12,7 @@ const state = {
   importAutoClassify: true,
   importPromptFormat: "natural",
   importCharacterId: "",
+  importWorldItemId: "",
   libraryStatus: "all",
   libraryCharacterId: "all",
   librarySort: "newest",
@@ -34,6 +35,19 @@ const navItems = [
 
 const workColors = ["#d85f43", "#1f8a84", "#677a2f", "#b78017", "#7b5ea7", "#bd4d72", "#4a7fbd"];
 
+const defaultWorldItemTemplates = [
+  { category: "background", name: "背景", memo: "街並み、建築、自然環境、室内、舞台になる場所を管理します。" },
+  { category: "prop", name: "小物", memo: "道具、装備、家具、通貨、素材サンプル、記号類を管理します。" },
+  { category: "creature", name: "生物", memo: "動物、魔物、植物、精霊、群衆以外の生物設定を管理します。" }
+];
+
+const worldItemCategoryLabels = {
+  background: "背景",
+  prop: "小物",
+  creature: "生物",
+  other: "その他"
+};
+
 const fallbackOpenRouterModels = [
   { id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash", architecture: { input_modalities: ["text", "image"], output_modalities: ["text"] } },
   { id: "google/gemini-3.1-pro-preview", name: "Gemini 3.1 Pro Preview", architecture: { input_modalities: ["text", "image"], output_modalities: ["text"] } }
@@ -50,6 +64,7 @@ const escapeHtml = (value = "") =>
 const uid = () => crypto.randomUUID();
 const byId = (items, id) => items.find((item) => item.id === id);
 const charactersForWork = (workId) => state.db.characters.filter((char) => !workId || char.workId === workId);
+const worldItemsForWork = (workId) => (state.db.worldItems || []).filter((item) => !workId || item.workId === workId);
 const assetsForWork = (workId) => state.db.assets.filter((asset) => !workId || asset.workId === workId);
 const apiKey = () => localStorage.getItem("openrouter_api_key") || "";
 
@@ -515,6 +530,93 @@ function parseJsonField(value, fallback) {
   }
 }
 
+function createDefaultWorldItem(workId, template) {
+  return {
+    id: uid(),
+    workId,
+    category: template.category,
+    name: template.name,
+    description: "",
+    referenceUrl: "",
+    basePrompt: "",
+    memo: template.memo,
+    createdAt: new Date().toISOString(),
+    autoCreated: true
+  };
+}
+
+function normalizeWorldItem(item) {
+  return {
+    id: item.id || uid(),
+    workId: item.workId || null,
+    category: item.category || "other",
+    name: item.name || worldItemCategoryLabels[item.category] || "その他情報",
+    description: item.description || "",
+    referenceUrl: item.referenceUrl || "",
+    basePrompt: item.basePrompt || "",
+    memo: item.memo || "",
+    createdAt: item.createdAt || new Date().toISOString(),
+    autoCreated: Boolean(item.autoCreated)
+  };
+}
+
+function ensureDefaultWorldItemsForWork(work) {
+  state.db.worldItems = (state.db.worldItems || []).map(normalizeWorldItem);
+  const existing = worldItemsForWork(work.id);
+  let changed = false;
+  for (const template of defaultWorldItemTemplates) {
+    if (!existing.some((item) => item.category === template.category && item.autoCreated)) {
+      state.db.worldItems.push(createDefaultWorldItem(work.id, template));
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function worldItemCategoryLabel(category) {
+  return worldItemCategoryLabels[category] || "その他";
+}
+
+function workWorldItemById(id) {
+  return byId(state.db.worldItems || [], id);
+}
+
+function worldItemForAsset(asset) {
+  return workWorldItemById(asset?.worldItemId);
+}
+
+function assetSubjectKey(asset) {
+  if (asset.worldItemId) return `world:${asset.worldItemId}`;
+  if (asset.characterId) return `char:${asset.characterId}`;
+  return "unassigned";
+}
+
+function parseSubjectValue(value) {
+  const raw = String(value || "");
+  if (raw.startsWith("char:")) return { type: "character", id: raw.slice(5) };
+  if (raw.startsWith("world:")) return { type: "world", id: raw.slice(6) };
+  if (raw && raw !== "all" && raw !== "unassigned") return { type: "character", id: raw };
+  return { type: raw || "unassigned", id: "" };
+}
+
+function subjectLabelForAsset(asset) {
+  const worldItem = worldItemForAsset(asset);
+  if (worldItem) return `${worldItemCategoryLabel(worldItem.category)}: ${worldItem.name}`;
+  const char = characterForAsset(asset);
+  return char?.name || "未割当";
+}
+
+function renderSubjectOptions(workId, selectedValue, { includeAll = true } = {}) {
+  const chars = charactersForWork(workId);
+  const items = worldItemsForWork(workId);
+  return `
+    ${includeAll ? `<option value="all" ${selectedValue === "all" ? "selected" : ""}>全割当先</option>` : ""}
+    <option value="unassigned" ${selectedValue === "unassigned" ? "selected" : ""}>未割当</option>
+    ${chars.length ? `<optgroup label="キャラ">${chars.map((char) => `<option value="char:${char.id}" ${selectedValue === `char:${char.id}` || selectedValue === char.id ? "selected" : ""}>${escapeHtml(char.name)}</option>`).join("")}</optgroup>` : ""}
+    ${items.length ? `<optgroup label="その他情報">${items.map((item) => `<option value="world:${item.id}" ${selectedValue === `world:${item.id}` ? "selected" : ""}>${escapeHtml(worldItemCategoryLabel(item.category))}: ${escapeHtml(item.name)}</option>`).join("")}</optgroup>` : ""}
+  `;
+}
+
 function normalizeSettings() {
   state.db.settings = {
     defaultModel: "google/gemini-2.5-flash",
@@ -700,12 +802,19 @@ async function saveDb() {
 
 async function relocateAsset(asset) {
   const char = characterForAsset(asset);
-  if (char) asset.workId = char.workId;
-  const work = workForAsset(asset) || byId(state.db.works, char?.workId);
+  const worldItem = worldItemForAsset(asset);
+  if (char) {
+    asset.workId = char.workId;
+    asset.worldItemId = null;
+  } else if (worldItem) {
+    asset.workId = worldItem.workId;
+    asset.characterId = null;
+  }
+  const work = workForAsset(asset) || byId(state.db.works, char?.workId || worldItem?.workId);
   const moved = await postJson("/api/move-upload", {
     url: asset.url,
     workName: work?.name,
-    characterName: char?.name
+    characterName: char?.name || worldItem?.name
   });
   asset.url = moved.url;
   asset.localPath = moved.path;
@@ -735,6 +844,17 @@ async function relocateAssetsForCharacter(characterId) {
   }
   if (char?.portraitUrl) {
     char.portraitUrl = await relocateUploadUrl(char.portraitUrl, work, char);
+  }
+}
+
+async function relocateAssetsForWorldItem(worldItemId) {
+  const item = workWorldItemById(worldItemId);
+  const work = byId(state.db.works, item?.workId);
+  for (const asset of state.db.assets.filter((candidate) => candidate.worldItemId === worldItemId)) {
+    await relocateAsset(asset);
+  }
+  if (item?.referenceUrl) {
+    item.referenceUrl = await relocateUploadUrl(item.referenceUrl, work, item);
   }
 }
 
@@ -772,6 +892,16 @@ async function normalizeStoredUploads() {
   const oldSettings = JSON.stringify(state.db.settings || {});
   normalizeSettings();
   if (JSON.stringify(state.db.settings) !== oldSettings) changed = true;
+  if (!Array.isArray(state.db.worldItems)) {
+    state.db.worldItems = [];
+    changed = true;
+  }
+  const oldWorldItems = JSON.stringify(state.db.worldItems);
+  state.db.worldItems = state.db.worldItems.map(normalizeWorldItem);
+  if (JSON.stringify(state.db.worldItems) !== oldWorldItems) changed = true;
+  for (const work of state.db.works) {
+    if (ensureDefaultWorldItemsForWork(work)) changed = true;
+  }
   for (const work of state.db.works) {
     if (work.worldSetting) {
       const normalized = normalizeWorldSetting(work.worldSetting);
@@ -788,6 +918,10 @@ async function normalizeStoredUploads() {
     }
   }
   for (const asset of state.db.assets) {
+    if (asset.characterId && asset.worldItemId) {
+      asset.worldItemId = null;
+      changed = true;
+    }
     if (!asset.aiPromptFormat) {
       const char = characterForAsset(asset);
       asset.aiPromptFormat = promptFormatOf(char);
@@ -918,7 +1052,7 @@ function render() {
           ${navItems.map(([id, label]) => `<button class="${state.view === id ? "active" : ""}" data-view="${id}">${label}</button>`).join("")}
         </nav>
         <div class="sidebar-meta">
-          ${state.db.works.length} 作品 / ${state.db.characters.length} キャラ / ${state.db.assets.length} 画像
+          ${state.db.works.length} 作品 / ${state.db.characters.length} キャラ / ${state.db.worldItems?.length || 0} その他 / ${state.db.assets.length} 画像
         </div>
       </aside>
       <main class="main">
@@ -959,6 +1093,7 @@ function renderStudio() {
   const work = byId(state.db.works, state.selectedWorkId) || state.db.works[0] || null;
   if (!state.selectedWorkId && work) state.selectedWorkId = work.id;
   const chars = work ? charactersForWork(work.id) : [];
+  const worldItems = work ? worldItemsForWork(work.id) : [];
   return `
     <div class="layout">
       <section class="panel">
@@ -974,16 +1109,58 @@ function renderStudio() {
         <div class="toolbar">
           <div>
             <h2 class="section-title">${work ? escapeHtml(work.name) : "キャラ"}</h2>
-            <div class="meta">${work ? `${chars.length} キャラ / ${assetsForWork(work.id).length} 画像` : "作品を選択してください。"}</div>
+            <div class="meta">${work ? `${chars.length} キャラ / ${worldItems.length} その他 / ${assetsForWork(work.id).length} 画像` : "作品を選択してください。"}</div>
           </div>
           <div class="group">
             ${work ? `<button class="ghost" data-action="edit-work" data-id="${work.id}">作品編集</button><button data-action="new-character">キャラ追加</button>` : ""}
           </div>
         </div>
         ${work ? renderWorldInfo(work) : ""}
+        ${work ? renderWorldItemsSection(work, worldItems) : ""}
         ${chars.length ? `<div class="grid">${chars.map(renderCharacterCard).join("")}</div>` : `<div class="empty">この作品にはまだキャラがありません。</div>`}
       </section>
     </div>
+  `;
+}
+
+function renderWorldItemsSection(work, items) {
+  return `
+    <section class="panel world-items-panel">
+      <div class="panel-header">
+        <div>
+          <h2>その他情報</h2>
+          <div class="meta">背景・小物・生物など、キャラ以外の設定と参考画像を管理します。</div>
+        </div>
+        <button class="ghost" data-action="new-world-item" data-work-id="${work.id}">その他追加</button>
+      </div>
+      <div class="panel-body">
+        ${items.length ? `<div class="grid">${items.map(renderWorldItemCard).join("")}</div>` : `<div class="empty compact">その他情報がありません。</div>`}
+      </div>
+    </section>
+  `;
+}
+
+function renderWorldItemCard(item) {
+  const assetCount = state.db.assets.filter((asset) => asset.worldItemId === item.id).length;
+  return `
+    <article class="character-card world-item-card">
+      ${item.referenceUrl ? `<img class="portrait" src="${escapeHtml(item.referenceUrl)}" alt="">` : `<div class="portrait empty">${escapeHtml(worldItemCategoryLabel(item.category))}</div>`}
+      <div class="body">
+        <div>
+          <div class="char-name">${escapeHtml(item.name)}</div>
+          <div class="meta">${escapeHtml(worldItemCategoryLabel(item.category))} / ${assetCount} 画像</div>
+        </div>
+        <div class="tag-row">
+          <span class="tag">${escapeHtml(worldItemCategoryLabel(item.category))}</span>
+          ${item.basePrompt ? `<span class="tag">prompt</span>` : ""}
+          ${item.autoCreated ? `<span class="tag">auto</span>` : ""}
+        </div>
+        <div class="card-actions">
+          <button class="ghost" data-action="show-world-item-images" data-id="${item.id}">画像一覧</button>
+          <button class="ghost" data-action="edit-world-item" data-id="${item.id}">編集</button>
+        </div>
+      </div>
+    </article>
   `;
 }
 
@@ -1103,7 +1280,9 @@ function renderCharacterCard(char) {
 function renderImport() {
   const importWorkId = state.selectedWorkId || "";
   const importCharacters = charactersForWork(importWorkId);
+  const importWorldItems = worldItemsForWork(importWorkId);
   const selectedImportCharacter = byId(state.db.characters, state.importCharacterId);
+  const selectedImportWorldItem = workWorldItemById(state.importWorldItemId);
   return `
     <div class="split">
       <section class="panel">
@@ -1121,6 +1300,12 @@ function renderImport() {
               ${importCharacters.map((char) => `<option value="${char.id}" ${state.importCharacterId === char.id ? "selected" : ""}>${escapeHtml(char.name)}</option>`).join("")}
             </select>
           </label>
+          <label class="full">取り込み先その他情報
+            <select id="import-world-item">
+              <option value="">手動指定なし</option>
+              ${importWorldItems.map((item) => `<option value="${item.id}" ${state.importWorldItemId === item.id ? "selected" : ""}>${escapeHtml(worldItemCategoryLabel(item.category))}: ${escapeHtml(item.name)}</option>`).join("")}
+            </select>
+          </label>
           <label class="full">AI判別
             <select id="auto-classify">
               <option value="on" ${state.importAutoClassify ? "selected" : ""}>取り込み後に自動判別</option>
@@ -1133,7 +1318,13 @@ function renderImport() {
               <option value="tags" ${state.importPromptFormat === "tags" ? "selected" : ""}>タグ</option>
             </select>
           </label>
-          <div class="full meta">${selectedImportCharacter ? `手動指定中: ${escapeHtml(selectedImportCharacter.name)} に直接保存します。` : "作品を指定した場合、その作品に登録されたキャラだけを候補にします。"}</div>
+          <div class="full meta">${
+            selectedImportCharacter
+              ? `手動指定中: ${escapeHtml(selectedImportCharacter.name)} に直接保存します。`
+              : selectedImportWorldItem
+                ? `手動指定中: ${escapeHtml(worldItemCategoryLabel(selectedImportWorldItem.category))}: ${escapeHtml(selectedImportWorldItem.name)} に直接保存します。`
+                : "作品を指定した場合、その作品に登録されたキャラだけを候補にします。その他情報を指定するとAI判別は行わず直接保存します。"
+          }</div>
         </div>
       </section>
       <section>
@@ -1162,7 +1353,6 @@ function renderImport() {
 
 function renderLibrary() {
   const assets = getVisibleLibraryAssets();
-  const libraryCharacters = charactersForWork(state.selectedWorkId);
   return `
     <div class="toolbar">
       <div class="group">
@@ -1177,13 +1367,11 @@ function renderLibrary() {
           <option value="failed" ${state.libraryStatus === "failed" ? "selected" : ""}>判別失敗</option>
         </select>
         <select id="library-character">
-          <option value="all" ${state.libraryCharacterId === "all" ? "selected" : ""}>全キャラ</option>
-          <option value="unassigned" ${state.libraryCharacterId === "unassigned" ? "selected" : ""}>未割当</option>
-          ${libraryCharacters.map((char) => `<option value="${char.id}" ${state.libraryCharacterId === char.id ? "selected" : ""}>${escapeHtml(char.name)}</option>`).join("")}
+          ${renderSubjectOptions(state.selectedWorkId, state.libraryCharacterId)}
         </select>
         <select id="library-sort">
           <option value="newest" ${state.librarySort === "newest" ? "selected" : ""}>新しい順</option>
-          <option value="character" ${state.librarySort === "character" ? "selected" : ""}>キャラ順</option>
+          <option value="character" ${state.librarySort === "character" ? "selected" : ""}>割当先順</option>
         </select>
       </div>
       <div class="group">
@@ -1199,39 +1387,41 @@ function getVisibleLibraryAssets() {
   return state.db.assets
     .filter((asset) => !state.selectedWorkId || asset.workId === state.selectedWorkId)
     .filter((asset) => state.libraryStatus === "all" || asset.status === state.libraryStatus)
-    .filter((asset) => state.libraryCharacterId === "all" || (state.libraryCharacterId === "unassigned" ? !asset.characterId : asset.characterId === state.libraryCharacterId))
+    .filter((asset) => state.libraryCharacterId === "all" || (state.libraryCharacterId === "unassigned" ? !asset.characterId && !asset.worldItemId : assetSubjectKey(asset) === state.libraryCharacterId || asset.characterId === state.libraryCharacterId))
     .sort(sortLibraryAssets);
 }
 
 function sortLibraryAssets(a, b) {
   if (state.librarySort === "character") {
-    const charA = characterForAsset(a)?.name || "未割当";
-    const charB = characterForAsset(b)?.name || "未割当";
-    return charA.localeCompare(charB, "ja") || String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
+    const subjectA = subjectLabelForAsset(a);
+    const subjectB = subjectLabelForAsset(b);
+    return subjectA.localeCompare(subjectB, "ja") || String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
   }
   return String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
 }
 
 function renderAssetCard(asset) {
-  const char = byId(state.db.characters, asset.characterId);
   const workChars = charactersForWork(asset.workId);
+  const workWorldItems = worldItemsForWork(asset.workId);
   const statusLabel = asset.status === "matched" ? "判別済み" : asset.status === "failed" ? "判別失敗" : "未設定";
   const dimensions = assetDimensionLabel(asset);
+  const selectedSubject = assetSubjectKey(asset);
   return `
     <article class="asset-card">
       <img class="asset-thumb" src="${escapeHtml(asset.url)}" alt="">
       <div class="body">
         <div>
           <div class="asset-name">${escapeHtml(asset.name)}</div>
-          <div class="meta">${escapeHtml(char?.name || "未割当")} ${asset.confidence ? `/ confidence ${Math.round(asset.confidence * 100)}%` : ""}</div>
+          <div class="meta">${escapeHtml(subjectLabelForAsset(asset))} ${asset.confidence ? `/ confidence ${Math.round(asset.confidence * 100)}%` : ""}</div>
           ${dimensions ? `<div class="meta">${escapeHtml(dimensions)}</div>` : ""}
         </div>
         <div class="tag-row"><span class="tag status-${asset.status}">${statusLabel}</span></div>
         <select data-action="assign-asset" data-id="${asset.id}">
           <option value="">未割当</option>
-          ${workChars.map((candidate) => `<option value="${candidate.id}" ${candidate.id === asset.characterId ? "selected" : ""}>${escapeHtml(candidate.name)}</option>`).join("")}
+          ${workChars.length ? `<optgroup label="キャラ">${workChars.map((candidate) => `<option value="char:${candidate.id}" ${selectedSubject === `char:${candidate.id}` ? "selected" : ""}>${escapeHtml(candidate.name)}</option>`).join("")}</optgroup>` : ""}
+          ${workWorldItems.length ? `<optgroup label="その他情報">${workWorldItems.map((item) => `<option value="world:${item.id}" ${selectedSubject === `world:${item.id}` ? "selected" : ""}>${escapeHtml(worldItemCategoryLabel(item.category))}: ${escapeHtml(item.name)}</option>`).join("")}</optgroup>` : ""}
         </select>
-        <button class="ghost" data-action="classify-one" data-id="${asset.id}">AI再判定</button>
+        <button class="ghost" data-action="classify-one" data-id="${asset.id}" ${asset.worldItemId ? "disabled" : ""}>AIキャラ判定</button>
         <button class="ghost" data-action="reveal-asset" data-id="${asset.id}">Finder</button>
         <button class="ghost" data-action="view-asset" data-id="${asset.id}">詳細</button>
         <button class="ghost danger-outline" data-action="delete-asset-history" data-id="${asset.id}">履歴削除</button>
@@ -1242,11 +1432,10 @@ function renderAssetCard(asset) {
 
 function renderGallery() {
   const galleryWorkId = state.galleryWorkId ?? state.selectedWorkId ?? "";
-  const chars = charactersForWork(galleryWorkId);
   const assets = state.db.assets
     .filter((asset) => !galleryWorkId || asset.workId === galleryWorkId)
-    .filter((asset) => !state.galleryCharacterId || (state.galleryCharacterId === "unassigned" ? !asset.characterId : asset.characterId === state.galleryCharacterId));
-  const grouped = groupAssetsByCharacter(assets);
+    .filter((asset) => !state.galleryCharacterId || (state.galleryCharacterId === "unassigned" ? !asset.characterId && !asset.worldItemId : assetSubjectKey(asset) === state.galleryCharacterId || asset.characterId === state.galleryCharacterId));
+  const grouped = groupAssetsBySubject(assets);
   return `
     <div class="gallery-layout ${state.galleryFiltersCollapsed ? "filters-collapsed" : ""}">
       <section class="panel gallery-filter-panel">
@@ -1261,14 +1450,13 @@ function renderGallery() {
               ${state.db.works.map((work) => `<option value="${work.id}" ${galleryWorkId === work.id ? "selected" : ""}>${escapeHtml(work.name)}</option>`).join("")}
             </select>
           </label>
-          <label class="full">キャラ
+          <label class="full">割当先
             <select id="gallery-character">
-              <option value="" ${!state.galleryCharacterId ? "selected" : ""}>全キャラ</option>
-              <option value="unassigned" ${state.galleryCharacterId === "unassigned" ? "selected" : ""}>未割当</option>
-              ${chars.map((char) => `<option value="${char.id}" ${state.galleryCharacterId === char.id ? "selected" : ""}>${escapeHtml(char.name)}</option>`).join("")}
+              <option value="" ${!state.galleryCharacterId ? "selected" : ""}>全割当先</option>
+              ${renderSubjectOptions(galleryWorkId, state.galleryCharacterId, { includeAll: false })}
             </select>
           </label>
-          <div class="full meta">画像は data/uploads の作品名フォルダ、キャラ名フォルダに保存されます。</div>
+          <div class="full meta">画像は data/uploads の作品名フォルダ内で、キャラ名またはその他情報名のフォルダに保存されます。</div>
         </div>
       </section>
       <section>
@@ -1285,26 +1473,25 @@ function renderGallery() {
   `;
 }
 
-function groupAssetsByCharacter(assets) {
+function groupAssetsBySubject(assets) {
   const groups = new Map();
   for (const asset of assets) {
-    const key = asset.characterId || "unassigned";
+    const key = assetSubjectKey(asset);
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(asset);
   }
-  return [...groups.entries()].map(([characterId, items]) => ({
-    characterId,
-    character: characterId === "unassigned" ? null : byId(state.db.characters, characterId),
+  return [...groups.entries()].map(([subjectKey, items]) => ({
+    subjectKey,
+    title: subjectKey === "unassigned" ? "未割当" : subjectLabelForAsset(items[0]),
     items
   }));
 }
 
 function renderGalleryGroup(group) {
-  const title = group.character?.name || "未割当";
   return `
     <div class="gallery-group">
       <div class="gallery-group-title">
-        <h3>${escapeHtml(title)}</h3>
+        <h3>${escapeHtml(group.title)}</h3>
         <span class="meta">${group.items.length} 画像</span>
       </div>
       <div class="grid">${group.items.map(renderGalleryAsset).join("")}</div>
@@ -1314,7 +1501,6 @@ function renderGalleryGroup(group) {
 
 function renderGalleryAsset(asset) {
   const work = workForAsset(asset);
-  const char = characterForAsset(asset);
   const dimensions = assetDimensionLabel(asset);
   return `
     <article class="asset-card">
@@ -1322,7 +1508,7 @@ function renderGalleryAsset(asset) {
       <div class="body">
         <div>
           <div class="asset-name">${escapeHtml(asset.name)}</div>
-          <div class="meta">${escapeHtml(work?.name || "未分類")} / ${escapeHtml(char?.name || "未割当")}</div>
+          <div class="meta">${escapeHtml(work?.name || "未分類")} / ${escapeHtml(subjectLabelForAsset(asset))}</div>
           ${dimensions ? `<div class="meta">${escapeHtml(dimensions)}</div>` : ""}
         </div>
         <div class="card-actions">
@@ -1461,12 +1647,27 @@ function bindStudio() {
   document.querySelectorAll("[data-action='edit-character']").forEach((button) => {
     button.addEventListener("click", () => openCharacterModal(byId(state.db.characters, button.dataset.id)));
   });
+  document.querySelector("[data-action='new-world-item']")?.addEventListener("click", () => openWorldItemModal());
+  document.querySelectorAll("[data-action='edit-world-item']").forEach((button) => {
+    button.addEventListener("click", () => openWorldItemModal(workWorldItemById(button.dataset.id)));
+  });
   document.querySelectorAll("[data-action='show-character-images']").forEach((button) => {
     button.addEventListener("click", () => {
       const char = byId(state.db.characters, button.dataset.id);
       state.selectedWorkId = char.workId;
       state.galleryWorkId = char.workId;
-      state.galleryCharacterId = char.id;
+      state.galleryCharacterId = `char:${char.id}`;
+      state.view = "gallery";
+      render();
+    });
+  });
+  document.querySelectorAll("[data-action='show-world-item-images']").forEach((button) => {
+    button.addEventListener("click", () => {
+      const item = workWorldItemById(button.dataset.id);
+      if (!item) return;
+      state.selectedWorkId = item.workId;
+      state.galleryWorkId = item.workId;
+      state.galleryCharacterId = `world:${item.id}`;
       state.view = "gallery";
       render();
     });
@@ -1543,15 +1744,27 @@ function bindImport() {
   document.querySelector("#import-work")?.addEventListener("change", (event) => {
     state.selectedWorkId = event.target.value || null;
     const validCharacters = charactersForWork(state.selectedWorkId);
+    const validWorldItems = worldItemsForWork(state.selectedWorkId);
     if (state.importCharacterId && !validCharacters.some((char) => char.id === state.importCharacterId)) {
       state.importCharacterId = "";
+    }
+    if (state.importWorldItemId && !validWorldItems.some((item) => item.id === state.importWorldItemId)) {
+      state.importWorldItemId = "";
     }
     render();
   });
   document.querySelector("#import-character")?.addEventListener("change", (event) => {
     state.importCharacterId = event.target.value;
+    if (state.importCharacterId) state.importWorldItemId = "";
     const char = byId(state.db.characters, state.importCharacterId);
     if (char) state.selectedWorkId = char.workId;
+    render();
+  });
+  document.querySelector("#import-world-item")?.addEventListener("change", (event) => {
+    state.importWorldItemId = event.target.value;
+    if (state.importWorldItemId) state.importCharacterId = "";
+    const item = workWorldItemById(state.importWorldItemId);
+    if (item) state.selectedWorkId = item.workId;
     render();
   });
   document.querySelector("#auto-classify")?.addEventListener("change", (event) => {
@@ -1580,8 +1793,10 @@ async function loadImportFiles(files) {
 async function runImport() {
   const workId = document.querySelector("#import-work")?.value || "";
   const selectedCharacterId = document.querySelector("#import-character")?.value || "";
+  const selectedWorldItemId = document.querySelector("#import-world-item")?.value || "";
   const targetCharacter = byId(state.db.characters, selectedCharacterId);
-  const targetWorkId = targetCharacter?.workId || workId || null;
+  const targetWorldItem = workWorldItemById(selectedWorldItemId);
+  const targetWorkId = targetCharacter?.workId || targetWorldItem?.workId || workId || null;
   const targetWork = byId(state.db.works, targetWorkId);
   const created = [];
   try {
@@ -1590,16 +1805,17 @@ async function runImport() {
         dataUrl: item.preview,
         name: item.name,
         workName: targetWork?.name,
-        characterName: targetCharacter?.name
+        characterName: targetCharacter?.name || targetWorldItem?.name
       });
       const asset = {
         id: uid(),
         workId: targetWorkId,
         characterId: targetCharacter?.id || null,
+        worldItemId: targetWorldItem?.id || null,
         name: item.name,
         url: uploaded.url,
-        status: targetCharacter ? "matched" : "unassigned",
-        confidence: targetCharacter ? 1 : null,
+        status: targetCharacter || targetWorldItem ? "matched" : "unassigned",
+        confidence: targetCharacter || targetWorldItem ? 1 : null,
         aiPrompt: "",
         aiPromptFormat: targetCharacter ? promptFormatOf(targetCharacter) : state.importPromptFormat,
         aiReason: "",
@@ -1616,6 +1832,8 @@ async function runImport() {
     toast(`${created.length} 件を取り込みました。`);
     if (targetCharacter) {
       toast(`${created.length} 件を ${targetCharacter.name} に取り込みました。`);
+    } else if (targetWorldItem) {
+      toast(`${created.length} 件を ${worldItemCategoryLabel(targetWorldItem.category)}: ${targetWorldItem.name} に取り込みました。`);
     } else if (state.importAutoClassify && created.length) {
       for (const item of created) {
         await classifyAsset(item.asset, item.dataUrl, state.importPromptFormat);
@@ -1653,9 +1871,13 @@ function bindLibrary() {
   document.querySelectorAll("[data-action='assign-asset']").forEach((select) => {
     select.addEventListener("change", async () => {
       const asset = byId(state.db.assets, select.dataset.id);
-      asset.characterId = select.value || null;
+      const subject = parseSubjectValue(select.value);
+      asset.characterId = subject.type === "character" ? subject.id : null;
+      asset.worldItemId = subject.type === "world" ? subject.id : null;
       const char = byId(state.db.characters, asset.characterId);
+      const worldItem = workWorldItemById(asset.worldItemId);
       if (char) asset.workId = char.workId;
+      if (worldItem) asset.workId = worldItem.workId;
       asset.status = select.value ? "matched" : "unassigned";
       asset.confidence = select.value ? 1 : null;
       await relocateAsset(asset);
@@ -1673,13 +1895,13 @@ function bindLibrary() {
     });
   });
   document.querySelector("[data-action='classify-visible']")?.addEventListener("click", async () => {
-    const visible = getVisibleLibraryAssets();
+    const visible = getVisibleLibraryAssets().filter((asset) => !asset.worldItemId);
     for (const asset of visible) {
       await classifyAsset(asset);
       await relocateAsset(asset);
     }
     await saveDb();
-    toast("表示中の画像を判別しました。");
+    toast(visible.length ? "表示中の画像を判別しました。" : "キャラ判別対象の画像がありません。");
     render();
   });
   document.querySelector("[data-action='delete-visible-history']")?.addEventListener("click", async () => {
@@ -1798,6 +2020,7 @@ async function classifyAsset(asset, knownDataUrl = null, fallbackPromptFormat = 
   const result = parseAiJson(content);
   const match = result.characterId ? byId(candidates, result.characterId) : null;
   asset.characterId = match && Number(result.confidence) >= 0.55 ? match.id : null;
+  asset.worldItemId = null;
   if (asset.characterId && match?.workId) asset.workId = match.workId;
   asset.status = asset.characterId ? "matched" : "failed";
   asset.confidence = Number(result.confidence) || null;
@@ -1946,7 +2169,10 @@ function openWorkModal(work = null) {
           createdAt: work?.createdAt || new Date().toISOString()
         };
         if (editing) Object.assign(work, payload);
-        else state.db.works.push(payload);
+        else {
+          state.db.works.push(payload);
+          ensureDefaultWorldItemsForWork(payload);
+        }
         state.selectedWorkId = payload.id;
         if (editing) await relocateAssetsForWork(payload.id);
         await saveDb();
@@ -1955,15 +2181,103 @@ function openWorkModal(work = null) {
       });
       modal.querySelector("[data-action='delete-work']")?.addEventListener("click", async () => {
         state.db.works = state.db.works.filter((item) => item.id !== work.id);
+        state.db.worldItems = state.db.worldItems.filter((item) => item.workId !== work.id);
         state.db.characters = state.db.characters.filter((char) => char.workId !== work.id);
         state.db.assets.forEach((asset) => {
           if (asset.workId === work.id) {
             asset.workId = null;
             asset.characterId = null;
+            asset.worldItemId = null;
             asset.status = "unassigned";
           }
         });
         state.selectedWorkId = state.db.works[0]?.id || null;
+        await saveDb();
+        close();
+        render();
+      });
+    }
+  );
+}
+
+function openWorldItemModal(item = null) {
+  const editing = Boolean(item);
+  let referenceDataUrl = null;
+  const workId = item?.workId || state.selectedWorkId || state.db.works[0]?.id || "";
+  openModal(
+    editing ? "その他情報編集" : "その他情報追加",
+    `
+      <div class="form-grid">
+        <label>作品
+          <select id="world-item-work">
+            ${state.db.works.map((work) => `<option value="${work.id}" ${workId === work.id ? "selected" : ""}>${escapeHtml(work.name)}</option>`).join("")}
+          </select>
+        </label>
+        <label>種類
+          <select id="world-item-category">
+            ${Object.entries(worldItemCategoryLabels).map(([value, label]) => `<option value="${value}" ${(item?.category || "other") === value ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
+          </select>
+        </label>
+        <label class="full">名前<input id="world-item-name" value="${escapeHtml(item?.name || "")}" placeholder="例：港町の市場、封印された短剣、森の発光虫"></label>
+        <label class="full">参考画像<input id="world-item-reference" type="file" accept="image/*"></label>
+        <div class="full">${item?.referenceUrl ? `<img class="portrait" style="max-width:220px;" src="${escapeHtml(item.referenceUrl)}" alt="">` : `<div class="empty compact">参考画像プレビュー</div>`}</div>
+        <label class="full">説明<textarea id="world-item-description">${escapeHtml(item?.description || "")}</textarea></label>
+        <label class="full">ベースプロンプト<textarea id="world-item-base">${escapeHtml(item?.basePrompt || "")}</textarea></label>
+        <label class="full">メモ<textarea id="world-item-memo">${escapeHtml(item?.memo || "")}</textarea></label>
+      </div>
+    `,
+    `<div>${editing && !item.autoCreated ? `<button class="danger" data-action="delete-world-item">削除</button>` : ""}</div><button data-action="save-world-item">保存</button>`,
+    (modal, close) => {
+      modal.querySelector("#world-item-reference").addEventListener("change", async (event) => {
+        const file = event.target.files[0];
+        if (!file) return;
+        referenceDataUrl = await fileToDataUrl(file);
+        const slot = modal.querySelector(".portrait, .empty");
+        slot.outerHTML = `<img class="portrait" style="max-width:220px;" src="${escapeHtml(referenceDataUrl)}" alt="">`;
+      });
+      modal.querySelector("[data-action='save-world-item']").addEventListener("click", async () => {
+        const targetWork = byId(state.db.works, modal.querySelector("#world-item-work").value);
+        const targetName = modal.querySelector("#world-item-name").value.trim() || worldItemCategoryLabel(modal.querySelector("#world-item-category").value);
+        let referenceUrl = item?.referenceUrl || "";
+        if (referenceDataUrl) {
+          const uploaded = await postJson("/api/upload", {
+            dataUrl: referenceDataUrl,
+            name: `${targetName}.png`,
+            workName: targetWork?.name,
+            characterName: targetName
+          });
+          referenceUrl = uploaded.url;
+        }
+        const payload = normalizeWorldItem({
+          id: item?.id || uid(),
+          workId: targetWork?.id || modal.querySelector("#world-item-work").value,
+          category: modal.querySelector("#world-item-category").value,
+          name: targetName,
+          description: modal.querySelector("#world-item-description").value.trim(),
+          referenceUrl,
+          basePrompt: modal.querySelector("#world-item-base").value.trim(),
+          memo: modal.querySelector("#world-item-memo").value.trim(),
+          createdAt: item?.createdAt || new Date().toISOString(),
+          autoCreated: item?.autoCreated || false
+        });
+        if (editing) Object.assign(item, payload);
+        else state.db.worldItems.push(payload);
+        state.selectedWorkId = payload.workId;
+        if (editing) await relocateAssetsForWorldItem(payload.id);
+        await saveDb();
+        close();
+        render();
+      });
+      modal.querySelector("[data-action='delete-world-item']")?.addEventListener("click", async () => {
+        const ok = window.confirm(`「${item.name}」を削除します。関連画像は未割当に戻ります。`);
+        if (!ok) return;
+        state.db.worldItems = state.db.worldItems.filter((candidate) => candidate.id !== item.id);
+        state.db.assets.forEach((asset) => {
+          if (asset.worldItemId === item.id) {
+            asset.worldItemId = null;
+            asset.status = "unassigned";
+          }
+        });
         await saveDb();
         close();
         render();
@@ -2433,7 +2747,6 @@ function openWorldSettingModal(work, sheetId = null) {
 }
 
 function openAssetModal(asset) {
-  const char = byId(state.db.characters, asset.characterId);
   const dimensions = assetDimensionLabel(asset);
   openModal(
     "画像詳細",
@@ -2450,7 +2763,7 @@ function openAssetModal(asset) {
           </label>
           <label class="full">AI抽出プロンプト<textarea id="asset-prompt">${escapeHtml(asset.aiPrompt || "")}</textarea></label>
           <label class="full">AI理由<textarea id="asset-reason">${escapeHtml(asset.aiReason || "")}</textarea></label>
-          <div class="full meta">割当: ${escapeHtml(char?.name || "未割当")}</div>
+          <div class="full meta">割当: ${escapeHtml(subjectLabelForAsset(asset))}</div>
           <div class="full meta">画像情報: ${escapeHtml(dimensions || "未取得")}</div>
         </div>
       </div>

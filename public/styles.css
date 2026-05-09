@@ -553,6 +553,10 @@ textarea {
   margin-bottom: 18px;
 }
 
+.world-items-panel {
+  margin-bottom: 18px;
+}
+
 .world-summary {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 180px;

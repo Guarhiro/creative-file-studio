@@ -34,6 +34,7 @@ const emptyDb = {
     worldModel: "google/gemini-2.5-flash"
   },
   works: [],
+  worldItems: [],
   characters: [],
   assets: []
 };
