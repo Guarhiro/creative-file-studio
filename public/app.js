@@ -617,6 +617,121 @@ function renderSubjectOptions(workId, selectedValue, { includeAll = true } = {})
   `;
 }
 
+function compactPromptText(value, limit = 900) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length > limit ? `${text.slice(0, limit)}...` : text;
+}
+
+function compactPromptList(value, limit = 10) {
+  return asArray(value)
+    .map((item) => compactPromptText(item, 120))
+    .filter(Boolean)
+    .slice(0, limit)
+    .join(" / ");
+}
+
+function promptContextLine(label, value, { limit = 900 } = {}) {
+  const text = Array.isArray(value)
+    ? value.map((item) => compactPromptText(item, 220)).filter(Boolean).join(" / ")
+    : compactPromptText(value, limit);
+  return text ? `${label}: ${text}` : "";
+}
+
+function buildPromptLabWorldContext(work) {
+  if (!work) return "作品情報: 未指定";
+  const setting = normalizeWorldSetting(work.worldSetting);
+  const sheetSummaries = setting.sheets.map((sheet) => {
+    const data = normalizeWorldSetting(sheet.data || {});
+    return [
+      sheet.title || data.title,
+      sheet.sheet_type || data.sheet_type,
+      data.overall_mood,
+      data.world_core
+    ].map((item) => compactPromptText(item, 140)).filter(Boolean).join(" / ");
+  }).filter(Boolean);
+  const worldItemSummaries = worldItemsForWork(work.id)
+    .map((item) => [
+      `${worldItemCategoryLabel(item.category)}: ${item.name}`,
+      item.description,
+      item.basePrompt ? `生成要素=${item.basePrompt}` : "",
+      item.memo
+    ].map((value) => compactPromptText(value, 180)).filter(Boolean).join(" / "))
+    .filter(Boolean)
+    .slice(0, 12);
+  const colorMeanings = isPlainObject(setting.visual_rules.color_rules.color_meanings)
+    ? Object.entries(setting.visual_rules.color_rules.color_meanings).map(([key, value]) => `${key}=${value}`).join(" / ")
+    : compactPromptText(setting.visual_rules.color_rules.color_meanings);
+  const abundantResources = compactPromptList(setting.environment.resources.abundant);
+  const scarceResources = compactPromptList(setting.environment.resources.scarce);
+  const lines = [
+    promptContextLine("作品名", work.name),
+    promptContextLine("作品メモ", work.description),
+    promptContextLine("登録設定シート", sheetSummaries, { limit: 1200 }),
+    promptContextLine("世界観タイトル", setting.title),
+    promptContextLine("シート種類", setting.sheet_type),
+    promptContextLine("全体の雰囲気", setting.overall_mood),
+    promptContextLine("世界観の核", setting.world_core),
+    promptContextLine("形状ルール", [
+      compactPromptList(setting.visual_rules.shape_language.basic_shapes),
+      compactPromptList(setting.visual_rules.shape_language.repeated_motifs),
+      setting.visual_rules.shape_language.silhouette_rules.architecture,
+      setting.visual_rules.shape_language.silhouette_rules.costume,
+      setting.visual_rules.shape_language.silhouette_rules.tools,
+      setting.visual_rules.shape_language.silhouette_rules.symbols
+    ]),
+    promptContextLine("配色ルール", [
+      compactPromptList(setting.visual_rules.color_rules.main_colors),
+      compactPromptList(setting.visual_rules.color_rules.accent_colors),
+      colorMeanings
+    ]),
+    promptContextLine("素材ルール", [
+      compactPromptList(setting.visual_rules.material_rules.main_materials),
+      compactPromptList(setting.visual_rules.material_rules.costume_materials),
+      compactPromptList(setting.visual_rules.material_rules.architecture_materials),
+      compactPromptList(setting.visual_rules.material_rules.tool_materials)
+    ]),
+    promptContextLine("模様・紋章・文字", [
+      compactPromptList(setting.visual_rules.symbols.motifs),
+      compactPromptList(setting.visual_rules.symbols.crests),
+      setting.visual_rules.symbols.writing_style
+    ]),
+    promptContextLine("環境", [
+      setting.environment.terrain,
+      setting.environment.climate,
+      setting.environment.light,
+      compactPromptList(setting.environment.dangers),
+      setting.environment.mobility,
+      abundantResources ? `豊富=${abundantResources}` : "",
+      scarceResources ? `不足=${scarceResources}` : ""
+    ]),
+    promptContextLine("社会・信仰", [
+      setting.society.community_type,
+      compactPromptList(setting.society.roles),
+      compactPromptList(setting.society.hierarchy_signs),
+      setting.society.exchange_system,
+      compactPromptList(setting.society.rituals),
+      compactPromptList(setting.society.taboos),
+      setting.society.belief
+    ]),
+    promptContextLine("生活文化", [
+      setting.life_culture.housing,
+      setting.life_culture.food,
+      setting.life_culture.transport,
+      compactPromptList(setting.life_culture.tools),
+      setting.life_culture.clothing_habits,
+      setting.life_culture.currency,
+      setting.life_culture.writing,
+      compactPromptList(setting.life_culture.emblems)
+    ]),
+    promptContextLine("保持すべき要素", setting.must_keep.elements),
+    promptContextLine("変更しない要素", setting.must_keep.do_not_change),
+    promptContextLine("再生成用要約", setting.regeneration_prompt, { limit: 1600 }),
+    promptContextLine("読解ログ抜粋", setting.reading_log, { limit: 1400 }),
+    worldItemSummaries.length ? `その他情報:\n- ${worldItemSummaries.join("\n- ")}` : ""
+  ];
+  return lines.filter(Boolean).join("\n");
+}
+
 function normalizeSettings() {
   state.db.settings = {
     defaultModel: "google/gemini-2.5-flash",
@@ -1540,6 +1655,7 @@ function renderPromptLab() {
               ${promptChars.map((char) => `<option value="${char.id}">${escapeHtml(char.name)}</option>`).join("")}
             </select>
           </label>
+          <div class="full meta">生成時は作品メモ、作品情報 / 世界観設定、その他情報も自動で参照します。</div>
           <label class="full">差分・イベント指定
             <textarea id="prompt-variations" placeholder="笑顔、照れ顔、怒り顔&#10;雨の夜の路地で振り返る&#10;夏祭りで金魚すくいをしている"></textarea>
           </label>
@@ -2055,25 +2171,27 @@ async function generatePrompts() {
   const char = byId(state.db.characters, charId);
   const variations = document.querySelector("#prompt-variations").value.split(/\n+/).map((line) => line.trim()).filter(Boolean);
   const notes = document.querySelector("#prompt-notes").value.trim();
-  const memoContext = state.promptUseMemo ? char.memo : "";
+  const memoContext = state.promptUseMemo && char ? char.memo : "";
   if (!char || !variations.length) {
     toast("キャラと差分指定を入力してください。");
     return;
   }
+  const work = byId(state.db.works, char.workId) || byId(state.db.works, state.selectedWorkId);
+  const workContext = buildPromptLabWorldContext(work);
   try {
     const content = await callOpenRouter({
       textOnly: true,
       temperature: 0.55,
-      maxTokens: 2600,
+      maxTokens: 3400,
       responseFormat: { type: "json_object" },
       messages: [
         {
           role: "system",
-          content: `あなたは画像生成向けプロンプトの編集者です。ベースプロンプトの人物同一性を守り、指定ごとに完成度の高い生成プロンプトを作ります。${promptFormatInstruction(promptFormatOf(char))} 説明文やMarkdownを付けず、必ずJSONオブジェクトだけを返してください。`
+          content: `あなたは画像生成向けプロンプトの編集者です。ベースプロンプトの人物同一性を守り、指定ごとに完成度の高い生成プロンプトを作ります。作品情報・世界観設定・その他情報がある場合は、衣装の素材、配色、背景、小物、社会的役割、光や気候の描写に自然に反映してください。キャラの固定要素と世界観の保持すべき要素を優先し、未設定や不明な情報は捏造しないでください。${promptFormatInstruction(promptFormatOf(char))} 説明文やMarkdownを付けず、必ずJSONオブジェクトだけを返してください。`
         },
         {
           role: "user",
-          content: `キャラ名: ${char.name}\nプロンプト形式: ${promptFormatOf(char)}\nベースプロンプト: ${char.basePrompt}\nネガティブプロンプト: ${char.negativePrompt}\nメモを加味する: ${state.promptUseMemo ? "yes" : "no"}\nメモ: ${memoContext}\n補足: ${notes}\n差分指定: ${JSON.stringify(variations)}\n返答形式: {"items":[{"title":"指定名","prompt":"指定形式の生成プロンプト","negativePrompt":"指定形式のネガティブプロンプト"}]}`
+          content: `作品情報 / 世界観設定:\n${workContext}\n\nキャラ名: ${char.name}\nプロンプト形式: ${promptFormatOf(char)}\nベースプロンプト: ${char.basePrompt}\nネガティブプロンプト: ${char.negativePrompt}\nメモを加味する: ${state.promptUseMemo ? "yes" : "no"}\nキャラメモ: ${memoContext}\n補足: ${notes}\n差分指定: ${JSON.stringify(variations)}\n返答形式: {"items":[{"title":"指定名","prompt":"指定形式の生成プロンプト","negativePrompt":"指定形式のネガティブプロンプト"}]}`
         }
       ]
     });
