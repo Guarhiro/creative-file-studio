@@ -30,7 +30,8 @@ const emptyDb = {
   schemaVersion: 1,
   settings: {
     defaultModel: "google/gemini-2.5-flash",
-    textModel: "google/gemini-2.5-flash"
+    textModel: "google/gemini-2.5-flash",
+    worldModel: "google/gemini-2.5-flash"
   },
   works: [],
   characters: [],
@@ -42,7 +43,7 @@ await fs.mkdir(uploadDir, { recursive: true });
 async function readDb() {
   try {
     const raw = await fs.readFile(dbPath, "utf8");
-    return { ...emptyDb, ...JSON.parse(raw) };
+    return normalizeDb(JSON.parse(raw));
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
     await writeDb(emptyDb);
@@ -52,7 +53,19 @@ async function readDb() {
 
 async function writeDb(db) {
   await fs.mkdir(dataDir, { recursive: true });
-  await fs.writeFile(dbPath, `${JSON.stringify(db, null, 2)}\n`, "utf8");
+  await fs.writeFile(dbPath, `${JSON.stringify(normalizeDb(db), null, 2)}\n`, "utf8");
+}
+
+function normalizeDb(db = {}) {
+  return {
+    ...emptyDb,
+    ...db,
+    settings: {
+      ...emptyDb.settings,
+      ...(db.settings || {})
+    },
+    schemaVersion: 1
+  };
 }
 
 function sendJson(res, status, value) {
@@ -286,6 +299,41 @@ async function handleOpenRouter(req, res) {
   }
 }
 
+async function handleOpenRouterModels(req, res) {
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/models", {
+      signal: AbortSignal.timeout(15000),
+      headers: {
+        "accept": "application/json",
+        "http-referer": "http://localhost",
+        "x-title": "Creative File Studio"
+      }
+    });
+    const text = await response.text();
+    let payload;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = { raw: text };
+    }
+    if (!response.ok) return sendJson(res, response.status, payload);
+    const models = Array.isArray(payload.data) ? payload.data : [];
+    sendJson(res, 200, {
+      data: models.map((model) => ({
+        id: model.id,
+        name: model.name || model.id,
+        architecture: {
+          input_modalities: Array.isArray(model.architecture?.input_modalities) ? model.architecture.input_modalities : [],
+          output_modalities: Array.isArray(model.architecture?.output_modalities) ? model.architecture.output_modalities : []
+        }
+      }))
+    });
+  } catch (error) {
+    const message = error.name === "TimeoutError" ? "OpenRouter の応答が15秒以内に返りませんでした。" : error.message;
+    sendJson(res, 502, { error: `OpenRouter モデル一覧の取得に失敗しました: ${message}` });
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -318,6 +366,10 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/openrouter/chat") {
       return await handleOpenRouter(req, res);
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/openrouter/models") {
+      return await handleOpenRouterModels(req, res);
     }
 
     if ((req.method === "GET" || req.method === "HEAD") && url.pathname.startsWith("/uploads/")) {

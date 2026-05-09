@@ -430,6 +430,12 @@ button:disabled {
   background: rgba(255, 255, 255, 0.52);
 }
 
+.empty.compact {
+  min-height: auto;
+  padding: 16px;
+  font-size: 13px;
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -543,6 +549,129 @@ textarea {
   gap: 18px;
 }
 
+.world-panel {
+  margin-bottom: 18px;
+}
+
+.world-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px;
+  gap: 18px;
+  align-items: start;
+}
+
+.world-main {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.world-side {
+  display: grid;
+  gap: 8px;
+}
+
+.world-source {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+}
+
+.world-sheet-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.world-sheet-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 10px;
+}
+
+.world-sheet-row.active {
+  border-color: rgba(31, 138, 132, 0.45);
+  background: rgba(31, 138, 132, 0.08);
+}
+
+.info-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+  margin: 0;
+}
+
+.info-list div {
+  min-width: 0;
+}
+
+.info-list dt {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.info-list dd {
+  margin: 0;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.world-readonly {
+  font-size: 12px;
+}
+
+.world-readonly textarea {
+  min-height: 96px;
+  background: var(--panel-soft);
+}
+
+.world-log {
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.world-log summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: #3c3a35;
+}
+
+.world-log pre {
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f5f1e8;
+  padding: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.55;
+  font-size: 13px;
+}
+
+.tall-textarea {
+  min-height: 260px;
+}
+
+.json-textarea {
+  min-height: 210px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
 .result-text {
   background: #f5f1e8;
   border: 1px solid var(--line);
@@ -604,6 +733,9 @@ textarea {
   .layout,
   .gallery-layout,
   .split,
+  .world-summary,
+  .world-sheet-row,
+  .info-list,
   .form-grid {
     grid-template-columns: 1fr;
   }
