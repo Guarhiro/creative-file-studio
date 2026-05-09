@@ -16,6 +16,8 @@ const state = {
   libraryStatus: "all",
   libraryCharacterId: "all",
   librarySort: "newest",
+  libraryPage: 1,
+  libraryPageSize: 48,
   videoWorkId: null,
   videoCharacterId: "",
   videoReferenceKind: "all",
@@ -79,6 +81,8 @@ const seedanceApiBaseOptions = [
     defaultModel: "bytedance/seedance-2.0"
   }
 ];
+
+const libraryPageSizes = [48, 72, 120];
 
 const escapeHtml = (value = "") =>
   String(value)
@@ -620,6 +624,11 @@ function assetSubjectKey(asset) {
   if (asset.worldItemId) return `world:${asset.worldItemId}`;
   if (asset.characterId) return `char:${asset.characterId}`;
   return "unassigned";
+}
+
+function assetSubjectSelectValue(asset) {
+  const key = assetSubjectKey(asset);
+  return key === "unassigned" ? "" : key;
 }
 
 function parseSubjectValue(value) {
@@ -1529,7 +1538,8 @@ function renderImport() {
 }
 
 function renderLibrary() {
-  const assets = getVisibleLibraryAssets();
+  const allAssets = getVisibleLibraryAssets();
+  const { assets, pageInfo } = getPagedLibraryAssets(allAssets);
   return `
     <div class="toolbar">
       <div class="group">
@@ -1552,9 +1562,13 @@ function renderLibrary() {
         </select>
       </div>
       <div class="group">
-        <button data-action="classify-visible" ${assets.length ? "" : "disabled"}>表示中をAI判別</button>
-        <button class="ghost danger-outline" data-action="delete-visible-history" ${assets.length ? "" : "disabled"}>表示中の履歴削除</button>
+        <button data-action="classify-visible" ${assets.length ? "" : "disabled"}>このページをAI判別</button>
+        <button class="ghost danger-outline" data-action="delete-visible-history" ${assets.length ? "" : "disabled"}>このページの履歴削除</button>
       </div>
+    </div>
+    <div class="library-resultbar">
+      <div class="meta">${allAssets.length ? `${pageInfo.start + 1}-${pageInfo.end} / ${allAssets.length} 件を表示中` : "0 件"}</div>
+      ${renderLibraryPager(pageInfo, allAssets.length)}
     </div>
     ${assets.length ? `<div class="grid">${assets.map(renderAssetCard).join("")}</div>` : `<div class="empty">条件に合う画像がありません。</div>`}
   `;
@@ -1577,6 +1591,49 @@ function sortLibraryAssets(a, b) {
   return String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
 }
 
+function resetLibraryPage() {
+  state.libraryPage = 1;
+}
+
+function getLibraryPageInfo(total) {
+  const requestedPageSize = Number(state.libraryPageSize);
+  const pageSize = libraryPageSizes.includes(requestedPageSize) ? requestedPageSize : libraryPageSizes[0];
+  state.libraryPageSize = pageSize;
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const requestedPage = Number(state.libraryPage) || 1;
+  const page = Math.min(Math.max(1, requestedPage), pageCount);
+  state.libraryPage = page;
+  const start = total ? (page - 1) * pageSize : 0;
+  const end = Math.min(start + pageSize, total);
+  return { page, pageSize, pageCount, start, end };
+}
+
+function getPagedLibraryAssets(allAssets = getVisibleLibraryAssets()) {
+  const pageInfo = getLibraryPageInfo(allAssets.length);
+  return {
+    pageInfo,
+    assets: allAssets.slice(pageInfo.start, pageInfo.end)
+  };
+}
+
+function getVisibleLibraryPageAssets() {
+  return getPagedLibraryAssets().assets;
+}
+
+function renderLibraryPager(pageInfo, total) {
+  const disabled = total <= 0;
+  return `
+    <div class="library-pager">
+      <button class="ghost" data-action="library-page-prev" ${pageInfo.page <= 1 || disabled ? "disabled" : ""}>前へ</button>
+      <span class="meta">${pageInfo.page} / ${pageInfo.pageCount} ページ</span>
+      <button class="ghost" data-action="library-page-next" ${pageInfo.page >= pageInfo.pageCount || disabled ? "disabled" : ""}>次へ</button>
+      <select id="library-page-size" aria-label="1ページの表示数">
+        ${libraryPageSizes.map((size) => `<option value="${size}" ${pageInfo.pageSize === size ? "selected" : ""}>${size}件ずつ</option>`).join("")}
+      </select>
+    </div>
+  `;
+}
+
 function renderAssetCard(asset) {
   const workChars = charactersForWork(asset.workId);
   const workWorldItems = worldItemsForWork(asset.workId);
@@ -1585,7 +1642,7 @@ function renderAssetCard(asset) {
   const selectedSubject = assetSubjectKey(asset);
   return `
     <article class="asset-card">
-      <img class="asset-thumb" src="${escapeHtml(asset.url)}" alt="">
+      <img class="asset-thumb" src="${escapeHtml(asset.url)}" alt="" loading="lazy" decoding="async">
       <div class="body">
         <div>
           <div class="asset-name">${escapeHtml(asset.name)}</div>
@@ -1594,7 +1651,7 @@ function renderAssetCard(asset) {
         </div>
         <div class="tag-row"><span class="tag status-${asset.status}">${statusLabel}</span></div>
         <select data-action="assign-asset" data-id="${asset.id}">
-          <option value="">未割当</option>
+          <option value="" ${selectedSubject === "unassigned" ? "selected" : ""}>未割当</option>
           ${workChars.length ? `<optgroup label="キャラ">${workChars.map((candidate) => `<option value="char:${candidate.id}" ${selectedSubject === `char:${candidate.id}` ? "selected" : ""}>${escapeHtml(candidate.name)}</option>`).join("")}</optgroup>` : ""}
           ${workWorldItems.length ? `<optgroup label="その他情報">${workWorldItems.map((item) => `<option value="world:${item.id}" ${selectedSubject === `world:${item.id}` ? "selected" : ""}>${escapeHtml(worldItemCategoryLabel(item.category))}: ${escapeHtml(item.name)}</option>`).join("")}</optgroup>` : ""}
         </select>
@@ -1681,7 +1738,7 @@ function renderGalleryAsset(asset) {
   const dimensions = assetDimensionLabel(asset);
   return `
     <article class="asset-card">
-      <img class="asset-thumb" src="${escapeHtml(asset.url)}" alt="">
+      <img class="asset-thumb" src="${escapeHtml(asset.url)}" alt="" loading="lazy" decoding="async">
       <div class="body">
         <div>
           <div class="asset-name">${escapeHtml(asset.name)}</div>
@@ -2794,35 +2851,70 @@ function bindLibrary() {
   document.querySelector("#library-work")?.addEventListener("change", (event) => {
     state.selectedWorkId = event.target.value || null;
     state.libraryCharacterId = "all";
+    resetLibraryPage();
     render();
   });
   document.querySelector("#library-status")?.addEventListener("change", (event) => {
     state.libraryStatus = event.target.value;
+    resetLibraryPage();
     render();
   });
   document.querySelector("#library-character")?.addEventListener("change", (event) => {
     state.libraryCharacterId = event.target.value;
+    resetLibraryPage();
     render();
   });
   document.querySelector("#library-sort")?.addEventListener("change", (event) => {
     state.librarySort = event.target.value;
+    resetLibraryPage();
+    render();
+  });
+  document.querySelector("[data-action='library-page-prev']")?.addEventListener("click", () => {
+    state.libraryPage -= 1;
+    render();
+  });
+  document.querySelector("[data-action='library-page-next']")?.addEventListener("click", () => {
+    state.libraryPage += 1;
+    render();
+  });
+  document.querySelector("#library-page-size")?.addEventListener("change", (event) => {
+    state.libraryPageSize = Number(event.target.value);
+    resetLibraryPage();
     render();
   });
   document.querySelectorAll("[data-action='assign-asset']").forEach((select) => {
     select.addEventListener("change", async () => {
       const asset = byId(state.db.assets, select.dataset.id);
+      if (!asset) return;
+      const previous = {
+        workId: asset.workId || null,
+        characterId: asset.characterId || null,
+        worldItemId: asset.worldItemId || null,
+        status: asset.status || "unassigned",
+        confidence: asset.confidence ?? null,
+        url: asset.url,
+        localPath: asset.localPath
+      };
+      select.disabled = true;
       const subject = parseSubjectValue(select.value);
-      asset.characterId = subject.type === "character" ? subject.id : null;
-      asset.worldItemId = subject.type === "world" ? subject.id : null;
-      const char = byId(state.db.characters, asset.characterId);
-      const worldItem = workWorldItemById(asset.worldItemId);
-      if (char) asset.workId = char.workId;
-      if (worldItem) asset.workId = worldItem.workId;
-      asset.status = select.value ? "matched" : "unassigned";
-      asset.confidence = select.value ? 1 : null;
-      await relocateAsset(asset);
-      await saveDb();
-      render();
+      try {
+        asset.characterId = subject.type === "character" ? subject.id : null;
+        asset.worldItemId = subject.type === "world" ? subject.id : null;
+        const char = byId(state.db.characters, asset.characterId);
+        const worldItem = workWorldItemById(asset.worldItemId);
+        if (char) asset.workId = char.workId;
+        if (worldItem) asset.workId = worldItem.workId;
+        asset.status = select.value ? "matched" : "unassigned";
+        asset.confidence = select.value ? 1 : null;
+        await relocateAsset(asset);
+        await saveDb();
+        render();
+      } catch (error) {
+        Object.assign(asset, previous);
+        select.disabled = false;
+        select.value = assetSubjectSelectValue(asset);
+        toast(error.message);
+      }
     });
   });
   document.querySelectorAll("[data-action='classify-one']").forEach((button) => {
@@ -2835,7 +2927,7 @@ function bindLibrary() {
     });
   });
   document.querySelector("[data-action='classify-visible']")?.addEventListener("click", async () => {
-    const visible = getVisibleLibraryAssets().filter((asset) => !asset.worldItemId);
+    const visible = getVisibleLibraryPageAssets().filter((asset) => !asset.worldItemId);
     for (const asset of visible) {
       await classifyAsset(asset);
       await relocateAsset(asset);
@@ -2845,7 +2937,7 @@ function bindLibrary() {
     render();
   });
   document.querySelector("[data-action='delete-visible-history']")?.addEventListener("click", async () => {
-    const visible = getVisibleLibraryAssets();
+    const visible = getVisibleLibraryPageAssets();
     if (!visible.length) return;
     const ok = window.confirm(`表示中の ${visible.length} 件の履歴を削除します。画像ファイル本体とキャラ設定の立ち絵は削除されません。`);
     if (!ok) return;
