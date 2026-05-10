@@ -13,6 +13,7 @@ const publicDir = path.join(__dirname, "public");
 const dataDir = path.join(__dirname, "data");
 const uploadDir = path.join(dataDir, "uploads");
 const videoDir = path.join(dataDir, "videos");
+const audioDir = path.join(dataDir, "audios");
 const dbPath = path.join(dataDir, "db.json");
 const seedanceGuidePath = path.join(__dirname, "Seedance2.0_Prompt_Guide_v2.md");
 const port = Number(process.env.PORT || 4173);
@@ -44,6 +45,9 @@ const emptyDb = {
     textModel: "google/gemini-2.5-flash",
     worldModel: "google/gemini-2.5-flash",
     videoAgentModel: "google/gemini-2.5-flash",
+    audioAgentModel: "google/gemini-2.5-flash",
+    audioModel: "google/gemini-3.1-flash-tts-preview",
+    audioVoice: "Kore",
     seedanceBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3",
     seedanceModel: "dreamina-seedance-2-0-260128",
     seedanceResolution: "720p"
@@ -53,11 +57,13 @@ const emptyDb = {
   characters: [],
   assets: [],
   videoMedia: [],
-  videoJobs: []
+  videoJobs: [],
+  audioItems: []
 };
 
 await fs.mkdir(uploadDir, { recursive: true });
 await fs.mkdir(videoDir, { recursive: true });
+await fs.mkdir(audioDir, { recursive: true });
 
 async function readDb() {
   try {
@@ -181,8 +187,24 @@ function uploadPathFromUrl(uploadUrl) {
   return filePath;
 }
 
+function localMediaPathFromUrl(mediaUrl) {
+  const parsed = new URL(mediaUrl, "http://localhost");
+  const roots = [
+    { prefix: "/uploads/", dir: uploadDir, label: "uploads" },
+    { prefix: "/audios/", dir: audioDir, label: "audios" },
+    { prefix: "/videos/", dir: videoDir, label: "videos" }
+  ];
+  const root = roots.find((item) => parsed.pathname.startsWith(item.prefix));
+  if (!root) throw new Error("ローカルメディアURLではありません。");
+  const relative = path.normalize(decodeURIComponent(parsed.pathname.slice(root.prefix.length)));
+  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error(`${root.label} パスが不正です。`);
+  const filePath = path.join(root.dir, relative);
+  if (!filePath.startsWith(root.dir)) throw new Error(`${root.label} パスが不正です。`);
+  return filePath;
+}
+
 async function localUploadAsDataUrl(uploadUrl, maxBytes = 64 * 1024 * 1024) {
-  const filePath = uploadPathFromUrl(uploadUrl);
+  const filePath = localMediaPathFromUrl(uploadUrl);
   const stat = await fs.stat(filePath);
   if (!stat.isFile()) throw new Error("参照素材ファイルが見つかりません。");
   if (stat.size > maxBytes) {
@@ -470,6 +492,47 @@ async function handleOpenRouterVideoModels(req, res) {
   }
 }
 
+async function handleUsdJpyRate(req, res) {
+  const sources = [
+    {
+      name: "open.er-api.com",
+      url: "https://open.er-api.com/v6/latest/USD",
+      parse: (payload) => Number(payload?.rates?.JPY)
+    },
+    {
+      name: "frankfurter.app",
+      url: "https://api.frankfurter.app/latest?from=USD&to=JPY",
+      parse: (payload) => Number(payload?.rates?.JPY)
+    }
+  ];
+  const errors = [];
+  for (const source of sources) {
+    try {
+      const response = await fetch(source.url, {
+        signal: AbortSignal.timeout(12000),
+        headers: { "accept": "application/json" }
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        errors.push(`${source.name}: ${response.status}`);
+        continue;
+      }
+      const rate = source.parse(payload);
+      if (Number.isFinite(rate) && rate > 0) {
+        return sendJson(res, 200, {
+          rate,
+          source: source.name,
+          fetchedAt: new Date().toISOString()
+        });
+      }
+      errors.push(`${source.name}: JPY rate missing`);
+    } catch (error) {
+      errors.push(`${source.name}: ${error.message}`);
+    }
+  }
+  sendJson(res, 502, { error: `USD/JPY レートの取得に失敗しました: ${errors.join(" / ")}` });
+}
+
 function normalizeSeedanceBaseUrl(value) {
   const raw = String(value || "https://ark.ap-southeast.bytepluses.com/api/v3").trim().replace(/\/+$/g, "");
   if (raw.includes("openrouter.ai")) {
@@ -494,7 +557,7 @@ function normalizeSeedanceStatus(status) {
 async function seedanceContentItem(reference) {
   const type = reference.kind === "video" ? "video_url" : reference.kind === "audio" ? "audio_url" : "image_url";
   const url = String(reference.url || "");
-  const resolvedUrl = url.startsWith("/uploads/") ? await localUploadAsDataUrl(url) : url;
+  const resolvedUrl = url.startsWith("/") ? await localUploadAsDataUrl(url) : url;
   const item = {
     type,
     role: reference.role || (reference.kind === "image" ? "reference_image" : reference.kind === "video" ? "reference_video" : "reference_audio")
@@ -508,7 +571,7 @@ async function buildOpenRouterReference(reference) {
     throw new Error("OpenRouterの動画生成APIでは、この画面からは画像参照のみ送信できます。動画・音声参照を使う場合は公式APIを選択してください。");
   }
   const url = String(reference.url || "");
-  const resolvedUrl = url.startsWith("/uploads/") ? await localUploadAsDataUrl(url) : url;
+  const resolvedUrl = url.startsWith("/") ? await localUploadAsDataUrl(url) : url;
   return {
     type: "image_url",
     image_url: { url: resolvedUrl }
@@ -588,6 +651,86 @@ function extensionFromVideoResponse(contentType, videoUrl) {
   if (String(contentType || "").includes("quicktime")) return ".mov";
   if (String(contentType || "").includes("webm")) return ".webm";
   return ".mp4";
+}
+
+function extensionFromAudioResponse(contentType, responseFormat = "mp3") {
+  const type = String(contentType || "").toLowerCase();
+  if (type.includes("mpeg") || type.includes("mp3")) return ".mp3";
+  if (type.includes("wav")) return ".wav";
+  if (type.includes("ogg")) return ".ogg";
+  if (type.includes("pcm")) return ".pcm";
+  return responseFormat === "pcm" ? ".pcm" : ".mp3";
+}
+
+async function handleOpenRouterSpeech(req, res) {
+  const {
+    apiKey,
+    model = "google/gemini-3.1-flash-tts-preview",
+    input,
+    voice = "Kore",
+    responseFormat = "mp3",
+    speed,
+    title = "generated-audio"
+  } = await readJson(req, 2 * 1024 * 1024);
+  const cleanInput = String(input || "").trim();
+  const cleanFormat = responseFormat === "pcm" ? "pcm" : "mp3";
+  if (!apiKey) return sendJson(res, 400, { error: "OpenRouter API キーが未設定です。" });
+  if (!model) return sendJson(res, 400, { error: "音声生成モデルが未設定です。" });
+  if (!cleanInput) return sendJson(res, 400, { error: "読み上げテキストが必要です。" });
+
+  try {
+    const requestPayload = {
+      model,
+      input: cleanInput,
+      voice: String(voice || "Kore").trim() || "Kore",
+      response_format: cleanFormat
+    };
+    const speedNumber = Number(speed);
+    if (Number.isFinite(speedNumber) && speedNumber > 0) requestPayload.speed = speedNumber;
+
+    const response = await fetch("https://openrouter.ai/api/v1/audio/speech", {
+      method: "POST",
+      headers: {
+        "authorization": `Bearer ${apiKey}`,
+        "content-type": "application/json",
+        "accept": cleanFormat === "pcm" ? "audio/pcm,*/*" : "audio/mpeg,*/*",
+        "http-referer": "http://localhost",
+        "x-title": "Creative File Studio"
+      },
+      body: JSON.stringify(requestPayload),
+      signal: AbortSignal.timeout(120000)
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      let payload;
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        payload = { error: text || `OpenRouter TTS が ${response.status} を返しました。` };
+      }
+      return sendJson(res, response.status, payload);
+    }
+
+    const ext = extensionFromAudioResponse(response.headers.get("content-type"), cleanFormat);
+    const fileName = safeUploadName(title, ext);
+    const filePath = path.join(audioDir, fileName);
+    await pipeline(Readable.fromWeb(response.body), createWriteStream(filePath));
+    const stat = await fs.stat(filePath);
+    sendJson(res, 200, {
+      url: `/audios/${encodeURIComponent(fileName)}`,
+      path: filePath,
+      mimeType: response.headers.get("content-type") || mimeForExtension(ext),
+      generationId: response.headers.get("x-generation-id") || "",
+      size: stat.size,
+      request: {
+        ...requestPayload,
+        input: cleanInput.length > 1200 ? `${cleanInput.slice(0, 1200)}...` : cleanInput
+      }
+    });
+  } catch (error) {
+    sendJson(res, 502, { error: `OpenRouter 音声生成に失敗しました: ${error.message}` });
+  }
 }
 
 function normalizeVideoDownloadUrl(videoUrl, baseUrl) {
@@ -860,6 +1003,14 @@ const server = http.createServer(async (req, res) => {
       return await handleOpenRouterVideoModels(req, res);
     }
 
+    if (req.method === "POST" && url.pathname === "/api/openrouter/speech") {
+      return await handleOpenRouterSpeech(req, res);
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/exchange-rate/usd-jpy") {
+      return await handleUsdJpyRate(req, res);
+    }
+
     if (req.method === "GET" && url.pathname === "/api/seedance/guide") {
       return await handleSeedanceGuide(req, res);
     }
@@ -887,6 +1038,16 @@ const server = http.createServer(async (req, res) => {
       if (relative.startsWith("..") || path.isAbsolute(relative)) return sendText(res, 403, "Forbidden");
       const filePath = path.join(videoDir, relative);
       if (!filePath.startsWith(videoDir)) return sendText(res, 403, "Forbidden");
+      const served = await serveFile(req, res, filePath);
+      if (!served) return sendText(res, 404, "Not found");
+      return;
+    }
+
+    if ((req.method === "GET" || req.method === "HEAD") && url.pathname.startsWith("/audios/")) {
+      const relative = path.normalize(decodeURIComponent(url.pathname.slice("/audios/".length)));
+      if (relative.startsWith("..") || path.isAbsolute(relative)) return sendText(res, 403, "Forbidden");
+      const filePath = path.join(audioDir, relative);
+      if (!filePath.startsWith(audioDir)) return sendText(res, 403, "Forbidden");
       const served = await serveFile(req, res, filePath);
       if (!served) return sendText(res, 404, "Not found");
       return;

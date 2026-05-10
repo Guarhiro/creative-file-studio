@@ -30,6 +30,15 @@ const state = {
   videoIsThinking: false,
   videoIsGenerating: false,
   videoPollingJobId: "",
+  audioWorkId: null,
+  audioCharacterId: "",
+  audioVoice: "Kore",
+  audioChatMessages: [
+    { role: "assistant", content: "音声生成エージェントです。台詞、ナレーション、声の雰囲気、キャラ指定があれば教えてください。" }
+  ],
+  audioPromptDraft: null,
+  audioIsThinking: false,
+  audioIsGenerating: false,
   seedanceGuide: "",
   worldSheetFile: null,
   promptUseMemo: true,
@@ -49,10 +58,46 @@ const navItems = [
   ["studio", "作品とキャラ"],
   ["import", "画像取込"],
   ["gallery", "画像一覧"],
+  ["audio", "音声生成"],
   ["video", "動画生成"],
   ["library", "画像整理"],
   ["prompt", "Prompt Lab"],
   ["settings", "設定"]
+];
+
+const openRouterTtsModel = "google/gemini-3.1-flash-tts-preview";
+
+const ttsVoices = [
+  ["Kore", "Firm / 女性"],
+  ["Zephyr", "Bright / 女性"],
+  ["Puck", "Upbeat / 男性"],
+  ["Charon", "Informative / 男性"],
+  ["Fenrir", "Excitable / 男性"],
+  ["Leda", "Youthful / 女性"],
+  ["Orus", "Firm / 男性"],
+  ["Aoede", "Breezy / 女性"],
+  ["Callirrhoe", "Easy-going / 女性"],
+  ["Autonoe", "Bright / 女性"],
+  ["Enceladus", "Breathy / 男性"],
+  ["Iapetus", "Clear / 男性"],
+  ["Umbriel", "Easy-going / 男性"],
+  ["Algenib", "Gravelly / 男性"],
+  ["Despina", "Smooth / 女性"],
+  ["Erinome", "Clear / 女性"],
+  ["Laomedeia", "Upbeat / 女性"],
+  ["Achernar", "Soft / 女性"],
+  ["Algieba", "Smooth / 男性"],
+  ["Schedar", "Even / 男性"],
+  ["Gacrux", "Mature / 女性"],
+  ["Pulcherrima", "Forward / 女性"],
+  ["Achird", "Friendly / 男性"],
+  ["Zubenelgenubi", "Casual / 男性"],
+  ["Vindemiatrix", "Gentle / 女性"],
+  ["Sadachbia", "Lively / 男性"],
+  ["Sadaltager", "Knowledgeable / 男性"],
+  ["Sulafat", "Warm / 女性"],
+  ["Alnilam", "Firm / 男性"],
+  ["Rasalgethi", "Informative / 男性"]
 ];
 
 const workColors = ["#d85f43", "#1f8a84", "#677a2f", "#b78017", "#7b5ea7", "#bd4d72", "#4a7fbd"];
@@ -733,6 +778,38 @@ function workWorldItemById(id) {
   return byId(state.db.worldItems || [], id);
 }
 
+function normalizeAudioItem(item = {}) {
+  return {
+    id: item.id || uid(),
+    workId: item.workId || null,
+    characterId: item.characterId || null,
+    title: item.title || item.name || "生成音声",
+    input: item.input || item.text || "",
+    voice: item.voice || "Kore",
+    model: item.model || openRouterTtsModel,
+    format: item.format || "mp3",
+    url: item.url || "",
+    localPath: item.localPath || item.path || "",
+    mimeType: item.mimeType || "audio/mpeg",
+    generationId: item.generationId || "",
+    size: Number(item.size) || null,
+    agentNote: item.agentNote || "",
+    createdAt: item.createdAt || new Date().toISOString()
+  };
+}
+
+function audioItemsForCharacter(characterId) {
+  return (state.db.audioItems || [])
+    .filter((item) => item.characterId === characterId)
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+}
+
+function audioItemsForWork(workId) {
+  return (state.db.audioItems || [])
+    .filter((item) => !workId || item.workId === workId)
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+}
+
 function worldItemForAsset(asset) {
   return workWorldItemById(asset?.worldItemId);
 }
@@ -895,6 +972,9 @@ function normalizeSettings() {
     textModel: "google/gemini-2.5-flash",
     worldModel: state.db.settings?.defaultModel || "google/gemini-2.5-flash",
     videoAgentModel: state.db.settings?.textModel || state.db.settings?.defaultModel || "google/gemini-2.5-flash",
+    audioAgentModel: state.db.settings?.textModel || state.db.settings?.defaultModel || "google/gemini-2.5-flash",
+    audioModel: openRouterTtsModel,
+    audioVoice: "Kore",
     seedanceBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3",
     seedanceModel: "dreamina-seedance-2-0-260128",
     seedanceResolution: "720p",
@@ -908,6 +988,9 @@ function normalizeSettings() {
   };
   if (!state.db.settings.worldModel) state.db.settings.worldModel = state.db.settings.defaultModel || state.db.settings.textModel;
   if (!state.db.settings.videoAgentModel) state.db.settings.videoAgentModel = state.db.settings.textModel || state.db.settings.defaultModel;
+  if (!state.db.settings.audioAgentModel) state.db.settings.audioAgentModel = state.db.settings.textModel || state.db.settings.defaultModel;
+  state.db.settings.audioModel = state.db.settings.audioModel || openRouterTtsModel;
+  state.db.settings.audioVoice = ttsVoices.some(([voice]) => voice === state.db.settings.audioVoice) ? state.db.settings.audioVoice : "Kore";
   state.db.settings.videoPricing = {
     updatedAt: "",
     usdJpyRate: 155,
@@ -1097,7 +1180,7 @@ function updateSettingSeedanceModelOptions(baseUrl, preferredModel = "") {
 }
 
 async function loadOpenRouterVideoModels({ force = false } = {}) {
-  if (!force && (state.openRouterVideoModelStatus === "loaded" || state.openRouterVideoModelStatus === "loading")) return;
+  if (!force && ["loaded", "loading", "failed"].includes(state.openRouterVideoModelStatus)) return;
   state.openRouterVideoModelStatus = "loading";
   state.openRouterVideoModelError = "";
   if (state.view === "settings" || state.view === "video") render();
@@ -1125,13 +1208,26 @@ function formatUsd(value, digits = 3) {
   const number = Number(value);
   if (!Number.isFinite(number)) return "-";
   const decimals = Math.abs(number) >= 1 ? 2 : digits;
-  return `$${number.toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}`;
+  const sign = number < 0 ? "-" : "";
+  const [integer, fraction = ""] = Math.abs(number).toFixed(decimals).split(".");
+  const grouped = integer.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return `$${sign}${grouped}${decimals ? `.${fraction}` : ""}`;
 }
 
 function formatJpy(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return "-";
-  return `約${Math.round(number).toLocaleString("ja-JP")}円`;
+  return `約${String(Math.round(number)).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}円`;
+}
+
+function formatPlainNumber(value, digits = 0) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "-";
+  const [integer, fraction = ""] = Math.abs(number).toFixed(digits).split(".");
+  const sign = number < 0 ? "-" : "";
+  const grouped = integer.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const cleanFraction = fraction.replace(/0+$/g, "");
+  return `${sign}${grouped}${digits && cleanFraction ? `.${cleanFraction}` : ""}`;
 }
 
 function videoPricingSourceLabel(source = "") {
@@ -1391,7 +1487,7 @@ async function refreshVideoPricing() {
 }
 
 async function loadOpenRouterModels({ force = false } = {}) {
-  if (!force && (state.openRouterModelStatus === "loaded" || state.openRouterModelStatus === "loading")) return;
+  if (!force && ["loaded", "loading", "failed"].includes(state.openRouterModelStatus)) return;
   state.openRouterModelStatus = "loading";
   state.openRouterModelError = "";
   if (state.view === "settings") render();
@@ -1625,9 +1721,16 @@ async function normalizeStoredUploads() {
     state.db.videoJobs = [];
     changed = true;
   }
+  if (!Array.isArray(state.db.audioItems)) {
+    state.db.audioItems = [];
+    changed = true;
+  }
   const oldWorldItems = JSON.stringify(state.db.worldItems);
   state.db.worldItems = state.db.worldItems.map(normalizeWorldItem);
   if (JSON.stringify(state.db.worldItems) !== oldWorldItems) changed = true;
+  const oldAudioItems = JSON.stringify(state.db.audioItems);
+  state.db.audioItems = state.db.audioItems.map(normalizeAudioItem).filter((item) => item.url);
+  if (JSON.stringify(state.db.audioItems) !== oldAudioItems) changed = true;
   for (const work of state.db.works) {
     if (ensureDefaultWorldItemsForWork(work)) changed = true;
   }
@@ -1750,6 +1853,7 @@ function parseAiJson(content) {
 function selectedOpenRouterModel({ textOnly = false, purpose = "" } = {}) {
   if (purpose === "world") return state.db.settings.worldModel || state.db.settings.defaultModel || state.db.settings.textModel;
   if (purpose === "video") return state.db.settings.videoAgentModel || state.db.settings.textModel || state.db.settings.defaultModel;
+  if (purpose === "audio") return state.db.settings.audioAgentModel || state.db.settings.textModel || state.db.settings.defaultModel;
   if (textOnly || purpose === "text") return state.db.settings.textModel || state.db.settings.defaultModel;
   return state.db.settings.defaultModel || state.db.settings.textModel;
 }
@@ -1782,7 +1886,7 @@ function render() {
           ${navItems.map(([id, label]) => `<button class="${state.view === id ? "active" : ""}" data-view="${id}">${label}</button>`).join("")}
         </nav>
         <div class="sidebar-meta">
-          ${state.db.works.length} 作品 / ${state.db.characters.length} キャラ / ${state.db.worldItems?.length || 0} その他 / ${state.db.assets.length} 画像 / ${state.db.videoJobs?.length || 0} 動画
+          ${state.db.works.length} 作品 / ${state.db.characters.length} キャラ / ${state.db.worldItems?.length || 0} その他 / ${state.db.assets.length} 画像 / ${state.db.audioItems?.length || 0} 音声 / ${state.db.videoJobs?.length || 0} 動画
         </div>
       </aside>
       <main class="main">
@@ -1805,6 +1909,7 @@ function currentTitle() {
   if (state.view === "studio") return ["作品とキャラ", "作品単位でキャラ設定と立ち絵を管理します。"];
   if (state.view === "import") return ["画像取込", "複数画像を取り込み、AIでキャラ別に振り分けます。"];
   if (state.view === "gallery") return ["画像一覧", "作品ごと、キャラごとに保存済み画像を閲覧します。"];
+  if (state.view === "audio") return ["音声生成", "OpenRouter TTSでキャラ音声やナレーションを作ります。"];
   if (state.view === "video") return ["動画生成", "Seedance向けの指示書作成と生成を行います。"];
   if (state.view === "library") return ["画像整理", "取り込んだ画像を作品・キャラ・状態で確認します。"];
   if (state.view === "prompt") return ["Prompt Lab", "差分やシーン案から生成プロンプトをまとめて作ります。"];
@@ -1815,6 +1920,7 @@ function renderView() {
   if (state.view === "studio") return renderStudio();
   if (state.view === "import") return renderImport();
   if (state.view === "gallery") return renderGallery();
+  if (state.view === "audio") return renderAudioAgent();
   if (state.view === "video") return renderVideoAgent();
   if (state.view === "library") return renderLibrary();
   if (state.view === "prompt") return renderPromptLab();
@@ -1987,21 +2093,31 @@ function renderWorkRow(work) {
 function renderCharacterCard(char) {
   const work = byId(state.db.works, char.workId);
   const assetCount = state.db.assets.filter((asset) => asset.characterId === char.id).length;
+  const charAudios = audioItemsForCharacter(char.id);
+  const latestAudio = charAudios[0];
   return `
     <article class="character-card">
       ${char.portraitUrl ? `<img class="portrait" src="${escapeHtml(char.portraitUrl)}" alt="">` : `<div class="portrait empty">立ち絵なし</div>`}
       <div class="body">
         <div>
           <div class="char-name">${escapeHtml(char.name)}</div>
-          <div class="meta">${escapeHtml(work?.name || "未所属")} / ${assetCount} 画像</div>
+          <div class="meta">${escapeHtml(work?.name || "未所属")} / ${assetCount} 画像 / ${charAudios.length} 音声</div>
         </div>
         <div class="tag-row">
           <span class="tag">${promptFormatLabel(promptFormatOf(char))}</span>
           ${char.basePrompt ? `<span class="tag">base prompt</span>` : ""}
           ${char.negativePrompt ? `<span class="tag">negative</span>` : ""}
+          ${charAudios.length ? `<span class="tag">voice ${charAudios.length}</span>` : ""}
         </div>
+        ${latestAudio ? `
+          <div class="voice-mini">
+            <div class="meta">${escapeHtml(latestAudio.title)} / ${escapeHtml(latestAudio.voice)}</div>
+            <audio controls preload="none" src="${escapeHtml(latestAudio.url)}"></audio>
+          </div>
+        ` : ""}
         <div class="card-actions">
           <button class="ghost" data-action="show-character-images" data-id="${char.id}">画像一覧</button>
+          ${charAudios.length ? `<button class="ghost" data-action="show-character-audios" data-id="${char.id}">音声一覧</button>` : ""}
           <button class="ghost" data-action="edit-character" data-id="${char.id}">編集</button>
         </div>
       </div>
@@ -2400,6 +2516,25 @@ function allVideoReferences() {
       prompt: media.memo || "",
       dimensions: media.width && media.height ? `${media.width}x${media.height}${media.aspectRatioText ? ` / ${media.aspectRatioText}` : ""}` : "",
       createdAt: media.createdAt
+    });
+  });
+  (state.db.audioItems || []).forEach((audio) => {
+    const char = byId(state.db.characters, audio.characterId);
+    const work = byId(state.db.works, audio.workId || char?.workId);
+    push({
+      key: `audio:${audio.id}`,
+      source: "generated-audio",
+      kind: "audio",
+      id: audio.id,
+      workId: audio.workId || char?.workId || null,
+      characterId: audio.characterId || null,
+      worldItemId: null,
+      name: audio.title || "生成音声",
+      url: audio.url,
+      subject: char ? `${char.name} / 生成音声` : work ? `${work.name} / 生成音声` : "生成音声",
+      prompt: audio.input || "",
+      dimensions: audio.voice ? `voice: ${audio.voice}` : "",
+      createdAt: audio.createdAt
     });
   });
   return items.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
@@ -2870,6 +3005,302 @@ async function uploadVideoReferenceFiles(files) {
   }
 }
 
+function renderTtsVoiceOptions(selectedVoice = "Kore") {
+  const current = ttsVoices.some(([voice]) => voice === selectedVoice) ? selectedVoice : "Kore";
+  return ttsVoices.map(([voice, label]) => `<option value="${voice}" ${voice === current ? "selected" : ""}>${escapeHtml(voice)} (${escapeHtml(label)})</option>`).join("");
+}
+
+function audioCharacterOptions() {
+  return state.db.characters.filter((char) => !state.audioWorkId || char.workId === state.audioWorkId);
+}
+
+function audioCharacterLabel(audio) {
+  const char = byId(state.db.characters, audio.characterId);
+  const work = byId(state.db.works, audio.workId || char?.workId);
+  return `${char?.name || "キャラ指定なし"}${work ? ` / ${work.name}` : ""}`;
+}
+
+function audioControlsFromDom() {
+  const selectedCharId = document.querySelector("#audio-character")?.value || state.audioCharacterId || "";
+  const selectedChar = byId(state.db.characters, selectedCharId);
+  return {
+    workId: selectedChar?.workId || document.querySelector("#audio-work")?.value || state.audioWorkId || state.selectedWorkId || "",
+    characterId: selectedCharId,
+    voice: document.querySelector("#audio-voice")?.value || state.audioVoice || state.db.settings.audioVoice || "Kore",
+    title: document.querySelector("#audio-title")?.value.trim() || state.audioPromptDraft?.title || "生成音声",
+    input: document.querySelector("#audio-input-text")?.value.trim() || state.audioPromptDraft?.input || ""
+  };
+}
+
+function buildAudioAgentSystemPrompt() {
+  const voices = ttsVoices.map(([voice, label]) => `${voice}: ${label}`).join("\n");
+  return `あなたは創作向けの音声演出エージェントです。ユーザーの要望、作品情報、キャラ情報から、OpenRouter TTSに送る読み上げテキストを作ります。
+
+必ず次のJSONだけを返してください。
+{
+  "message": "ユーザーに見せる日本語の返答。確認事項や作成意図を短く説明。",
+  "ready": true または false,
+  "questions": ["必要な確認事項"],
+  "draft": {
+    "title": "短い音声タイトル",
+    "input": "TTSにそのまま送る読み上げテキスト。必要なら [whispers] [laughs] [short pause] などのインライン演技タグを入れる。",
+    "voice": "下記ボイス名のどれか",
+    "agentNote": "演技意図の短いメモ"
+  }
+}
+
+音声作成ルール:
+- APIに送るのは説明文ではなく、実際に読み上げる本文にする。
+- キャラ指定がある場合は、キャラの性格、立場、メモ、作品世界に合う声色と台詞にする。
+- キャラ指定がない場合は、ナレーションや汎用ボイスとして自然に使える本文にする。
+- 過剰な演技タグは避け、重要な間や感情だけに使う。
+- 日本語の台詞は日本語のまま自然に整える。英語に翻訳しない。
+
+利用可能ボイス:
+${voices}`;
+}
+
+function buildAudioAgentText(inputText, controls) {
+  const selectedChar = byId(state.db.characters, controls.characterId || state.audioCharacterId);
+  const work = byId(state.db.works, selectedChar?.workId) || byId(state.db.works, controls.workId) || byId(state.db.works, state.selectedWorkId);
+  const chars = selectedChar ? [selectedChar] : work ? charactersForWork(work.id).slice(0, 12) : [];
+  const charText = chars.map((char) => [
+    `名前=${char.name}`,
+    `メモ=${compactPromptText(char.memo, 460)}`,
+    `生成プロンプト=${compactPromptText(char.basePrompt, 520)}`,
+    `NG=${compactPromptText(char.negativePrompt, 220)}`
+  ].join(" / ")).join("\n");
+  const history = state.audioChatMessages.slice(-10).map((message) => `${message.role}: ${message.content}`).join("\n");
+  return `ユーザー入力:
+${inputText}
+
+現在の設定:
+voice=${controls.voice}, title=${controls.title}, characterId=${controls.characterId || "未指定"}
+
+作品情報 / 世界観:
+${buildPromptLabWorldContext(work)}
+
+参照キャラ:
+${charText || "未指定"}
+
+直近チャット:
+${history}
+
+返答では、今ある情報だけで作れる場合は draft を入れてください。`;
+}
+
+function mergeAudioDraft(result, fallbackControls) {
+  const source = result?.draft || result?.proposal || result?.audio || {};
+  if (!source.input && result?.input) source.input = result.input;
+  if (!source.input && result?.text) source.input = result.text;
+  if (!source.input) return null;
+  const voice = source.voice || fallbackControls.voice || "Kore";
+  return {
+    title: source.title || fallbackControls.title || "生成音声",
+    input: source.input || "",
+    voice: ttsVoices.some(([item]) => item === voice) ? voice : fallbackControls.voice || "Kore",
+    agentNote: source.agentNote || source.note || result?.message || ""
+  };
+}
+
+async function handleAudioAgentMessage(forceDraft = false) {
+  const input = document.querySelector("#audio-chat-input")?.value.trim();
+  const message = input || (forceDraft ? "ここまでの会話と選択中のキャラ設定から、音声生成用の読み上げテキスト案を作ってください。" : "");
+  if (!message) return toast("メッセージを入力してください。");
+  const controls = audioControlsFromDom();
+  state.audioWorkId = controls.workId || null;
+  state.audioCharacterId = controls.characterId || "";
+  state.audioVoice = controls.voice;
+  state.audioChatMessages.push({ role: "user", content: message });
+  state.audioIsThinking = true;
+  render();
+  try {
+    const content = await callOpenRouter({
+      purpose: "audio",
+      textOnly: true,
+      temperature: 0.45,
+      maxTokens: 2400,
+      responseFormat: { type: "json_object" },
+      messages: [
+        { role: "system", content: buildAudioAgentSystemPrompt() },
+        { role: "user", content: buildAudioAgentText(message, controls) }
+      ]
+    });
+    const result = parseAiJson(content);
+    state.audioChatMessages.push({ role: "assistant", content: result.message || result.answer || "音声案を更新しました。" });
+    const draft = mergeAudioDraft(result, controls);
+    if (draft) {
+      state.audioPromptDraft = draft;
+      state.audioVoice = draft.voice;
+    }
+    state.audioIsThinking = false;
+    render();
+  } catch (error) {
+    state.audioIsThinking = false;
+    state.audioChatMessages.push({ role: "assistant", content: `エラー: ${error.message}` });
+    render();
+  }
+}
+
+async function startAudioGeneration() {
+  const controls = audioControlsFromDom();
+  const key = apiKey();
+  if (!key) return toast("設定画面で OpenRouter API キーを保存してください。");
+  if (!controls.input) return toast("読み上げテキストを入力してください。");
+  const selectedChar = byId(state.db.characters, controls.characterId);
+  const work = byId(state.db.works, selectedChar?.workId || controls.workId);
+  state.audioIsGenerating = true;
+  state.audioWorkId = work?.id || controls.workId || null;
+  state.audioCharacterId = selectedChar?.id || "";
+  state.audioVoice = controls.voice;
+  state.db.settings.audioVoice = controls.voice;
+  state.db.settings.audioModel = openRouterTtsModel;
+  render();
+  try {
+    const payload = await postJson("/api/openrouter/speech", {
+      apiKey: key,
+      model: openRouterTtsModel,
+      input: controls.input,
+      voice: controls.voice,
+      responseFormat: "mp3",
+      title: controls.title
+    });
+    const audio = normalizeAudioItem({
+      id: uid(),
+      workId: work?.id || null,
+      characterId: selectedChar?.id || null,
+      title: controls.title,
+      input: controls.input,
+      voice: controls.voice,
+      model: openRouterTtsModel,
+      format: "mp3",
+      url: payload.url,
+      localPath: payload.path,
+      mimeType: payload.mimeType,
+      generationId: payload.generationId,
+      size: payload.size,
+      agentNote: state.audioPromptDraft?.agentNote || "",
+      createdAt: new Date().toISOString()
+    });
+    state.db.audioItems.unshift(audio);
+    await saveDb();
+    state.audioIsGenerating = false;
+    render();
+    toast(selectedChar ? `${selectedChar.name} の音声として保存しました。` : "音声を保存しました。");
+  } catch (error) {
+    state.audioIsGenerating = false;
+    toast(error.message);
+    render();
+  }
+}
+
+function renderAudioItem(audio) {
+  return `
+    <article class="audio-job">
+      <div>
+        <div class="char-name">${escapeHtml(audio.title || "生成音声")}</div>
+        <div class="meta">${escapeHtml(audioCharacterLabel(audio))} / ${escapeHtml(audio.voice || "Kore")} / ${audio.createdAt ? escapeHtml(new Date(audio.createdAt).toLocaleString("ja-JP")) : ""}</div>
+      </div>
+      <audio class="generated-audio" controls preload="none" src="${escapeHtml(audio.url)}"></audio>
+      <div class="result-text">${escapeHtml(compactPromptText(audio.input, 900))}</div>
+      ${audio.agentNote ? `<div class="meta">${escapeHtml(audio.agentNote)}</div>` : ""}
+      ${audio.localPath ? `<div class="meta">保存先: ${escapeHtml(audio.localPath)}</div>` : ""}
+    </article>
+  `;
+}
+
+function renderAudioAgent() {
+  const work = byId(state.db.works, state.audioWorkId) || byId(state.db.works, state.selectedWorkId) || state.db.works[0] || null;
+  if (!state.audioWorkId && work) state.audioWorkId = work.id;
+  const chars = audioCharacterOptions();
+  if (state.audioCharacterId && !chars.some((char) => char.id === state.audioCharacterId)) {
+    state.audioCharacterId = "";
+  }
+  const controls = state.audioPromptDraft || {};
+  const voiceValue = controls.voice || state.audioVoice || state.db.settings.audioVoice || "Kore";
+  const history = audioItemsForWork(state.audioWorkId)
+    .filter((item) => !state.audioCharacterId || item.characterId === state.audioCharacterId)
+    .slice(0, 12);
+  return `
+    <div class="video-layout audio-layout">
+      <section class="panel">
+        <div class="panel-header"><h2>生成設定</h2></div>
+        <div class="panel-body form-grid">
+          <label class="full">作品
+            <select id="audio-work">
+              <option value="">全作品</option>
+              ${state.db.works.map((item) => `<option value="${item.id}" ${state.audioWorkId === item.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="full">キャラ指定
+            <select id="audio-character">
+              <option value="">指定なし</option>
+              ${chars.map((char) => `<option value="${char.id}" ${state.audioCharacterId === char.id ? "selected" : ""}>${escapeHtml(char.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="full">ボイス
+            <select id="audio-voice">${renderTtsVoiceOptions(voiceValue)}</select>
+          </label>
+          <label class="full">タイトル<input id="audio-title" value="${escapeHtml(controls.title || "生成音声")}"></label>
+          <div class="full meta">生成モデル: ${escapeHtml(openRouterTtsModel)} / 形式: MP3</div>
+        </div>
+      </section>
+      <section class="video-main">
+        <section class="panel video-chat-panel">
+          <div class="panel-header">
+            <h2>エージェント</h2>
+            <button class="ghost" data-action="audio-make-draft" ${state.audioIsThinking ? "disabled" : ""}>音声案</button>
+          </div>
+          <div class="panel-body">
+            <div class="chat-log">
+              ${state.audioChatMessages.map((message) => `<div class="chat-message ${message.role}"><div>${escapeHtml(message.content)}</div></div>`).join("")}
+              ${state.audioIsThinking ? `<div class="chat-message assistant"><div>考えています...</div></div>` : ""}
+            </div>
+            <div class="chat-input-row">
+              <textarea id="audio-chat-input" placeholder="例：燐谷奏汰の低く落ち着いた声で、雨音の中の独白を作って"></textarea>
+              <button data-action="audio-send-message" ${state.audioIsThinking ? "disabled" : ""}>送信</button>
+            </div>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>読み上げテキスト</h2>
+              <div class="meta">${escapeHtml(state.audioPromptDraft?.agentNote || "手動入力できます。")}</div>
+            </div>
+            <div class="group">
+              <button class="ghost" data-action="audio-copy-input">コピー</button>
+              <button class="accent" data-action="audio-start-generation" ${state.audioIsGenerating ? "disabled" : ""}>生成開始</button>
+            </div>
+          </div>
+          <div class="panel-body">
+            <textarea id="audio-input-text" class="seedance-prompt-text audio-input-text" placeholder="ここに読み上げる台詞やナレーションを入力します。">${escapeHtml(controls.input || "")}</textarea>
+            ${state.audioIsGenerating ? renderAudioGenerating() : ""}
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-header"><h2>生成履歴</h2></div>
+          <div class="panel-body audio-history-list">
+            ${history.length ? history.map(renderAudioItem).join("") : `<div class="empty compact">生成音声はまだありません。</div>`}
+          </div>
+        </section>
+      </section>
+    </div>
+  `;
+}
+
+function renderAudioGenerating() {
+  return `
+    <div class="seedance-animation audio-generating">
+      <div class="wave-loader"><span></span><span></span><span></span><span></span></div>
+      <div>
+        <strong>音声生成中</strong>
+        <div class="meta">完了後にキャラ情報と参照素材へ保存します。</div>
+      </div>
+    </div>
+  `;
+}
+
 function renderVideoCostSummary(summary, currentRate) {
   const collapsed = state.videoCostCollapsed;
   const updatedText = summary.updatedAt ? new Date(summary.updatedAt).toLocaleString("ja-JP") : "未取得";
@@ -2881,7 +3312,7 @@ function renderVideoCostSummary(summary, currentRate) {
     : "未取得";
   const statusText = state.videoPricingStatus === "loading"
     ? "取得中です。"
-    : state.videoPricingError || `最終更新: ${updatedText} / USD-JPY ${summary.usdJpyRate.toLocaleString("ja-JP", { maximumFractionDigits: 3 })} (${summary.usdJpySource})`;
+    : state.videoPricingError || `最終更新: ${updatedText} / USD-JPY ${formatPlainNumber(summary.usdJpyRate, 3)} (${summary.usdJpySource})`;
   const estimateText = summary.estimatedUsd > 0
     ? `概算 ${formatUsd(summary.estimatedUsd)} を含みます。`
     : "実コストが取れるジョブは実コストを優先します。";
@@ -2917,7 +3348,7 @@ function renderVideoCostSummary(summary, currentRate) {
           </div>
           <div>
             <div class="meta">生成数 / 秒数</div>
-            <strong>${summary.jobCount.toLocaleString("ja-JP")}件 / ${summary.seconds.toLocaleString("ja-JP")}秒</strong>
+            <strong>${formatPlainNumber(summary.jobCount)}件 / ${formatPlainNumber(summary.seconds)}秒</strong>
           </div>
           <div>
             <div class="meta">現在モデルの1秒料金</div>
@@ -3221,8 +3652,12 @@ function renderSettings() {
         ${renderModelSelect("setting-text-model", "テキスト生成モデル", state.db.settings.textModel || "", "text")}
         ${renderModelSelect("setting-world-model", "世界観読み込みモデル", state.db.settings.worldModel || state.db.settings.defaultModel || "", "image")}
         ${renderModelSelect("setting-video-agent-model", "動画エージェントモデル", state.db.settings.videoAgentModel || state.db.settings.textModel || "", "image")}
+        ${renderModelSelect("setting-audio-agent-model", "音声エージェントモデル", state.db.settings.audioAgentModel || state.db.settings.textModel || "", "text")}
+        <label class="full">音声生成モデル
+          <input value="${escapeHtml(openRouterTtsModel)}" readonly>
+        </label>
         <div class="full meta">${escapeHtml(statusText)}</div>
-        <div class="full meta">キーはブラウザ内に保存されます。作品データと画像はこのアプリの data フォルダに保存されます。世界観読み込みモデルは設定シート画像の読解に使います。JSONが崩れる場合は、Gemini系やClaude Sonnet/Opus系など、長文と画像の両方に強いモデルを選ぶと安定しやすいです。</div>
+        <div class="full meta">キーはブラウザ内に保存されます。作品データ、画像、生成音声はこのアプリの data フォルダに保存されます。世界観読み込みモデルは設定シート画像の読解に使います。音声エージェントモデルは読み上げテキスト案の作成だけに使い、実際の音声生成は固定で google/gemini-3.1-flash-tts-preview を使います。</div>
         <div class="full toolbar">
           <button data-action="save-settings">設定を保存</button>
           <button class="ghost" data-action="test-openrouter">接続テスト</button>
@@ -3269,6 +3704,7 @@ function bindView() {
   if (state.view === "studio") bindStudio();
   if (state.view === "import") bindImport();
   if (state.view === "gallery") bindGallery();
+  if (state.view === "audio") bindAudioAgent();
   if (state.view === "video") bindVideoAgent();
   if (state.view === "library") bindLibrary();
   if (state.view === "prompt") bindPromptLab();
@@ -3305,6 +3741,9 @@ function bindStudio() {
       state.view = "gallery";
       render();
     });
+  });
+  document.querySelectorAll("[data-action='show-character-audios']").forEach((button) => {
+    button.addEventListener("click", () => openCharacterAudioModal(byId(state.db.characters, button.dataset.id)));
   });
   document.querySelectorAll("[data-action='show-world-item-images']").forEach((button) => {
     button.addEventListener("click", () => {
@@ -3661,6 +4100,51 @@ function bindGallery() {
   });
 }
 
+function bindAudioAgent() {
+  const persistAudioControls = () => {
+    const controls = audioControlsFromDom();
+    state.audioWorkId = controls.workId || null;
+    state.audioCharacterId = controls.characterId || "";
+    state.audioVoice = controls.voice;
+    state.audioPromptDraft = {
+      ...(state.audioPromptDraft || {}),
+      title: controls.title,
+      input: controls.input,
+      voice: controls.voice
+    };
+    state.db.settings.audioVoice = controls.voice;
+  };
+  ["#audio-voice", "#audio-title", "#audio-input-text"].forEach((selector) => {
+    document.querySelector(selector)?.addEventListener("change", persistAudioControls);
+  });
+  document.querySelector("#audio-work")?.addEventListener("change", (event) => {
+    persistAudioControls();
+    state.audioWorkId = event.target.value || null;
+    state.selectedWorkId = state.audioWorkId;
+    if (state.audioCharacterId && !audioCharacterOptions().some((char) => char.id === state.audioCharacterId)) {
+      state.audioCharacterId = "";
+    }
+    render();
+  });
+  document.querySelector("#audio-character")?.addEventListener("change", (event) => {
+    persistAudioControls();
+    state.audioCharacterId = event.target.value || "";
+    const char = byId(state.db.characters, state.audioCharacterId);
+    if (char) {
+      state.audioWorkId = char.workId;
+      state.selectedWorkId = char.workId;
+    }
+    render();
+  });
+  document.querySelector("[data-action='audio-send-message']")?.addEventListener("click", () => handleAudioAgentMessage(false));
+  document.querySelector("[data-action='audio-make-draft']")?.addEventListener("click", () => handleAudioAgentMessage(true));
+  document.querySelector("[data-action='audio-copy-input']")?.addEventListener("click", () => {
+    const text = document.querySelector("#audio-input-text")?.value || "";
+    copyText(text);
+  });
+  document.querySelector("[data-action='audio-start-generation']")?.addEventListener("click", startAudioGeneration);
+}
+
 function bindVideoAgent() {
   const persistVideoControls = () => {
     const controls = videoControlsFromDom();
@@ -3917,6 +4401,8 @@ function bindSettings() {
     state.db.settings.textModel = document.querySelector("#setting-text-model").value.trim();
     state.db.settings.worldModel = document.querySelector("#setting-world-model").value.trim();
     state.db.settings.videoAgentModel = document.querySelector("#setting-video-agent-model").value.trim();
+    state.db.settings.audioAgentModel = document.querySelector("#setting-audio-agent-model").value.trim();
+    state.db.settings.audioModel = openRouterTtsModel;
     state.db.settings.seedanceBaseUrl = document.querySelector("#setting-seedance-base-url")?.value.trim() || "https://ark.ap-southeast.bytepluses.com/api/v3";
     state.db.settings.seedanceModel = document.querySelector("#setting-seedance-model")?.value.trim() || "dreamina-seedance-2-0-260128";
     state.db.settings.seedanceResolution = document.querySelector("#setting-seedance-resolution")?.value || "720p";
@@ -3929,6 +4415,8 @@ function bindSettings() {
     state.db.settings.textModel = document.querySelector("#setting-text-model").value.trim();
     state.db.settings.worldModel = document.querySelector("#setting-world-model").value.trim();
     state.db.settings.videoAgentModel = document.querySelector("#setting-video-agent-model").value.trim();
+    state.db.settings.audioAgentModel = document.querySelector("#setting-audio-agent-model").value.trim();
+    state.db.settings.audioModel = openRouterTtsModel;
     try {
       await callOpenRouter({
         textOnly: true,
@@ -4565,6 +5053,23 @@ function openWorldSettingModal(work, sheetId = null) {
   );
 }
 
+function openCharacterAudioModal(char) {
+  if (!char) return;
+  const audios = audioItemsForCharacter(char.id);
+  openModal(
+    `${char.name} の音声`,
+    `
+      <div class="audio-history-list">
+        ${audios.length ? audios.map(renderAudioItem).join("") : `<div class="empty compact">このキャラに紐づいた音声はまだありません。</div>`}
+      </div>
+    `,
+    `<div></div><button data-action="close-audio-list">閉じる</button>`,
+    (modal, close) => {
+      modal.querySelector("[data-action='close-audio-list']").addEventListener("click", close);
+    }
+  );
+}
+
 function openAssetModal(asset) {
   const dimensions = assetDimensionLabel(asset);
   openModal(
@@ -4606,6 +5111,7 @@ async function boot() {
   try {
     state.db = await getJson("/api/db");
     state.selectedWorkId = state.db.works[0]?.id || null;
+    state.audioWorkId = state.selectedWorkId;
     state.videoWorkId = state.selectedWorkId;
     state.galleryWorkId = state.selectedWorkId;
     await normalizeStoredUploads();
