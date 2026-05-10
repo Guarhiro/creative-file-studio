@@ -39,7 +39,10 @@ const state = {
   openRouterModelError: "",
   openRouterVideoModels: [],
   openRouterVideoModelStatus: "idle",
-  openRouterVideoModelError: ""
+  openRouterVideoModelError: "",
+  videoPricingStatus: "idle",
+  videoPricingError: "",
+  videoCostCollapsed: false
 };
 
 const navItems = [
@@ -170,6 +173,21 @@ const fallbackOpenRouterVideoModels = [
     supported_frame_images: ["first_frame"]
   }
 ];
+
+const fallbackOpenRouterVideoPricing = {
+  "bytedance/seedance-2.0": { usdPerMillionVideoTokens: 7, source: "fallback-token" },
+  "bytedance/seedance-2.0-fast": { usdPerMillionVideoTokens: 5.6, source: "fallback-token" },
+  "kwaivgi/kling-v3.0-std": { usdPerSecond: 0.126, source: "fallback-per-second" },
+  "kwaivgi/kling-v3.0-pro": { usdPerSecond: 0.168, source: "fallback-per-second" },
+  "google/veo-3.1-fast": { usdPerSecond: 0.1, source: "fallback-per-second" },
+  "google/veo-3.1-lite": { usdPerSecond: 0.05, source: "fallback-per-second" },
+  "google/veo-3.1": { usdPerSecond: 0.4, source: "fallback-per-second" },
+  "openai/sora-2-pro": {
+    usdPerSecond: 0.3,
+    usdPerSecondByResolution: { "720p": 0.3, "1080p": 0.5 },
+    source: "fallback-per-second"
+  }
+};
 
 const officialSeedanceVideoModel = {
   id: "dreamina-seedance-2-0-260128",
@@ -880,10 +898,26 @@ function normalizeSettings() {
     seedanceBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3",
     seedanceModel: "dreamina-seedance-2-0-260128",
     seedanceResolution: "720p",
+    videoPricing: {
+      updatedAt: "",
+      usdJpyRate: 155,
+      usdJpySource: "fallback",
+      models: {}
+    },
     ...(state.db.settings || {})
   };
   if (!state.db.settings.worldModel) state.db.settings.worldModel = state.db.settings.defaultModel || state.db.settings.textModel;
   if (!state.db.settings.videoAgentModel) state.db.settings.videoAgentModel = state.db.settings.textModel || state.db.settings.defaultModel;
+  state.db.settings.videoPricing = {
+    updatedAt: "",
+    usdJpyRate: 155,
+    usdJpySource: "fallback",
+    models: {},
+    ...(state.db.settings.videoPricing || {})
+  };
+  if (!state.db.settings.videoPricing.models || typeof state.db.settings.videoPricing.models !== "object") {
+    state.db.settings.videoPricing.models = {};
+  }
 }
 
 function modelModalities(model, key) {
@@ -1079,6 +1113,281 @@ async function loadOpenRouterVideoModels({ force = false } = {}) {
     state.openRouterVideoModelError = `${error.message} フォールバック設定で表示します。`;
   }
   if (state.view === "settings" || state.view === "video") render();
+}
+
+function numberOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(String(value).replace(/[$,\s]/g, ""));
+  return Number.isFinite(number) ? number : null;
+}
+
+function formatUsd(value, digits = 3) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "-";
+  const decimals = Math.abs(number) >= 1 ? 2 : digits;
+  return `$${number.toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}`;
+}
+
+function formatJpy(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "-";
+  return `約${Math.round(number).toLocaleString("ja-JP")}円`;
+}
+
+function videoPricingSourceLabel(source = "") {
+  if (source === "openrouter") return "OpenRouter取得";
+  if (source === "fallback-token") return "フォールバック（トークン単価）";
+  if (source === "fallback-per-second") return "フォールバック（秒単価）";
+  if (source === "fallback") return "フォールバック";
+  return source || "未取得";
+}
+
+function pricingResolutionKey(text = "") {
+  const value = String(text).toLowerCase();
+  if (value.includes("1080")) return "1080p";
+  if (value.includes("720")) return "720p";
+  if (value.includes("480")) return "480p";
+  if (value.includes("2k") || value.includes("1440")) return "2K";
+  if (value.includes("4k") || value.includes("2160")) return "4K";
+  return "";
+}
+
+function collectPricingEntries(value, path = []) {
+  const entries = [];
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => {
+      entries.push(...collectPricingEntries(item, [...path, String(index)]));
+    });
+    return entries;
+  }
+  if (value && typeof value === "object") {
+    const direct = numberOrNull(value.price ?? value.amount ?? value.cost ?? value.rate ?? value.unit_price ?? value.usd ?? value.value);
+    if (direct !== null) {
+      entries.push({
+        key: [
+          ...path,
+          value.name,
+          value.title,
+          value.sku,
+          value.unit,
+          value.type,
+          value.modality,
+          value.metric,
+          value.resolution,
+          value.size
+        ].filter(Boolean).join(" "),
+        value: direct
+      });
+    }
+    Object.entries(value).forEach(([key, child]) => {
+      entries.push(...collectPricingEntries(child, [...path, key]));
+    });
+    return entries;
+  }
+  const direct = numberOrNull(value);
+  if (direct !== null) entries.push({ key: path.join(" "), value: direct });
+  return entries;
+}
+
+function inferVideoPricingFromModel(model = {}) {
+  const fallback = fallbackOpenRouterVideoPricing[model.id] || {};
+  const pricing = {
+    modelId: model.id || "",
+    name: model.name || model.id || "",
+    usdPerSecond: fallback.usdPerSecond ?? null,
+    usdPerSecondByResolution: { ...(fallback.usdPerSecondByResolution || {}) },
+    usdPerMillionVideoTokens: fallback.usdPerMillionVideoTokens ?? null,
+    source: fallback.source || "fallback",
+    pricingSkus: model.pricing_skus || {}
+  };
+  const entries = collectPricingEntries(model.pricing_skus || {});
+  entries.forEach((entry) => {
+    if (!Number.isFinite(entry.value) || entry.value <= 0) return;
+    const key = String(entry.key || "").toLowerCase();
+    const resolution = pricingResolutionKey(key);
+    const looksPerSecond = key.includes("second") || key.includes("sec") || key.includes("per_second") || key.includes("per second");
+    const looksToken = key.includes("token");
+    const looksVideo = key.includes("video") || key.includes("generation") || key.includes("output");
+    if (looksPerSecond && !looksToken) {
+      if (resolution) pricing.usdPerSecondByResolution[resolution] = entry.value;
+      else pricing.usdPerSecond = entry.value;
+      pricing.source = "openrouter";
+      return;
+    }
+    if (looksToken || (looksVideo && entry.value < 0.001)) {
+      pricing.usdPerMillionVideoTokens = key.includes("million") || entry.value >= 0.01 ? entry.value : entry.value * 1000000;
+      pricing.source = "openrouter";
+      return;
+    }
+    if (looksVideo && !pricing.usdPerSecond) {
+      pricing.usdPerSecond = entry.value;
+      pricing.source = "openrouter";
+    }
+  });
+  return pricing;
+}
+
+function videoPricingForModel(modelId) {
+  const stored = state.db?.settings?.videoPricing?.models?.[modelId];
+  if (stored) return stored;
+  const model = videoModelConfig(modelId, state.db?.settings?.seedanceBaseUrl);
+  return inferVideoPricingFromModel(model || { id: modelId, name: modelId });
+}
+
+function pixelsForVideoSetting(resolution = "720p", ratio = "16:9") {
+  const base = Number(String(resolution).match(/\d+/)?.[0]) || 720;
+  const [rawW, rawH] = String(ratio || "16:9").split(":").map(Number);
+  const widthRatio = Number.isFinite(rawW) && rawW > 0 ? rawW : 16;
+  const heightRatio = Number.isFinite(rawH) && rawH > 0 ? rawH : 9;
+  const width = widthRatio >= heightRatio ? base * (widthRatio / heightRatio) : base;
+  const height = widthRatio >= heightRatio ? base : base * (heightRatio / widthRatio);
+  return Math.round(width) * Math.round(height);
+}
+
+function estimateUsdPerSecond(modelId, resolution = "720p", ratio = "16:9") {
+  const pricing = videoPricingForModel(modelId);
+  const byResolution = pricing?.usdPerSecondByResolution || {};
+  const resolutionRate = numberOrNull(byResolution[resolution] ?? byResolution[String(resolution).toLowerCase()] ?? byResolution[String(resolution).toUpperCase()]);
+  if (resolutionRate !== null) return resolutionRate;
+  const perSecond = numberOrNull(pricing?.usdPerSecond);
+  if (perSecond !== null) return perSecond;
+  const tokenRate = numberOrNull(pricing?.usdPerMillionVideoTokens);
+  if (tokenRate !== null) {
+    const videoTokensPerSecond = pixelsForVideoSetting(resolution, ratio) * 24 / 1024;
+    return videoTokensPerSecond * tokenRate / 1000000;
+  }
+  return null;
+}
+
+function durationSecondsForVideoJob(job) {
+  return numberOrNull(job?.settings?.duration ?? job?.request?.duration ?? job?.request?.duration_seconds) || 0;
+}
+
+function actualVideoJobCostUsd(job) {
+  const usage = job?.providerPayload?.usage || job?.providerPayload?.data?.usage || {};
+  const candidates = [
+    usage.cost,
+    usage.total_cost,
+    usage.cost_usd,
+    usage.total_cost_usd,
+    job?.providerPayload?.cost,
+    job?.providerPayload?.total_cost
+  ];
+  for (const candidate of candidates) {
+    const value = numberOrNull(candidate);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+function videoJobCostSummary(job) {
+  const actual = actualVideoJobCostUsd(job);
+  if (actual !== null) return { usd: actual, source: "actual" };
+  const status = String(job?.status || "").toLowerCase();
+  if (["failed", "cancelled", "expired"].includes(status)) return { usd: null, source: "excluded" };
+  const duration = durationSecondsForVideoJob(job);
+  const modelId = job?.settings?.model || job?.request?.model || state.db?.settings?.seedanceModel || "";
+  const resolution = job?.settings?.resolution || job?.request?.resolution || state.db?.settings?.seedanceResolution || "720p";
+  const ratio = job?.settings?.ratio || job?.request?.ratio || "16:9";
+  const rate = estimateUsdPerSecond(modelId, resolution, ratio);
+  if (rate !== null && duration > 0) return { usd: rate * duration, source: "estimated" };
+  return { usd: null, source: "unknown" };
+}
+
+function currentMonthRange() {
+  const now = new Date();
+  return {
+    start: new Date(now.getFullYear(), now.getMonth(), 1),
+    end: new Date(now.getFullYear(), now.getMonth() + 1, 1),
+    label: `${now.getFullYear()}年${now.getMonth() + 1}月`
+  };
+}
+
+function monthlyVideoCostSummary() {
+  const month = currentMonthRange();
+  const jobs = (state.db.videoJobs || []).filter((job) => {
+    const date = new Date(job.createdAt || job.updatedAt || "");
+    return Number.isFinite(date.getTime()) && date >= month.start && date < month.end;
+  });
+  const rate = numberOrNull(state.db.settings?.videoPricing?.usdJpyRate) || 155;
+  const totals = jobs.reduce((summary, job) => {
+    const cost = videoJobCostSummary(job);
+    const seconds = durationSecondsForVideoJob(job);
+    summary.seconds += seconds;
+    if (cost.usd !== null) {
+      summary.usd += cost.usd;
+      summary.counted += 1;
+      if (cost.source === "actual") summary.actualUsd += cost.usd;
+      if (cost.source === "estimated") summary.estimatedUsd += cost.usd;
+    } else if (cost.source !== "excluded") {
+      summary.unknown += 1;
+    }
+    return summary;
+  }, { usd: 0, actualUsd: 0, estimatedUsd: 0, seconds: 0, counted: 0, unknown: 0 });
+  return {
+    ...month,
+    ...totals,
+    jobCount: jobs.length,
+    usdJpyRate: rate,
+    usdJpySource: state.db.settings?.videoPricing?.usdJpySource || "fallback",
+    updatedAt: state.db.settings?.videoPricing?.updatedAt || "",
+    jpy: totals.usd * rate
+  };
+}
+
+function currentVideoRateSummary(modelId, resolution, ratio) {
+  const pricing = videoPricingForModel(modelId);
+  const usdPerSecond = estimateUsdPerSecond(modelId, resolution, ratio);
+  const usdJpyRate = numberOrNull(state.db.settings?.videoPricing?.usdJpyRate) || 155;
+  return {
+    modelId,
+    usdPerSecond,
+    jpyPerSecond: usdPerSecond === null ? null : usdPerSecond * usdJpyRate,
+    source: pricing?.source || "fallback",
+    pricing
+  };
+}
+
+async function refreshVideoPricing() {
+  state.videoPricingStatus = "loading";
+  state.videoPricingError = "";
+  render();
+  const previous = state.db.settings.videoPricing || {};
+  let usdJpyRate = numberOrNull(previous.usdJpyRate) || 155;
+  let usdJpySource = previous.usdJpySource || "fallback";
+  const notes = [];
+  try {
+    const ratePayload = await getJson("/api/exchange-rate/usd-jpy");
+    const nextRate = numberOrNull(ratePayload.rate);
+    if (nextRate !== null) {
+      usdJpyRate = nextRate;
+      usdJpySource = ratePayload.source || "api";
+    }
+  } catch (error) {
+    notes.push(`為替は保存済みレートを使いました: ${error.message}`);
+  }
+  if (isOpenRouterSeedanceBaseUrl()) {
+    await loadOpenRouterVideoModels({ force: true });
+    if (state.openRouterVideoModelStatus === "failed") {
+      notes.push(state.openRouterVideoModelError || "OpenRouter動画モデル料金はフォールバックを使いました。");
+    }
+  }
+  const models = isOpenRouterSeedanceBaseUrl() ? mergedOpenRouterVideoModels() : [officialSeedanceVideoModel];
+  const pricingModels = { ...(previous.models || {}) };
+  models.forEach((model) => {
+    pricingModels[model.id] = inferVideoPricingFromModel(model);
+  });
+  state.db.settings.videoPricing = {
+    updatedAt: new Date().toISOString(),
+    usdJpyRate,
+    usdJpySource,
+    models: pricingModels
+  };
+  state.videoPricingStatus = "loaded";
+  state.videoPricingError = notes.join(" ");
+  await saveDb();
+  render();
+  toast(notes.length ? "動画料金を更新しました。一部は保存済みまたはフォールバックです。" : "動画料金と為替レートを更新しました。");
 }
 
 async function loadOpenRouterModels({ force = false } = {}) {
@@ -2561,6 +2870,67 @@ async function uploadVideoReferenceFiles(files) {
   }
 }
 
+function renderVideoCostSummary(summary, currentRate) {
+  const collapsed = state.videoCostCollapsed;
+  const updatedText = summary.updatedAt ? new Date(summary.updatedAt).toLocaleString("ja-JP") : "未取得";
+  const rateDisplay = currentRate.usdPerSecond !== null
+    ? `${formatUsd(currentRate.usdPerSecond, 4)} / 秒`
+    : "未取得";
+  const rateJpyDisplay = currentRate.jpyPerSecond !== null
+    ? `${formatJpy(currentRate.jpyPerSecond)} / 秒`
+    : "未取得";
+  const statusText = state.videoPricingStatus === "loading"
+    ? "取得中です。"
+    : state.videoPricingError || `最終更新: ${updatedText} / USD-JPY ${summary.usdJpyRate.toLocaleString("ja-JP", { maximumFractionDigits: 3 })} (${summary.usdJpySource})`;
+  const estimateText = summary.estimatedUsd > 0
+    ? `概算 ${formatUsd(summary.estimatedUsd)} を含みます。`
+    : "実コストが取れるジョブは実コストを優先します。";
+  const unknownText = summary.unknown ? `単価未取得の ${summary.unknown} 件は未計上です。` : estimateText;
+  return `
+    <section class="panel video-cost-panel ${collapsed ? "collapsed" : ""}">
+      <div class="panel-header">
+        <div>
+          <div class="video-cost-title-row">
+            <h2>今月の動画コスト</h2>
+            <strong>${formatJpy(summary.jpy)}</strong>
+          </div>
+          <div class="meta">${escapeHtml(summary.label)} / ${escapeHtml(statusText)}</div>
+        </div>
+        <div class="video-cost-actions">
+          <button class="ghost" data-action="toggle-video-cost" aria-expanded="${collapsed ? "false" : "true"}">
+            ${collapsed ? "詳細を表示" : "折りたたむ"}
+          </button>
+          <button class="ghost" data-action="refresh-video-pricing" ${state.videoPricingStatus === "loading" ? "disabled" : ""}>
+            ${state.videoPricingStatus === "loading" ? "取得中..." : "現在料金を取得"}
+          </button>
+        </div>
+      </div>
+      ${collapsed ? "" : `<div class="panel-body">
+        <div class="video-cost-grid">
+          <div class="video-cost-main">
+            <div class="meta">今月の日本円概算</div>
+            <strong>${formatJpy(summary.jpy)}</strong>
+          </div>
+          <div>
+            <div class="meta">USD概算</div>
+            <strong>${formatUsd(summary.usd)}</strong>
+          </div>
+          <div>
+            <div class="meta">生成数 / 秒数</div>
+            <strong>${summary.jobCount.toLocaleString("ja-JP")}件 / ${summary.seconds.toLocaleString("ja-JP")}秒</strong>
+          </div>
+          <div>
+            <div class="meta">現在モデルの1秒料金</div>
+            <strong>${escapeHtml(rateDisplay)}</strong>
+            <div class="meta">${escapeHtml(rateJpyDisplay)} / ${escapeHtml(videoPricingSourceLabel(currentRate.source))}</div>
+          </div>
+        </div>
+        <div class="meta cost-note">${escapeHtml(unknownText)}</div>
+      </div>`}
+    </section>
+  `;
+}
+
 function renderVideoAgent() {
   const work = byId(state.db.works, state.videoWorkId) || byId(state.db.works, state.selectedWorkId) || state.db.works[0] || null;
   if (!state.videoWorkId && work) state.videoWorkId = work.id;
@@ -2591,11 +2961,14 @@ function renderVideoAgent() {
   const references = filteredVideoReferences();
   const selectedItems = selectedVideoReferences();
   const counts = selectedVideoReferenceCounts(selectedItems);
+  const monthlyCost = monthlyVideoCostSummary();
+  const currentRate = currentVideoRateSummary(currentModelId, resolutionValue, ratioValue);
   const jobs = (state.db.videoJobs || [])
     .filter((job) => !state.videoWorkId || job.workId === state.videoWorkId)
     .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
     .slice(0, 12);
   return `
+    ${renderVideoCostSummary(monthlyCost, currentRate)}
     <div class="video-layout">
       <section class="panel">
         <div class="panel-header"><h2>生成設定</h2></div>
@@ -2738,11 +3111,15 @@ function renderSeedanceAnimation() {
 
 function renderVideoJob(job) {
   const work = byId(state.db.works, job.workId);
+  const cost = videoJobCostSummary(job);
+  const costText = cost.usd !== null
+    ? `${cost.source === "actual" ? "実コスト" : "概算"} ${formatUsd(cost.usd)}`
+    : "";
   return `
     <article class="video-job ${job.status}">
       <div>
         <div class="char-name">${escapeHtml(job.title || "Seedance video")}</div>
-        <div class="meta">${escapeHtml(work?.name || "全作品")} / ${escapeHtml(job.status || "unknown")} / ${job.updatedAt ? escapeHtml(new Date(job.updatedAt).toLocaleString("ja-JP")) : ""}</div>
+        <div class="meta">${escapeHtml(work?.name || "全作品")} / ${escapeHtml(job.status || "unknown")} / ${job.updatedAt ? escapeHtml(new Date(job.updatedAt).toLocaleString("ja-JP")) : ""}${costText ? ` / ${escapeHtml(costText)}` : ""}</div>
       </div>
       ${job.localUrl ? `<video class="generated-video" controls src="${escapeHtml(job.localUrl)}"></video>` : ""}
       <div class="result-text">${escapeHtml(compactPromptText(job.prompt, 900))}</div>
@@ -3376,6 +3753,11 @@ function bindVideoAgent() {
   });
   document.querySelector("[data-action='video-send-message']")?.addEventListener("click", () => handleVideoAgentMessage(false));
   document.querySelector("[data-action='video-make-draft']")?.addEventListener("click", () => handleVideoAgentMessage(true));
+  document.querySelector("[data-action='toggle-video-cost']")?.addEventListener("click", () => {
+    state.videoCostCollapsed = !state.videoCostCollapsed;
+    render();
+  });
+  document.querySelector("[data-action='refresh-video-pricing']")?.addEventListener("click", refreshVideoPricing);
   document.querySelector("[data-action='video-copy-prompt']")?.addEventListener("click", () => {
     const text = document.querySelector("#video-prompt-text")?.value || "";
     copyText(text);
