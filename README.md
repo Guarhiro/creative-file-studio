@@ -127,6 +127,8 @@ ZIPに含めないもの:
 - 作品情報、世界観、キャラ情報、参照素材を読んだ動画生成エージェント
 - Seedance 2.0 向けのプロンプト案作成
 - Seedance API Base URL を公式 / OpenRouter から選択
+- OpenRouter動画モデルをプルダウンで選択
+- OpenRouter動画モデルごとの対応秒数、アスペクト比、解像度、開始/終了フレーム設定を自動反映
 - 動画生成の参照素材として、取り込み画像、キャラ立ち絵、その他参考画像、動画、音声を選択
 - 動画生成画面で作品・キャラ・素材種別による参照素材の絞り込み
 - 選択した参照素材を自動で一覧の先頭に表示し、チェック解除で元の位置に戻す
@@ -175,8 +177,19 @@ ZIPに含めないもの:
 
 - API キー: 公式APIを使う場合は公式側のキー、OpenRouterを使う場合はOpenRouterキーを使います。OpenRouterを選んだ場合は、上のOpenRouter APIキー欄のキーを優先して使います。
 - API Base URL: `公式 BytePlus / Volcengine` または `OpenRouter` をプルダウンで選択します。
-- Seedance モデル: 公式APIでは `dreamina-seedance-2-0-260128`、OpenRouterでは `bytedance/seedance-2.0` が既定です。
+- 動画モデル: 公式APIでは `dreamina-seedance-2-0-260128`、OpenRouterでは動画モデル一覧から選択します。
 - 既定解像度: 動画生成画面の初期値として使います。
+
+OpenRouter選択時は、動画モデル専用APIから対応設定を取得します。取得できない場合も、以下のモデルはフォールバック設定で選択できます。
+
+- `bytedance/seedance-2.0`
+- `bytedance/seedance-2.0-fast`
+- `kwaivgi/kling-v3.0-std`
+- `kwaivgi/kling-v3.0-pro`
+- `google/veo-3.1-fast`
+- `google/veo-3.1-lite`
+- `google/veo-3.1`
+- `openai/sora-2-pro`
 
 動画生成画面では、作品、キャラ、秒数、アスペクト比、解像度、音声生成、カメラ固定、透かし、Seedを指定できます。
 

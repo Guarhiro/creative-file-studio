@@ -425,6 +425,51 @@ async function handleOpenRouterModels(req, res) {
   }
 }
 
+async function handleOpenRouterVideoModels(req, res) {
+  const { apiKey } = await readJson(req).catch(() => ({}));
+  try {
+    const headers = {
+      "accept": "application/json",
+      "http-referer": "http://localhost",
+      "x-title": "Creative File Studio"
+    };
+    if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+    const response = await fetch("https://openrouter.ai/api/v1/videos/models", {
+      signal: AbortSignal.timeout(15000),
+      headers
+    });
+    const text = await response.text();
+    let payload;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = { raw: text };
+    }
+    if (!response.ok) return sendJson(res, response.status, payload);
+    const models = Array.isArray(payload.data) ? payload.data : [];
+    sendJson(res, 200, {
+      data: models.map((model) => ({
+        id: model.id,
+        canonical_slug: model.canonical_slug || model.id,
+        name: model.name || model.id,
+        description: model.description || "",
+        generate_audio: model.generate_audio,
+        seed: model.seed ?? null,
+        supported_aspect_ratios: Array.isArray(model.supported_aspect_ratios) ? model.supported_aspect_ratios : [],
+        supported_durations: Array.isArray(model.supported_durations) ? model.supported_durations : [],
+        supported_frame_images: Array.isArray(model.supported_frame_images) ? model.supported_frame_images : [],
+        supported_resolutions: Array.isArray(model.supported_resolutions) ? model.supported_resolutions : [],
+        supported_sizes: Array.isArray(model.supported_sizes) ? model.supported_sizes : [],
+        allowed_passthrough_parameters: Array.isArray(model.allowed_passthrough_parameters) ? model.allowed_passthrough_parameters : [],
+        pricing_skus: model.pricing_skus || {}
+      }))
+    });
+  } catch (error) {
+    const message = error.name === "TimeoutError" ? "OpenRouter の動画モデル一覧の応答が15秒以内に返りませんでした。" : error.message;
+    sendJson(res, 502, { error: `OpenRouter 動画モデル一覧の取得に失敗しました: ${message}` });
+  }
+}
+
 function normalizeSeedanceBaseUrl(value) {
   const raw = String(value || "https://ark.ap-southeast.bytepluses.com/api/v3").trim().replace(/\/+$/g, "");
   if (raw.includes("openrouter.ai")) {
@@ -809,6 +854,10 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/openrouter/models") {
       return await handleOpenRouterModels(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/openrouter/video-models") {
+      return await handleOpenRouterVideoModels(req, res);
     }
 
     if (req.method === "GET" && url.pathname === "/api/seedance/guide") {
