@@ -2077,6 +2077,9 @@ function renderWorldSheetRow(sheet, activeSheetId) {
 }
 
 function renderWorkRow(work) {
+  const index = state.db.works.findIndex((item) => item.id === work.id);
+  const isFirst = index <= 0;
+  const isLast = index === state.db.works.length - 1;
   const count = charactersForWork(work.id).length;
   return `
     <div class="work-row ${state.selectedWorkId === work.id ? "active" : ""}" data-action="select-work" data-id="${work.id}">
@@ -2085,9 +2088,23 @@ function renderWorkRow(work) {
         <div class="work-title">${escapeHtml(work.name)}</div>
         <div class="meta">${count} キャラ / ${assetsForWork(work.id).length} 画像</div>
       </div>
-      <button class="ghost" data-action="edit-work" data-id="${work.id}">編集</button>
+      <div class="work-row-actions">
+        <button class="ghost icon-button" data-action="move-work" data-id="${work.id}" data-direction="-1" aria-label="${escapeHtml(work.name)}を上へ移動" title="上へ" ${isFirst ? "disabled" : ""}>↑</button>
+        <button class="ghost icon-button" data-action="move-work" data-id="${work.id}" data-direction="1" aria-label="${escapeHtml(work.name)}を下へ移動" title="下へ" ${isLast ? "disabled" : ""}>↓</button>
+        <button class="ghost" data-action="edit-work" data-id="${work.id}">編集</button>
+      </div>
     </div>
   `;
+}
+
+function moveWorkInList(workId, direction) {
+  const index = state.db.works.findIndex((item) => item.id === workId);
+  const nextIndex = index + direction;
+  if (index < 0 || nextIndex < 0 || nextIndex >= state.db.works.length) return false;
+  const [work] = state.db.works.splice(index, 1);
+  state.db.works.splice(nextIndex, 0, work);
+  state.selectedWorkId = work.id;
+  return true;
 }
 
 function renderCharacterCard(char) {
@@ -3717,6 +3734,15 @@ function bindStudio() {
       if (event.target.closest("button")) return;
       state.selectedWorkId = row.dataset.id;
       state.worldSheetFile = null;
+      render();
+    });
+  });
+  document.querySelectorAll("[data-action='move-work']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const direction = Number(button.dataset.direction);
+      const moved = moveWorkInList(button.dataset.id, direction);
+      if (!moved) return;
+      await saveDb();
       render();
     });
   });
