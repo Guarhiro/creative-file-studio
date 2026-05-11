@@ -1507,6 +1507,12 @@ async function handleSeedanceCreate(req, res) {
       if (Number(seed) >= 0) requestPayload.seed = Number(seed);
       if (returnLastFrame) requestPayload.return_last_frame = true;
     }
+    const scrubbedRequest = {
+      ...requestPayload,
+      content: requestPayload.content?.map((item) => scrubRequestMediaUrl(item)),
+      frame_images: requestPayload.frame_images?.map((item) => scrubRequestMediaUrl(item)),
+      input_references: requestPayload.input_references?.map((item) => scrubRequestMediaUrl(item))
+    };
 
     const response = await fetch(normalizeSeedanceBaseUrl(baseUrl), {
       method: "POST",
@@ -1523,17 +1529,27 @@ async function handleSeedanceCreate(req, res) {
     } catch {
       payload = { raw: text };
     }
-    if (!response.ok) return sendJson(res, response.status, payload);
+    const providerError = readableProviderError(payload?.error);
+    if (!response.ok || providerError) {
+      return sendJson(res, response.ok ? 400 : response.status, {
+        error: providerError || readableProviderError(payload) || `Seedance が ${response.status} を返しました。`,
+        providerPayload: payload,
+        request: scrubbedRequest
+      });
+    }
+    const taskId = extractTaskId(payload);
+    if (!taskId) {
+      return sendJson(res, 502, {
+        error: "Seedance の task id を取得できませんでした。",
+        providerPayload: payload,
+        request: scrubbedRequest
+      });
+    }
     sendJson(res, 200, {
       ...payload,
-      id: extractTaskId(payload),
+      id: taskId,
       status: normalizeSeedanceStatus(payload.status || payload?.data?.status),
-      request: {
-        ...requestPayload,
-        content: requestPayload.content?.map((item) => scrubRequestMediaUrl(item)),
-        frame_images: requestPayload.frame_images?.map((item) => scrubRequestMediaUrl(item)),
-        input_references: requestPayload.input_references?.map((item) => scrubRequestMediaUrl(item))
-      }
+      request: scrubbedRequest
     });
   } catch (error) {
     sendJson(res, 502, { error: `Seedance への接続に失敗しました: ${error.message}` });
