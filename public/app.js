@@ -46,7 +46,9 @@ const state = {
   irodoriStatus: "idle",
   irodoriStatusMessage: "",
   seedanceGuide: "",
-  worldSheetFile: null,
+  worldSheetFiles: [],
+  worldTextDraft: "",
+  worldTextSourceName: "",
   promptUseMemo: true,
   generatedPrompts: [],
   openRouterModels: [],
@@ -303,6 +305,8 @@ const officialSeedanceVideoModel = {
 };
 
 const libraryPageSizes = [48, 72, 120];
+const maxWorldSheetImages = 5;
+const maxWorldTextChars = 60000;
 
 const escapeHtml = (value = "") =>
   String(value)
@@ -1672,6 +1676,15 @@ function fileToDataUrl(file) {
   });
 }
 
+function fileToText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = reject;
+    reader.readAsText(file);
+  });
+}
+
 function getImageInfo(dataUrl) {
   return new Promise((resolve) => {
     const image = new Image();
@@ -2112,8 +2125,8 @@ function renderStudio() {
           </div>
         </div>
         ${work ? renderWorldInfo(work) : ""}
-        ${work ? renderWorldItemsSection(work, worldItems) : ""}
         ${chars.length ? `<div class="grid">${chars.map(renderCharacterCard).join("")}</div>` : `<div class="empty">この作品にはまだキャラがありません。</div>`}
+        ${work ? renderWorldItemsSection(work, worldItems) : ""}
       </section>
     </div>
   `;
@@ -2164,22 +2177,24 @@ function renderWorldInfo(work) {
   const setting = normalizeWorldSetting(work.worldSetting);
   const sheets = setting.sheets;
   const hasSetting = Boolean(work.worldSetting && (setting.title || setting.reading_log || setting.regeneration_prompt || setting.sourceImageUrl || sheets.length));
-  const selectedFile = state.worldSheetFile;
+  const selectedImages = state.worldSheetFiles || [];
+  const selectedText = String(state.worldTextDraft || "").trim();
+  const hasImportSource = selectedImages.length || selectedText;
   return `
     <section class="panel world-panel">
       <div class="panel-header">
         <div>
           <h2>作品情報 / 世界観設定</h2>
-          <div class="meta">世界観設定シートを複数枚保存できます。後から追加したシートも履歴として残ります。</div>
+          <div class="meta">画像シート、Markdown、テキスト入力をAPIで読解し、履歴として保存できます。</div>
         </div>
         <div class="group">
           <button class="ghost" data-action="edit-world-setting" data-id="${work.id}">${hasSetting ? "作品情報変更" : "手動入力"}</button>
-          <button class="ghost" data-action="choose-world-sheet">シート選択</button>
-          <button data-action="analyze-world-sheet" data-id="${work.id}" ${selectedFile ? "" : "disabled"}>${sheets.length ? "追加読解" : "APIで読解"}</button>
+          <button data-action="analyze-world-sheet" data-id="${work.id}" ${hasImportSource ? "" : "disabled"}>${sheets.length ? "追加読解" : "APIで読解"}</button>
         </div>
       </div>
       <div class="panel-body">
-        <input id="world-sheet-input" class="is-hidden" type="file" accept="image/*">
+        <input id="world-sheet-input" class="is-hidden" type="file" accept="image/*" multiple>
+        <input id="world-text-file-input" class="is-hidden" type="file" accept=".md,.markdown,.txt,text/markdown,text/plain">
         <div class="world-summary">
           <div class="world-main">
             <dl class="info-list">
@@ -2194,11 +2209,22 @@ function renderWorldInfo(work) {
             ${setting.regeneration_prompt ? `<label class="world-readonly">再生成用要約プロンプト<textarea readonly>${escapeHtml(setting.regeneration_prompt)}</textarea></label>` : ""}
           </div>
           <div class="world-side">
-            ${setting.sourceImageUrl ? `<img class="world-source" src="${escapeHtml(setting.sourceImageUrl)}" alt="">` : `<div class="empty compact">設定シート未登録</div>`}
-            <div class="meta">${selectedFile ? `選択中: ${escapeHtml(selectedFile.name)}` : setting.sourceImageName ? `表示中: ${escapeHtml(setting.sourceImageName)}` : "画像を選択してAPI読解できます。"}</div>
+            ${renderWorldSourcePreview(setting, selectedImages)}
+            <div class="meta">${escapeHtml(worldImportSummary(setting, selectedImages, selectedText))}</div>
             <div class="meta">登録シート: ${sheets.length} 枚</div>
             <div class="meta">${setting.updatedAt ? `最終更新: ${new Date(setting.updatedAt).toLocaleString("ja-JP")}` : ""}</div>
           </div>
+        </div>
+        <div class="world-inputs">
+          <div class="world-input-toolbar">
+            <button class="ghost" data-action="choose-world-sheet">画像シート選択</button>
+            <button class="ghost" data-action="choose-world-text">Markdown/Text選択</button>
+            ${hasImportSource ? `<button class="ghost" data-action="clear-world-sources">選択クリア</button>` : ""}
+            <div class="meta">画像は一度に${maxWorldSheetImages}枚まで、テキストは1件として同じAPIに送ります。</div>
+          </div>
+          <label class="world-text-entry">Markdown / テキスト入力
+            <textarea id="world-text-draft" placeholder="作品設定、世界観メモ、キャラクター資料などを貼り付けてください。">${escapeHtml(state.worldTextDraft || "")}</textarea>
+          </label>
         </div>
         ${sheets.length ? `
           <div class="world-sheet-list">
@@ -2211,10 +2237,37 @@ function renderWorldInfo(work) {
             <summary>読解ログを開く</summary>
             <pre>${escapeHtml(setting.reading_log || "読解ログはまだありません。")}</pre>
           </details>
-        ` : `<div class="empty compact">まだ世界観設定がありません。シート画像を選択して「APIで読解」を押すか、手動入力してください。</div>`}
+        ` : `<div class="empty compact">まだ世界観設定がありません。画像、Markdown/Text、または直接入力を用意して「APIで読解」を押すか、手動入力してください。</div>`}
       </div>
     </section>
   `;
+}
+
+function renderWorldSourcePreview(setting, selectedImages) {
+  if (selectedImages.length) {
+    return `
+      <div class="world-source-grid">
+        ${selectedImages.map((file) => `<img class="world-source" src="${escapeHtml(file.preview)}" alt="">`).join("")}
+      </div>
+    `;
+  }
+  if (setting.sourceImageUrl) {
+    return `<img class="world-source" src="${escapeHtml(setting.sourceImageUrl)}" alt="">`;
+  }
+  return `<div class="empty compact">設定資料未登録</div>`;
+}
+
+function worldImportSummary(setting, selectedImages = state.worldSheetFiles || [], selectedText = String(state.worldTextDraft || "").trim()) {
+  const parts = [];
+  if (selectedImages.length) {
+    parts.push(`選択中画像: ${selectedImages.length}枚`);
+  }
+  if (selectedText) {
+    parts.push(`選択中テキスト: ${state.worldTextSourceName || "直接入力"} (${selectedText.length.toLocaleString("ja-JP")}文字)`);
+  }
+  if (parts.length) return parts.join(" / ");
+  if (setting.sourceImageName) return `表示中: ${setting.sourceImageName}`;
+  return "画像、Markdown/Text、直接入力をAPI読解できます。";
 }
 
 function renderWorldSheetRow(sheet, activeSheetId) {
@@ -4416,7 +4469,7 @@ function bindStudio() {
     row.addEventListener("click", (event) => {
       if (event.target.closest("button")) return;
       state.selectedWorkId = row.dataset.id;
-      state.worldSheetFile = null;
+      clearWorldImportSources();
       render();
     });
   });
@@ -4466,16 +4519,46 @@ function bindStudio() {
     });
   });
   const worldSheetInput = document.querySelector("#world-sheet-input");
+  const worldTextFileInput = document.querySelector("#world-text-file-input");
+  const worldTextDraft = document.querySelector("#world-text-draft");
+  const worldAnalyzeButton = document.querySelector("[data-action='analyze-world-sheet']");
+  const syncWorldAnalyzeState = () => {
+    if (worldAnalyzeButton) {
+      worldAnalyzeButton.disabled = !((state.worldSheetFiles || []).length || String(state.worldTextDraft || "").trim());
+    }
+  };
   document.querySelector("[data-action='choose-world-sheet']")?.addEventListener("click", () => worldSheetInput?.click());
   worldSheetInput?.addEventListener("change", async (event) => {
-    const file = event.target.files[0];
+    const files = Array.from(event.target.files || []).filter((file) => file.type.startsWith("image/"));
+    if (!files.length) return;
+    if (files.length > maxWorldSheetImages) {
+      toast(`画像シートは一度に${maxWorldSheetImages}枚までです。先頭${maxWorldSheetImages}枚を読み込みます。`);
+    }
+    state.worldSheetFiles = await Promise.all(files.slice(0, maxWorldSheetImages).map(async (file) => {
+      const preview = await fileToDataUrl(file);
+      return {
+        name: file.name,
+        preview,
+        imageInfo: await getImageInfo(preview)
+      };
+    }));
+    render();
+  });
+  document.querySelector("[data-action='choose-world-text']")?.addEventListener("click", () => worldTextFileInput?.click());
+  worldTextFileInput?.addEventListener("change", async (event) => {
+    const file = event.target.files?.[0];
     if (!file) return;
-    const preview = await fileToDataUrl(file);
-    state.worldSheetFile = {
-      name: file.name,
-      preview,
-      imageInfo: await getImageInfo(preview)
-    };
+    state.worldTextDraft = await fileToText(file);
+    state.worldTextSourceName = file.name;
+    render();
+  });
+  worldTextDraft?.addEventListener("input", (event) => {
+    state.worldTextDraft = event.target.value;
+    if (!state.worldTextDraft.trim()) state.worldTextSourceName = "";
+    syncWorldAnalyzeState();
+  });
+  document.querySelector("[data-action='clear-world-sources']")?.addEventListener("click", () => {
+    clearWorldImportSources();
     render();
   });
   document.querySelector("[data-action='analyze-world-sheet']")?.addEventListener("click", async (event) => {
@@ -5617,7 +5700,7 @@ async function extractPromptFromImage(dataUrl, name, promptFormat = "natural") {
   }
 }
 
-function buildWorldSettingRequest(work, imageName) {
+function buildWorldSettingRequest(work, sourceName, sourceSummary = "") {
   const promptSchema = createEmptyWorldSetting();
   delete promptSchema.sourceImageUrl;
   delete promptSchema.sourceImageName;
@@ -5625,13 +5708,14 @@ function buildWorldSettingRequest(work, imageName) {
   delete promptSchema.activeSheetId;
   delete promptSchema.sheets;
   const schema = JSON.stringify(promptSchema, null, 2);
-  return `添付した「世界観設定資料＋キャラクター設定資料」シートを読み取り、テキスト資料として再利用できるように、情報を可能な限り漏れなく整理してください。
+  return `添付または入力された「世界観設定資料＋キャラクター設定資料」を読み取り、テキスト資料として再利用できるように、情報を可能な限り漏れなく整理してください。
 
 対象作品名: ${work?.name || "未設定"}
-画像名: ${imageName || "unknown"}
+資料名: ${sourceName || "unknown"}
+${sourceSummary ? `資料構成: ${sourceSummary}` : ""}
 
 目的:
-この画像を見なくても、世界観・キャラクター・衣装・道具・建築・文化・誌面構成を後から再現、修正、発展できる状態にすること。
+この資料を見なくても、世界観・キャラクター・衣装・道具・建築・文化・誌面構成を後から再現、修正、発展できる状態にすること。
 
 重要ルール:
 - 見えている事実と、そこから推測した意味を必ず分けてください。
@@ -5639,6 +5723,7 @@ function buildWorldSettingRequest(work, imageName) {
 - 衣装・道具・建築・素材・配色・記号が示す文化的意味は、根拠を添えて推定してください。
 - 小さな道具、素材サンプル、文字、紋章、矢印、番号、背景カットも見落とさないでください。
 - キャラクター単体ではなく、そのキャラクターが生きる世界の情報として読み取ってください。
+- 複数の画像やテキスト資料がある場合は、重複を統合し、矛盾点や不明点は uncertain_points に記録してください。
 - 最後に「保持すべき要素リスト」と「再生成用要約プロンプト」を作ってください。
 
 読解ログのテンプレート:
@@ -5753,19 +5838,58 @@ async function repairWorldSettingJson(rawContent, imageName, parseError) {
   return normalizeWorldSettingResult(parseAiJson(content));
 }
 
-async function extractWorldSettingFromSheet(dataUrl, imageName, work) {
+function worldImportSourceName(images = state.worldSheetFiles || [], text = String(state.worldTextDraft || "").trim()) {
+  const parts = [];
+  if (images.length) {
+    const imageNames = images.map((image) => image.name).filter(Boolean).join(" / ");
+    parts.push(`${images.length}枚の画像${imageNames ? `: ${imageNames}` : ""}`);
+  }
+  if (text) {
+    parts.push(state.worldTextSourceName || "直接入力テキスト");
+  }
+  return parts.join(" + ") || "設定資料";
+}
+
+function worldImportSourceSummary(images = state.worldSheetFiles || [], text = String(state.worldTextDraft || "").trim()) {
+  const parts = [];
+  if (images.length) parts.push(`画像${images.length}枚`);
+  if (text) parts.push(`テキスト${Math.min(text.length, maxWorldTextChars).toLocaleString("ja-JP")}文字`);
+  return parts.join(" + ");
+}
+
+function clearWorldImportSources() {
+  state.worldSheetFiles = [];
+  state.worldTextDraft = "";
+  state.worldTextSourceName = "";
+}
+
+function buildWorldSettingContent(work, { images = [], text = "", sourceName = "" } = {}) {
+  const trimmedText = String(text || "").trim();
+  const truncatedText = trimmedText.slice(0, maxWorldTextChars);
+  const sourceSummary = worldImportSourceSummary(images, trimmedText);
+  const blocks = [buildWorldSettingRequest(work, sourceName, sourceSummary)];
+  if (truncatedText) {
+    blocks.push(`入力テキスト資料（Markdown/Text）:\n${truncatedText}`);
+    if (trimmedText.length > maxWorldTextChars) {
+      blocks.push(`注記: テキストは長いため先頭${maxWorldTextChars.toLocaleString("ja-JP")}文字だけを送信しています。`);
+    }
+  }
+  return [
+    { type: "text", text: blocks.join("\n\n") },
+    ...images.map((image) => ({ type: "image_url", image_url: { url: image.preview } }))
+  ];
+}
+
+async function extractWorldSettingFromSources({ images = [], text = "", sourceName = "", work } = {}) {
   const content = await callOpenRouter({
     messages: [
       {
         role: "system",
-        content: "あなたは世界観設定資料とキャラクター設定資料を読む創作設定編集者です。視覚的事実と推測を分け、後で作品設定として編集できる構造化データに変換します。"
+        content: "あなたは世界観設定資料とキャラクター設定資料を読む創作設定編集者です。視覚的事実とテキスト事実、推測を分け、後で作品設定として編集できる構造化データに変換します。"
       },
       {
         role: "user",
-        content: [
-          { type: "text", text: buildWorldSettingRequest(work, imageName) },
-          { type: "image_url", image_url: { url: dataUrl } }
-        ]
+        content: buildWorldSettingContent(work, { images, text, sourceName })
       }
     ],
     responseFormat: { type: "json_object" },
@@ -5777,39 +5901,58 @@ async function extractWorldSettingFromSheet(dataUrl, imageName, work) {
     return normalizeWorldSettingResult(parseAiJson(content));
   } catch (parseError) {
     try {
-      const repaired = await repairWorldSettingJson(content, imageName, parseError);
+      const repaired = await repairWorldSettingJson(content, sourceName, parseError);
       repaired.uncertain_points.needs_confirmation.push("初回AI応答がJSONとして読めなかったため、JSON整形リトライで保存しました。");
       return repaired;
     } catch (repairError) {
-      const fallback = fallbackWorldSettingFromRaw(content, imageName, parseError);
+      const fallback = fallbackWorldSettingFromRaw(content, sourceName, parseError);
       fallback.uncertain_points.needs_confirmation.push(`JSON整形リトライも失敗しました: ${repairError.message}`);
       return fallback;
     }
   }
 }
 
+async function extractWorldSettingFromSheet(dataUrl, imageName, work) {
+  return extractWorldSettingFromSources({
+    images: [{ name: imageName, preview: dataUrl }],
+    sourceName: imageName,
+    work
+  });
+}
+
 async function analyzeWorldSheet(work) {
-  if (!state.worldSheetFile) {
-    toast("先に世界観設定シート画像を選択してください。");
+  const images = (state.worldSheetFiles || []).slice(0, maxWorldSheetImages);
+  const text = String(state.worldTextDraft || "").trim();
+  if (!images.length && !text) {
+    toast("先に画像、Markdown/Text、または直接入力テキストを用意してください。");
     return;
   }
   try {
-    toast("世界観設定シートを読解しています。少し時間がかかります。");
-    const selected = state.worldSheetFile;
-    const uploaded = await postJson("/api/upload", {
-      dataUrl: selected.preview,
-      name: selected.name,
-      workName: work.name,
-      characterName: "_世界観設定シート"
+    toast("世界観設定資料を読解しています。少し時間がかかります。");
+    const uploadedImages = [];
+    for (const image of images) {
+      const uploaded = await postJson("/api/upload", {
+        dataUrl: image.preview,
+        name: image.name,
+        workName: work.name,
+        characterName: "_世界観設定シート"
+      });
+      uploadedImages.push(uploaded);
+    }
+    const sourceName = worldImportSourceName(images, text);
+    const setting = await extractWorldSettingFromSources({
+      images,
+      text,
+      sourceName,
+      work
     });
-    const setting = await extractWorldSettingFromSheet(selected.preview, selected.name, work);
-    setting.sourceImageUrl = uploaded.url;
-    setting.sourceImageName = selected.name;
+    setting.sourceImageUrl = uploadedImages[0]?.url || "";
+    setting.sourceImageName = sourceName;
     setting.updatedAt = new Date().toISOString();
     const current = ensureWorldSetting(work);
     const sheet = createWorldSheetRecord(setting, {
-      url: uploaded.url,
-      name: selected.name
+      url: setting.sourceImageUrl,
+      name: sourceName
     });
     work.worldSetting = normalizeWorldSetting({
       ...setting,
@@ -5819,7 +5962,7 @@ async function analyzeWorldSheet(work) {
       activeSheetId: sheet.id,
       sheets: [...current.sheets, sheet]
     });
-    state.worldSheetFile = null;
+    clearWorldImportSources();
     await saveDb();
     toast(`設定シートを追加しました。登録シート: ${work.worldSetting.sheets.length} 枚`);
     render();

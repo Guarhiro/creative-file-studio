@@ -595,6 +595,7 @@ textarea {
 }
 
 .world-items-panel {
+  margin-top: 18px;
   margin-bottom: 18px;
 }
 
@@ -616,6 +617,12 @@ textarea {
   gap: 8px;
 }
 
+.world-source-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(78px, 1fr));
+  gap: 8px;
+}
+
 .world-source {
   width: 100%;
   aspect-ratio: 4 / 3;
@@ -623,6 +630,33 @@ textarea {
   border-radius: 8px;
   border: 1px solid var(--line);
   background: var(--panel-soft);
+}
+
+.world-inputs {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.world-input-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.world-text-entry {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.world-text-entry textarea {
+  min-height: 120px;
+  font-weight: 500;
 }
 
 .world-sheet-list {
