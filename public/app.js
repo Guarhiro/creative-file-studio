@@ -3069,12 +3069,13 @@ async function startSeedanceGeneration() {
   const seedanceKey = activeSeedanceApiKey();
   if (!seedanceKey) return toast(isOpenRouterSeedanceBaseUrl() ? "設定画面で OpenRouter API キーを保存してください。" : "設定画面で Seedance API キーを保存してください。");
   if (!prompt) return toast("API送信用プロンプトを入力してください。");
+  let job = null;
   try {
     state.db.settings.seedanceModel = controls.model;
     state.db.settings.seedanceResolution = controls.resolution;
     const references = referencesForSeedance(controls);
     validateSeedanceReferenceLimits(references);
-    const job = {
+    job = {
       id: uid(),
       workId: controls.workId || null,
       title: state.videoPromptDraft?.title || "Seedance video",
@@ -3124,27 +3125,40 @@ async function startSeedanceGeneration() {
         name: item.name
       }))
     });
+    job.providerPayload = payload.providerPayload || payload;
+    job.request = payload.request || payload.providerPayload?.request || null;
+    const providerError = readableError(payload.error) || readableError(payload.providerPayload?.error);
+    if (providerError) {
+      job.status = "failed";
+      job.error = providerError;
+      job.updatedAt = new Date().toISOString();
+      await saveDb();
+      render();
+      throw new Error(providerError);
+    }
     job.providerTaskId = payload.id || payload.task_id || "";
+    if (!job.providerTaskId) {
+      job.status = "failed";
+      job.error = "Seedance の task id を取得できませんでした。";
+      job.updatedAt = new Date().toISOString();
+      await saveDb();
+      render();
+      throw new Error(job.error);
+    }
     job.status = payload.status || "submitted";
-    job.providerPayload = payload;
-    job.request = payload.request || null;
     job.updatedAt = new Date().toISOString();
     await saveDb();
     render();
-    if (job.providerTaskId) {
-      toast("Seedance生成タスクを開始しました。");
-      await pollSeedanceJob(job.id);
-    } else {
-      throw new Error("Seedance の task id を取得できませんでした。");
-    }
+    toast("Seedance生成タスクを開始しました。");
+    await pollSeedanceJob(job.id);
   } catch (error) {
     state.videoIsGenerating = false;
     toast(error.message);
-    const latest = state.db.videoJobs[0];
-    if (latest?.status === "submitting") {
-      latest.status = "failed";
-      latest.error = error.message;
-      latest.updatedAt = new Date().toISOString();
+    const target = job || state.db.videoJobs[0];
+    if (target && ["submitting", "submitted"].includes(target.status) && !target.providerTaskId) {
+      target.status = "failed";
+      target.error = target.error || error.message;
+      target.updatedAt = new Date().toISOString();
       await saveDb();
       render();
     }
@@ -4229,23 +4243,25 @@ function renderSeedanceAnimation() {
 function renderVideoJob(job) {
   const work = byId(state.db.works, job.workId);
   const cost = videoJobCostSummary(job);
+  const providerError = job.error || readableError(job.providerPayload?.error) || readableError(job.providerPayload?.providerPayload?.error);
+  const status = !job.providerTaskId && providerError ? "failed" : job.status;
   const costText = cost.usd !== null
     ? `${cost.source === "actual" ? "実コスト" : "概算"} ${formatUsd(cost.usd)}`
     : "";
   return `
-    <article class="video-job ${job.status}">
+    <article class="video-job ${status}">
       <div>
         <div class="char-name">${escapeHtml(job.title || "Seedance video")}</div>
-        <div class="meta">${escapeHtml(work?.name || "全作品")} / ${escapeHtml(job.status || "unknown")} / ${job.updatedAt ? escapeHtml(new Date(job.updatedAt).toLocaleString("ja-JP")) : ""}${costText ? ` / ${escapeHtml(costText)}` : ""}</div>
+        <div class="meta">${escapeHtml(work?.name || "全作品")} / ${escapeHtml(status || "unknown")} / ${job.updatedAt ? escapeHtml(new Date(job.updatedAt).toLocaleString("ja-JP")) : ""}${costText ? ` / ${escapeHtml(costText)}` : ""}</div>
       </div>
       ${job.localUrl ? `<video class="generated-video" controls src="${escapeHtml(job.localUrl)}"></video>` : ""}
       <div class="result-text">${escapeHtml(compactPromptText(job.prompt, 900))}</div>
       <div class="card-actions">
-        <button class="ghost" data-action="refresh-video-job" data-id="${job.id}" ${["succeeded", "failed", "expired", "cancelled"].includes(job.status) ? "disabled" : ""}>更新</button>
+        <button class="ghost" data-action="refresh-video-job" data-id="${job.id}" ${!job.providerTaskId || ["succeeded", "failed", "expired", "cancelled"].includes(status) ? "disabled" : ""}>更新</button>
         <button class="ghost" data-action="copy-video-job-prompt" data-id="${job.id}">プロンプト</button>
       </div>
       ${job.localPath ? `<div class="meta">保存先: ${escapeHtml(job.localPath)}</div>` : ""}
-      ${job.error ? `<div class="meta danger-text">${escapeHtml(job.error)}</div>` : ""}
+      ${providerError ? `<div class="meta danger-text">${escapeHtml(providerError)}</div>` : ""}
     </article>
   `;
 }

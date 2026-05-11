@@ -171,6 +171,23 @@ async function readJson(req, maxBytes) {
   return body ? JSON.parse(body) : {};
 }
 
+function cleanFileNamePart(value, fallback, maxLength = 160) {
+  const clean = String(value || "")
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001f]+/g, "_")
+    .replace(/\.+$/g, "")
+    .slice(0, maxLength);
+  return clean || fallback;
+}
+
+function safeOriginalFileName(originalName, ext, fallback = "image") {
+  const parsed = path.parse(path.basename(String(originalName || fallback)));
+  const base = cleanFileNamePart(parsed.name, fallback);
+  const originalExt = String(parsed.ext || "").toLowerCase();
+  const safeExt = originalExt && mimeTypes[originalExt] ? parsed.ext : ext;
+  return `${base}${safeExt || ""}`;
+}
+
 function safeUploadName(originalName, ext) {
   const parsed = path.parse(path.basename(originalName || "image"));
   const base = (parsed.name || "image").replace(/[^\w.-]+/g, "_").slice(0, 80);
@@ -476,12 +493,12 @@ async function handleUpload(req, res) {
   } catch {
     return sendJson(res, 400, { error: "画像の data URL が必要です。" });
   }
-  const fileName = safeUploadName(name, parsed.ext);
+  const fileName = safeOriginalFileName(name, parsed.ext);
   const workFolder = safeFolderName(workName, "_未分類作品");
   const characterFolder = safeFolderName(characterName, "_未割当");
   const destinationDir = path.join(uploadDir, workFolder, characterFolder);
   await fs.mkdir(destinationDir, { recursive: true });
-  const filePath = path.join(destinationDir, fileName);
+  const filePath = await uniqueFilePath(destinationDir, fileName);
   await fs.writeFile(filePath, Buffer.from(parsed.base64, "base64"));
   sendJson(res, 200, { url: uploadUrlFor(filePath), path: filePath });
 }
@@ -494,12 +511,12 @@ async function handleMediaUpload(req, res) {
   } catch (error) {
     return sendJson(res, 400, { error: error.message });
   }
-  const fileName = safeUploadName(name, parsed.ext);
+  const fileName = safeOriginalFileName(name, parsed.ext, parsed.kind);
   const workFolder = safeFolderName(workName, "_未分類作品");
   const kindFolder = parsed.kind === "image" ? "_動画生成_画像" : parsed.kind === "video" ? "_動画生成_動画" : "_動画生成_音声";
   const destinationDir = path.join(uploadDir, workFolder, kindFolder);
   await fs.mkdir(destinationDir, { recursive: true });
-  const filePath = path.join(destinationDir, fileName);
+  const filePath = await uniqueFilePath(destinationDir, fileName);
   await fs.writeFile(filePath, Buffer.from(parsed.base64, "base64"));
   sendJson(res, 200, {
     url: uploadUrlFor(filePath),
