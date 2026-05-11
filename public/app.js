@@ -5421,9 +5421,6 @@ function openModal(title, bodyHtml, footerHtml, onBind) {
   `;
   document.body.append(backdrop);
   const close = () => backdrop.remove();
-  backdrop.addEventListener("click", (event) => {
-    if (event.target === backdrop) close();
-  });
   modal.querySelector("[data-action='close-modal']").addEventListener("click", close);
   onBind(modal, close);
 }
