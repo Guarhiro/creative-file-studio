@@ -30,23 +30,74 @@ const state = {
   videoIsThinking: false,
   videoIsGenerating: false,
   videoPollingJobId: "",
+  audioWorkId: null,
+  audioCharacterId: "",
+  audioVoice: "Kore",
+  audioChatMessages: [
+    { role: "assistant", content: "音声生成エージェントです。台詞、ナレーション、声の雰囲気、キャラ指定があれば教えてください。" }
+  ],
+  audioPromptDraft: null,
+  audioIsThinking: false,
+  audioIsGenerating: false,
   seedanceGuide: "",
   worldSheetFile: null,
   promptUseMemo: true,
   generatedPrompts: [],
   openRouterModels: [],
   openRouterModelStatus: "idle",
-  openRouterModelError: ""
+  openRouterModelError: "",
+  openRouterVideoModels: [],
+  openRouterVideoModelStatus: "idle",
+  openRouterVideoModelError: "",
+  videoPricingStatus: "idle",
+  videoPricingError: "",
+  videoCostCollapsed: false
 };
 
 const navItems = [
   ["studio", "作品とキャラ"],
   ["import", "画像取込"],
   ["gallery", "画像一覧"],
+  ["audio", "音声生成"],
   ["video", "動画生成"],
   ["library", "画像整理"],
   ["prompt", "Prompt Lab"],
   ["settings", "設定"]
+];
+
+const openRouterTtsModel = "google/gemini-3.1-flash-tts-preview";
+
+const ttsVoices = [
+  ["Kore", "Firm / 女性"],
+  ["Zephyr", "Bright / 女性"],
+  ["Puck", "Upbeat / 男性"],
+  ["Charon", "Informative / 男性"],
+  ["Fenrir", "Excitable / 男性"],
+  ["Leda", "Youthful / 女性"],
+  ["Orus", "Firm / 男性"],
+  ["Aoede", "Breezy / 女性"],
+  ["Callirrhoe", "Easy-going / 女性"],
+  ["Autonoe", "Bright / 女性"],
+  ["Enceladus", "Breathy / 男性"],
+  ["Iapetus", "Clear / 男性"],
+  ["Umbriel", "Easy-going / 男性"],
+  ["Algenib", "Gravelly / 男性"],
+  ["Despina", "Smooth / 女性"],
+  ["Erinome", "Clear / 女性"],
+  ["Laomedeia", "Upbeat / 女性"],
+  ["Achernar", "Soft / 女性"],
+  ["Algieba", "Smooth / 男性"],
+  ["Schedar", "Even / 男性"],
+  ["Gacrux", "Mature / 女性"],
+  ["Pulcherrima", "Forward / 女性"],
+  ["Achird", "Friendly / 男性"],
+  ["Zubenelgenubi", "Casual / 男性"],
+  ["Vindemiatrix", "Gentle / 女性"],
+  ["Sadachbia", "Lively / 男性"],
+  ["Sadaltager", "Knowledgeable / 男性"],
+  ["Sulafat", "Warm / 女性"],
+  ["Alnilam", "Firm / 男性"],
+  ["Rasalgethi", "Informative / 男性"]
 ];
 
 const workColors = ["#d85f43", "#1f8a84", "#677a2f", "#b78017", "#7b5ea7", "#bd4d72", "#4a7fbd"];
@@ -81,6 +132,117 @@ const seedanceApiBaseOptions = [
     defaultModel: "bytedance/seedance-2.0"
   }
 ];
+
+const targetOpenRouterVideoModelIds = [
+  "bytedance/seedance-2.0",
+  "bytedance/seedance-2.0-fast",
+  "kwaivgi/kling-v3.0-std",
+  "kwaivgi/kling-v3.0-pro",
+  "google/veo-3.1-fast",
+  "google/veo-3.1-lite",
+  "google/veo-3.1",
+  "openai/sora-2-pro"
+];
+
+const fallbackOpenRouterVideoModels = [
+  {
+    id: "bytedance/seedance-2.0",
+    name: "ByteDance: Seedance 2.0",
+    generate_audio: true,
+    supported_durations: [5, 10],
+    supported_aspect_ratios: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"],
+    supported_resolutions: ["480p", "720p", "1080p"],
+    supported_frame_images: ["first_frame", "last_frame"]
+  },
+  {
+    id: "bytedance/seedance-2.0-fast",
+    name: "ByteDance: Seedance 2.0 Fast",
+    generate_audio: true,
+    supported_durations: [5, 10],
+    supported_aspect_ratios: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"],
+    supported_resolutions: ["480p", "720p", "1080p"],
+    supported_frame_images: ["first_frame", "last_frame"]
+  },
+  {
+    id: "kwaivgi/kling-v3.0-std",
+    name: "Kling: Video v3.0 Standard",
+    generate_audio: true,
+    supported_durations: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    supported_aspect_ratios: ["16:9", "9:16", "1:1"],
+    supported_resolutions: ["720p"],
+    supported_frame_images: ["first_frame", "last_frame"]
+  },
+  {
+    id: "kwaivgi/kling-v3.0-pro",
+    name: "Kling: Video v3.0 Pro",
+    generate_audio: true,
+    supported_durations: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    supported_aspect_ratios: ["16:9", "9:16", "1:1"],
+    supported_resolutions: ["720p"],
+    supported_frame_images: ["first_frame", "last_frame"]
+  },
+  {
+    id: "google/veo-3.1-fast",
+    name: "Google: Veo 3.1 Fast",
+    generate_audio: true,
+    supported_durations: [4, 5, 6, 7, 8],
+    supported_aspect_ratios: ["16:9", "9:16"],
+    supported_resolutions: ["720p", "1080p"],
+    supported_frame_images: ["first_frame", "last_frame"]
+  },
+  {
+    id: "google/veo-3.1-lite",
+    name: "Google: Veo 3.1 Lite",
+    generate_audio: true,
+    supported_durations: [4, 5, 6, 7, 8],
+    supported_aspect_ratios: ["16:9", "9:16"],
+    supported_resolutions: ["720p", "1080p"],
+    supported_frame_images: ["first_frame", "last_frame"]
+  },
+  {
+    id: "google/veo-3.1",
+    name: "Google: Veo 3.1",
+    generate_audio: true,
+    supported_durations: [5, 8],
+    supported_aspect_ratios: ["16:9", "9:16"],
+    supported_resolutions: ["720p", "1080p"],
+    supported_frame_images: ["first_frame", "last_frame"]
+  },
+  {
+    id: "openai/sora-2-pro",
+    name: "OpenAI: Sora 2 Pro",
+    generate_audio: true,
+    supported_durations: [4, 8, 12],
+    supported_aspect_ratios: ["16:9", "9:16"],
+    supported_resolutions: ["720p", "1080p"],
+    supported_frame_images: ["first_frame"]
+  }
+];
+
+const fallbackOpenRouterVideoPricing = {
+  "bytedance/seedance-2.0": { usdPerMillionVideoTokens: 7, source: "fallback-token" },
+  "bytedance/seedance-2.0-fast": { usdPerMillionVideoTokens: 5.6, source: "fallback-token" },
+  "kwaivgi/kling-v3.0-std": { usdPerSecond: 0.126, source: "fallback-per-second" },
+  "kwaivgi/kling-v3.0-pro": { usdPerSecond: 0.168, source: "fallback-per-second" },
+  "google/veo-3.1-fast": { usdPerSecond: 0.1, source: "fallback-per-second" },
+  "google/veo-3.1-lite": { usdPerSecond: 0.05, source: "fallback-per-second" },
+  "google/veo-3.1": { usdPerSecond: 0.4, source: "fallback-per-second" },
+  "openai/sora-2-pro": {
+    usdPerSecond: 0.3,
+    usdPerSecondByResolution: { "720p": 0.3, "1080p": 0.5 },
+    source: "fallback-per-second"
+  }
+};
+
+const officialSeedanceVideoModel = {
+  id: "dreamina-seedance-2-0-260128",
+  name: "Seedance 2.0",
+  generate_audio: true,
+  supported_durations: [4, 5, 6, 7, 8, 9, 10, 15],
+  supported_aspect_ratios: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"],
+  supported_resolutions: ["480p", "720p", "1080p", "2K"],
+  supported_frame_images: ["first_frame", "last_frame"]
+};
 
 const libraryPageSizes = [48, 72, 120];
 
@@ -616,6 +778,38 @@ function workWorldItemById(id) {
   return byId(state.db.worldItems || [], id);
 }
 
+function normalizeAudioItem(item = {}) {
+  return {
+    id: item.id || uid(),
+    workId: item.workId || null,
+    characterId: item.characterId || null,
+    title: item.title || item.name || "生成音声",
+    input: item.input || item.text || "",
+    voice: item.voice || "Kore",
+    model: item.model || openRouterTtsModel,
+    format: item.format || "mp3",
+    url: item.url || "",
+    localPath: item.localPath || item.path || "",
+    mimeType: item.mimeType || "audio/mpeg",
+    generationId: item.generationId || "",
+    size: Number(item.size) || null,
+    agentNote: item.agentNote || "",
+    createdAt: item.createdAt || new Date().toISOString()
+  };
+}
+
+function audioItemsForCharacter(characterId) {
+  return (state.db.audioItems || [])
+    .filter((item) => item.characterId === characterId)
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+}
+
+function audioItemsForWork(workId) {
+  return (state.db.audioItems || [])
+    .filter((item) => !workId || item.workId === workId)
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+}
+
 function worldItemForAsset(asset) {
   return workWorldItemById(asset?.worldItemId);
 }
@@ -778,13 +972,35 @@ function normalizeSettings() {
     textModel: "google/gemini-2.5-flash",
     worldModel: state.db.settings?.defaultModel || "google/gemini-2.5-flash",
     videoAgentModel: state.db.settings?.textModel || state.db.settings?.defaultModel || "google/gemini-2.5-flash",
+    audioAgentModel: state.db.settings?.textModel || state.db.settings?.defaultModel || "google/gemini-2.5-flash",
+    audioModel: openRouterTtsModel,
+    audioVoice: "Kore",
     seedanceBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3",
     seedanceModel: "dreamina-seedance-2-0-260128",
     seedanceResolution: "720p",
+    videoPricing: {
+      updatedAt: "",
+      usdJpyRate: 155,
+      usdJpySource: "fallback",
+      models: {}
+    },
     ...(state.db.settings || {})
   };
   if (!state.db.settings.worldModel) state.db.settings.worldModel = state.db.settings.defaultModel || state.db.settings.textModel;
   if (!state.db.settings.videoAgentModel) state.db.settings.videoAgentModel = state.db.settings.textModel || state.db.settings.defaultModel;
+  if (!state.db.settings.audioAgentModel) state.db.settings.audioAgentModel = state.db.settings.textModel || state.db.settings.defaultModel;
+  state.db.settings.audioModel = state.db.settings.audioModel || openRouterTtsModel;
+  state.db.settings.audioVoice = ttsVoices.some(([voice]) => voice === state.db.settings.audioVoice) ? state.db.settings.audioVoice : "Kore";
+  state.db.settings.videoPricing = {
+    updatedAt: "",
+    usdJpyRate: 155,
+    usdJpySource: "fallback",
+    models: {},
+    ...(state.db.settings.videoPricing || {})
+  };
+  if (!state.db.settings.videoPricing.models || typeof state.db.settings.videoPricing.models !== "object") {
+    state.db.settings.videoPricing.models = {};
+  }
 }
 
 function modelModalities(model, key) {
@@ -844,8 +1060,434 @@ function renderSeedanceApiBaseSelect(value) {
   `;
 }
 
+function normalizeOpenRouterVideoModel(model) {
+  return {
+    id: model.id,
+    canonical_slug: model.canonical_slug || model.id,
+    name: model.name || model.id,
+    description: model.description || "",
+    generate_audio: model.generate_audio,
+    seed: model.seed ?? null,
+    supported_aspect_ratios: Array.isArray(model.supported_aspect_ratios) ? model.supported_aspect_ratios : [],
+    supported_durations: Array.isArray(model.supported_durations) ? model.supported_durations.map(Number).filter(Boolean) : [],
+    supported_frame_images: Array.isArray(model.supported_frame_images) ? model.supported_frame_images : [],
+    supported_resolutions: Array.isArray(model.supported_resolutions) ? model.supported_resolutions : [],
+    supported_sizes: Array.isArray(model.supported_sizes) ? model.supported_sizes : [],
+    allowed_passthrough_parameters: Array.isArray(model.allowed_passthrough_parameters) ? model.allowed_passthrough_parameters : [],
+    pricing_skus: model.pricing_skus || {}
+  };
+}
+
+function mergedOpenRouterVideoModels() {
+  const map = new Map(fallbackOpenRouterVideoModels.map((model) => [model.id, normalizeOpenRouterVideoModel(model)]));
+  state.openRouterVideoModels.forEach((model) => {
+    if (targetOpenRouterVideoModelIds.includes(model.id)) map.set(model.id, normalizeOpenRouterVideoModel({ ...map.get(model.id), ...model }));
+  });
+  return targetOpenRouterVideoModelIds.map((id) => map.get(id)).filter(Boolean);
+}
+
+function openRouterVideoModelChoices(selectedId = "") {
+  const models = mergedOpenRouterVideoModels();
+  if (selectedId && !models.some((model) => model.id === selectedId)) {
+    models.unshift(normalizeOpenRouterVideoModel({
+      id: selectedId,
+      name: selectedId,
+      generate_audio: true,
+      supported_durations: [5],
+      supported_aspect_ratios: ["16:9"],
+      supported_resolutions: ["720p"],
+      supported_frame_images: ["first_frame", "last_frame"]
+    }));
+  }
+  return models;
+}
+
+function videoModelConfig(modelId, baseUrl = state.db?.settings?.seedanceBaseUrl) {
+  if (!isOpenRouterSeedanceBaseUrl(baseUrl)) {
+    return modelId && modelId !== officialSeedanceVideoModel.id
+      ? { ...officialSeedanceVideoModel, id: modelId, name: modelId }
+      : officialSeedanceVideoModel;
+  }
+  return openRouterVideoModelChoices(modelId).find((model) => model.id === modelId) || openRouterVideoModelChoices()[0];
+}
+
+function compatibleVideoModelId(modelId, baseUrl = state.db?.settings?.seedanceBaseUrl) {
+  const defaultModel = seedanceApiBasePreset(baseUrl).defaultModel;
+  const value = modelId || defaultModel;
+  if (isOpenRouterSeedanceBaseUrl(baseUrl)) {
+    return targetOpenRouterVideoModelIds.includes(value) ? value : defaultModel;
+  }
+  return targetOpenRouterVideoModelIds.includes(value) ? defaultModel : value;
+}
+
+function optionList(values, fallback) {
+  const list = Array.isArray(values) ? values.filter((value) => value !== null && value !== undefined && value !== "") : [];
+  return [...new Set((list.length ? list : fallback).map(String))];
+}
+
+function optionValue(value, options) {
+  const normalized = String(value ?? "");
+  return options.includes(normalized) ? normalized : options[0];
+}
+
+function videoModeOptionsForModel(model) {
+  const frameTypes = new Set(model?.supported_frame_images || []);
+  const options = [
+    ["reference", "参照素材"],
+    ["text", "テキストのみ"]
+  ];
+  if (frameTypes.has("first_frame")) options.push(["first_frame", "開始フレーム"]);
+  if (frameTypes.has("first_frame") && frameTypes.has("last_frame")) options.push(["first_last", "開始＋終了"]);
+  return options;
+}
+
+function renderVideoModelSelect(id, value, baseUrl = state.db?.settings?.seedanceBaseUrl) {
+  if (!isOpenRouterSeedanceBaseUrl(baseUrl)) {
+    const current = value || officialSeedanceVideoModel.id;
+    return `<select id="${id}"><option value="${escapeHtml(current)}" selected>${escapeHtml(current)}</option></select>`;
+  }
+  const choices = openRouterVideoModelChoices(value);
+  const current = choices.some((model) => model.id === value) ? value : seedanceApiBaseOptions.find((option) => option.value.includes("openrouter.ai"))?.defaultModel || choices[0]?.id || "";
+  return `
+    <select id="${id}">
+      ${choices.map((model) => `<option value="${escapeHtml(model.id)}" ${model.id === current ? "selected" : ""}>${escapeHtml(model.name || model.id)} (${escapeHtml(model.id)})</option>`).join("")}
+    </select>
+  `;
+}
+
+function updateSettingSeedanceResolutionOptions(modelId, baseUrl) {
+  const select = document.querySelector("#setting-seedance-resolution");
+  if (!select) return;
+  const model = videoModelConfig(modelId, baseUrl);
+  const options = optionList(model.supported_resolutions, [state.db.settings.seedanceResolution || "720p"]);
+  const current = optionValue(select.value || state.db.settings.seedanceResolution || "720p", options);
+  select.innerHTML = options.map((value) => `<option value="${escapeHtml(value)}" ${value === current ? "selected" : ""}>${escapeHtml(value)}</option>`).join("");
+}
+
+function updateSettingSeedanceModelOptions(baseUrl, preferredModel = "") {
+  const select = document.querySelector("#setting-seedance-model");
+  if (!select) return;
+  if (!isOpenRouterSeedanceBaseUrl(baseUrl)) {
+    const current = preferredModel || officialSeedanceVideoModel.id;
+    select.innerHTML = `<option value="${escapeHtml(current)}" selected>${escapeHtml(current)}</option>`;
+    updateSettingSeedanceResolutionOptions(current, baseUrl);
+    return;
+  }
+  const choices = openRouterVideoModelChoices(preferredModel);
+  const current = choices.some((model) => model.id === preferredModel) ? preferredModel : seedanceApiBasePreset(baseUrl).defaultModel;
+  select.innerHTML = choices.map((model) => `<option value="${escapeHtml(model.id)}" ${model.id === current ? "selected" : ""}>${escapeHtml(model.name || model.id)} (${escapeHtml(model.id)})</option>`).join("");
+  updateSettingSeedanceResolutionOptions(current, baseUrl);
+}
+
+async function loadOpenRouterVideoModels({ force = false } = {}) {
+  if (!force && ["loaded", "loading", "failed"].includes(state.openRouterVideoModelStatus)) return;
+  state.openRouterVideoModelStatus = "loading";
+  state.openRouterVideoModelError = "";
+  if (state.view === "settings" || state.view === "video") render();
+  try {
+    const key = apiKey() || seedanceApiKey();
+    if (!key) throw new Error("OpenRouter APIキーを保存すると、動画モデルの対応設定を自動取得できます。");
+    const payload = await postJson("/api/openrouter/video-models", { apiKey: key });
+    state.openRouterVideoModels = Array.isArray(payload.data) ? payload.data.map(normalizeOpenRouterVideoModel) : [];
+    state.openRouterVideoModelStatus = "loaded";
+  } catch (error) {
+    state.openRouterVideoModels = [];
+    state.openRouterVideoModelStatus = "failed";
+    state.openRouterVideoModelError = `${error.message} フォールバック設定で表示します。`;
+  }
+  if (state.view === "settings" || state.view === "video") render();
+}
+
+function numberOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(String(value).replace(/[$,\s]/g, ""));
+  return Number.isFinite(number) ? number : null;
+}
+
+function formatUsd(value, digits = 3) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "-";
+  const decimals = Math.abs(number) >= 1 ? 2 : digits;
+  const sign = number < 0 ? "-" : "";
+  const [integer, fraction = ""] = Math.abs(number).toFixed(decimals).split(".");
+  const grouped = integer.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return `$${sign}${grouped}${decimals ? `.${fraction}` : ""}`;
+}
+
+function formatJpy(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "-";
+  return `約${String(Math.round(number)).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}円`;
+}
+
+function formatPlainNumber(value, digits = 0) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "-";
+  const [integer, fraction = ""] = Math.abs(number).toFixed(digits).split(".");
+  const sign = number < 0 ? "-" : "";
+  const grouped = integer.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const cleanFraction = fraction.replace(/0+$/g, "");
+  return `${sign}${grouped}${digits && cleanFraction ? `.${cleanFraction}` : ""}`;
+}
+
+function videoPricingSourceLabel(source = "") {
+  if (source === "openrouter") return "OpenRouter取得";
+  if (source === "fallback-token") return "フォールバック（トークン単価）";
+  if (source === "fallback-per-second") return "フォールバック（秒単価）";
+  if (source === "fallback") return "フォールバック";
+  return source || "未取得";
+}
+
+function pricingResolutionKey(text = "") {
+  const value = String(text).toLowerCase();
+  if (value.includes("1080")) return "1080p";
+  if (value.includes("720")) return "720p";
+  if (value.includes("480")) return "480p";
+  if (value.includes("2k") || value.includes("1440")) return "2K";
+  if (value.includes("4k") || value.includes("2160")) return "4K";
+  return "";
+}
+
+function collectPricingEntries(value, path = []) {
+  const entries = [];
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => {
+      entries.push(...collectPricingEntries(item, [...path, String(index)]));
+    });
+    return entries;
+  }
+  if (value && typeof value === "object") {
+    const direct = numberOrNull(value.price ?? value.amount ?? value.cost ?? value.rate ?? value.unit_price ?? value.usd ?? value.value);
+    if (direct !== null) {
+      entries.push({
+        key: [
+          ...path,
+          value.name,
+          value.title,
+          value.sku,
+          value.unit,
+          value.type,
+          value.modality,
+          value.metric,
+          value.resolution,
+          value.size
+        ].filter(Boolean).join(" "),
+        value: direct
+      });
+    }
+    Object.entries(value).forEach(([key, child]) => {
+      entries.push(...collectPricingEntries(child, [...path, key]));
+    });
+    return entries;
+  }
+  const direct = numberOrNull(value);
+  if (direct !== null) entries.push({ key: path.join(" "), value: direct });
+  return entries;
+}
+
+function inferVideoPricingFromModel(model = {}) {
+  const fallback = fallbackOpenRouterVideoPricing[model.id] || {};
+  const pricing = {
+    modelId: model.id || "",
+    name: model.name || model.id || "",
+    usdPerSecond: fallback.usdPerSecond ?? null,
+    usdPerSecondByResolution: { ...(fallback.usdPerSecondByResolution || {}) },
+    usdPerMillionVideoTokens: fallback.usdPerMillionVideoTokens ?? null,
+    source: fallback.source || "fallback",
+    pricingSkus: model.pricing_skus || {}
+  };
+  const entries = collectPricingEntries(model.pricing_skus || {});
+  entries.forEach((entry) => {
+    if (!Number.isFinite(entry.value) || entry.value <= 0) return;
+    const key = String(entry.key || "").toLowerCase();
+    const resolution = pricingResolutionKey(key);
+    const looksPerSecond = key.includes("second") || key.includes("sec") || key.includes("per_second") || key.includes("per second");
+    const looksToken = key.includes("token");
+    const looksVideo = key.includes("video") || key.includes("generation") || key.includes("output");
+    if (looksPerSecond && !looksToken) {
+      if (resolution) pricing.usdPerSecondByResolution[resolution] = entry.value;
+      else pricing.usdPerSecond = entry.value;
+      pricing.source = "openrouter";
+      return;
+    }
+    if (looksToken || (looksVideo && entry.value < 0.001)) {
+      pricing.usdPerMillionVideoTokens = key.includes("million") || entry.value >= 0.01 ? entry.value : entry.value * 1000000;
+      pricing.source = "openrouter";
+      return;
+    }
+    if (looksVideo && !pricing.usdPerSecond) {
+      pricing.usdPerSecond = entry.value;
+      pricing.source = "openrouter";
+    }
+  });
+  return pricing;
+}
+
+function videoPricingForModel(modelId) {
+  const stored = state.db?.settings?.videoPricing?.models?.[modelId];
+  if (stored) return stored;
+  const model = videoModelConfig(modelId, state.db?.settings?.seedanceBaseUrl);
+  return inferVideoPricingFromModel(model || { id: modelId, name: modelId });
+}
+
+function pixelsForVideoSetting(resolution = "720p", ratio = "16:9") {
+  const base = Number(String(resolution).match(/\d+/)?.[0]) || 720;
+  const [rawW, rawH] = String(ratio || "16:9").split(":").map(Number);
+  const widthRatio = Number.isFinite(rawW) && rawW > 0 ? rawW : 16;
+  const heightRatio = Number.isFinite(rawH) && rawH > 0 ? rawH : 9;
+  const width = widthRatio >= heightRatio ? base * (widthRatio / heightRatio) : base;
+  const height = widthRatio >= heightRatio ? base : base * (heightRatio / widthRatio);
+  return Math.round(width) * Math.round(height);
+}
+
+function estimateUsdPerSecond(modelId, resolution = "720p", ratio = "16:9") {
+  const pricing = videoPricingForModel(modelId);
+  const byResolution = pricing?.usdPerSecondByResolution || {};
+  const resolutionRate = numberOrNull(byResolution[resolution] ?? byResolution[String(resolution).toLowerCase()] ?? byResolution[String(resolution).toUpperCase()]);
+  if (resolutionRate !== null) return resolutionRate;
+  const perSecond = numberOrNull(pricing?.usdPerSecond);
+  if (perSecond !== null) return perSecond;
+  const tokenRate = numberOrNull(pricing?.usdPerMillionVideoTokens);
+  if (tokenRate !== null) {
+    const videoTokensPerSecond = pixelsForVideoSetting(resolution, ratio) * 24 / 1024;
+    return videoTokensPerSecond * tokenRate / 1000000;
+  }
+  return null;
+}
+
+function durationSecondsForVideoJob(job) {
+  return numberOrNull(job?.settings?.duration ?? job?.request?.duration ?? job?.request?.duration_seconds) || 0;
+}
+
+function actualVideoJobCostUsd(job) {
+  const usage = job?.providerPayload?.usage || job?.providerPayload?.data?.usage || {};
+  const candidates = [
+    usage.cost,
+    usage.total_cost,
+    usage.cost_usd,
+    usage.total_cost_usd,
+    job?.providerPayload?.cost,
+    job?.providerPayload?.total_cost
+  ];
+  for (const candidate of candidates) {
+    const value = numberOrNull(candidate);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+function videoJobCostSummary(job) {
+  const actual = actualVideoJobCostUsd(job);
+  if (actual !== null) return { usd: actual, source: "actual" };
+  const status = String(job?.status || "").toLowerCase();
+  if (["failed", "cancelled", "expired"].includes(status)) return { usd: null, source: "excluded" };
+  const duration = durationSecondsForVideoJob(job);
+  const modelId = job?.settings?.model || job?.request?.model || state.db?.settings?.seedanceModel || "";
+  const resolution = job?.settings?.resolution || job?.request?.resolution || state.db?.settings?.seedanceResolution || "720p";
+  const ratio = job?.settings?.ratio || job?.request?.ratio || "16:9";
+  const rate = estimateUsdPerSecond(modelId, resolution, ratio);
+  if (rate !== null && duration > 0) return { usd: rate * duration, source: "estimated" };
+  return { usd: null, source: "unknown" };
+}
+
+function currentMonthRange() {
+  const now = new Date();
+  return {
+    start: new Date(now.getFullYear(), now.getMonth(), 1),
+    end: new Date(now.getFullYear(), now.getMonth() + 1, 1),
+    label: `${now.getFullYear()}年${now.getMonth() + 1}月`
+  };
+}
+
+function monthlyVideoCostSummary() {
+  const month = currentMonthRange();
+  const jobs = (state.db.videoJobs || []).filter((job) => {
+    const date = new Date(job.createdAt || job.updatedAt || "");
+    return Number.isFinite(date.getTime()) && date >= month.start && date < month.end;
+  });
+  const rate = numberOrNull(state.db.settings?.videoPricing?.usdJpyRate) || 155;
+  const totals = jobs.reduce((summary, job) => {
+    const cost = videoJobCostSummary(job);
+    const seconds = durationSecondsForVideoJob(job);
+    summary.seconds += seconds;
+    if (cost.usd !== null) {
+      summary.usd += cost.usd;
+      summary.counted += 1;
+      if (cost.source === "actual") summary.actualUsd += cost.usd;
+      if (cost.source === "estimated") summary.estimatedUsd += cost.usd;
+    } else if (cost.source !== "excluded") {
+      summary.unknown += 1;
+    }
+    return summary;
+  }, { usd: 0, actualUsd: 0, estimatedUsd: 0, seconds: 0, counted: 0, unknown: 0 });
+  return {
+    ...month,
+    ...totals,
+    jobCount: jobs.length,
+    usdJpyRate: rate,
+    usdJpySource: state.db.settings?.videoPricing?.usdJpySource || "fallback",
+    updatedAt: state.db.settings?.videoPricing?.updatedAt || "",
+    jpy: totals.usd * rate
+  };
+}
+
+function currentVideoRateSummary(modelId, resolution, ratio) {
+  const pricing = videoPricingForModel(modelId);
+  const usdPerSecond = estimateUsdPerSecond(modelId, resolution, ratio);
+  const usdJpyRate = numberOrNull(state.db.settings?.videoPricing?.usdJpyRate) || 155;
+  return {
+    modelId,
+    usdPerSecond,
+    jpyPerSecond: usdPerSecond === null ? null : usdPerSecond * usdJpyRate,
+    source: pricing?.source || "fallback",
+    pricing
+  };
+}
+
+async function refreshVideoPricing() {
+  state.videoPricingStatus = "loading";
+  state.videoPricingError = "";
+  render();
+  const previous = state.db.settings.videoPricing || {};
+  let usdJpyRate = numberOrNull(previous.usdJpyRate) || 155;
+  let usdJpySource = previous.usdJpySource || "fallback";
+  const notes = [];
+  try {
+    const ratePayload = await getJson("/api/exchange-rate/usd-jpy");
+    const nextRate = numberOrNull(ratePayload.rate);
+    if (nextRate !== null) {
+      usdJpyRate = nextRate;
+      usdJpySource = ratePayload.source || "api";
+    }
+  } catch (error) {
+    notes.push(`為替は保存済みレートを使いました: ${error.message}`);
+  }
+  if (isOpenRouterSeedanceBaseUrl()) {
+    await loadOpenRouterVideoModels({ force: true });
+    if (state.openRouterVideoModelStatus === "failed") {
+      notes.push(state.openRouterVideoModelError || "OpenRouter動画モデル料金はフォールバックを使いました。");
+    }
+  }
+  const models = isOpenRouterSeedanceBaseUrl() ? mergedOpenRouterVideoModels() : [officialSeedanceVideoModel];
+  const pricingModels = { ...(previous.models || {}) };
+  models.forEach((model) => {
+    pricingModels[model.id] = inferVideoPricingFromModel(model);
+  });
+  state.db.settings.videoPricing = {
+    updatedAt: new Date().toISOString(),
+    usdJpyRate,
+    usdJpySource,
+    models: pricingModels
+  };
+  state.videoPricingStatus = "loaded";
+  state.videoPricingError = notes.join(" ");
+  await saveDb();
+  render();
+  toast(notes.length ? "動画料金を更新しました。一部は保存済みまたはフォールバックです。" : "動画料金と為替レートを更新しました。");
+}
+
 async function loadOpenRouterModels({ force = false } = {}) {
-  if (!force && (state.openRouterModelStatus === "loaded" || state.openRouterModelStatus === "loading")) return;
+  if (!force && ["loaded", "loading", "failed"].includes(state.openRouterModelStatus)) return;
   state.openRouterModelStatus = "loading";
   state.openRouterModelError = "";
   if (state.view === "settings") render();
@@ -1079,9 +1721,16 @@ async function normalizeStoredUploads() {
     state.db.videoJobs = [];
     changed = true;
   }
+  if (!Array.isArray(state.db.audioItems)) {
+    state.db.audioItems = [];
+    changed = true;
+  }
   const oldWorldItems = JSON.stringify(state.db.worldItems);
   state.db.worldItems = state.db.worldItems.map(normalizeWorldItem);
   if (JSON.stringify(state.db.worldItems) !== oldWorldItems) changed = true;
+  const oldAudioItems = JSON.stringify(state.db.audioItems);
+  state.db.audioItems = state.db.audioItems.map(normalizeAudioItem).filter((item) => item.url);
+  if (JSON.stringify(state.db.audioItems) !== oldAudioItems) changed = true;
   for (const work of state.db.works) {
     if (ensureDefaultWorldItemsForWork(work)) changed = true;
   }
@@ -1204,6 +1853,7 @@ function parseAiJson(content) {
 function selectedOpenRouterModel({ textOnly = false, purpose = "" } = {}) {
   if (purpose === "world") return state.db.settings.worldModel || state.db.settings.defaultModel || state.db.settings.textModel;
   if (purpose === "video") return state.db.settings.videoAgentModel || state.db.settings.textModel || state.db.settings.defaultModel;
+  if (purpose === "audio") return state.db.settings.audioAgentModel || state.db.settings.textModel || state.db.settings.defaultModel;
   if (textOnly || purpose === "text") return state.db.settings.textModel || state.db.settings.defaultModel;
   return state.db.settings.defaultModel || state.db.settings.textModel;
 }
@@ -1236,7 +1886,7 @@ function render() {
           ${navItems.map(([id, label]) => `<button class="${state.view === id ? "active" : ""}" data-view="${id}">${label}</button>`).join("")}
         </nav>
         <div class="sidebar-meta">
-          ${state.db.works.length} 作品 / ${state.db.characters.length} キャラ / ${state.db.worldItems?.length || 0} その他 / ${state.db.assets.length} 画像 / ${state.db.videoJobs?.length || 0} 動画
+          ${state.db.works.length} 作品 / ${state.db.characters.length} キャラ / ${state.db.worldItems?.length || 0} その他 / ${state.db.assets.length} 画像 / ${state.db.audioItems?.length || 0} 音声 / ${state.db.videoJobs?.length || 0} 動画
         </div>
       </aside>
       <main class="main">
@@ -1259,6 +1909,7 @@ function currentTitle() {
   if (state.view === "studio") return ["作品とキャラ", "作品単位でキャラ設定と立ち絵を管理します。"];
   if (state.view === "import") return ["画像取込", "複数画像を取り込み、AIでキャラ別に振り分けます。"];
   if (state.view === "gallery") return ["画像一覧", "作品ごと、キャラごとに保存済み画像を閲覧します。"];
+  if (state.view === "audio") return ["音声生成", "OpenRouter TTSでキャラ音声やナレーションを作ります。"];
   if (state.view === "video") return ["動画生成", "Seedance向けの指示書作成と生成を行います。"];
   if (state.view === "library") return ["画像整理", "取り込んだ画像を作品・キャラ・状態で確認します。"];
   if (state.view === "prompt") return ["Prompt Lab", "差分やシーン案から生成プロンプトをまとめて作ります。"];
@@ -1269,6 +1920,7 @@ function renderView() {
   if (state.view === "studio") return renderStudio();
   if (state.view === "import") return renderImport();
   if (state.view === "gallery") return renderGallery();
+  if (state.view === "audio") return renderAudioAgent();
   if (state.view === "video") return renderVideoAgent();
   if (state.view === "library") return renderLibrary();
   if (state.view === "prompt") return renderPromptLab();
@@ -1425,6 +2077,9 @@ function renderWorldSheetRow(sheet, activeSheetId) {
 }
 
 function renderWorkRow(work) {
+  const index = state.db.works.findIndex((item) => item.id === work.id);
+  const isFirst = index <= 0;
+  const isLast = index === state.db.works.length - 1;
   const count = charactersForWork(work.id).length;
   return `
     <div class="work-row ${state.selectedWorkId === work.id ? "active" : ""}" data-action="select-work" data-id="${work.id}">
@@ -1433,29 +2088,53 @@ function renderWorkRow(work) {
         <div class="work-title">${escapeHtml(work.name)}</div>
         <div class="meta">${count} キャラ / ${assetsForWork(work.id).length} 画像</div>
       </div>
-      <button class="ghost" data-action="edit-work" data-id="${work.id}">編集</button>
+      <div class="work-row-actions">
+        <button class="ghost icon-button" data-action="move-work" data-id="${work.id}" data-direction="-1" aria-label="${escapeHtml(work.name)}を上へ移動" title="上へ" ${isFirst ? "disabled" : ""}>↑</button>
+        <button class="ghost icon-button" data-action="move-work" data-id="${work.id}" data-direction="1" aria-label="${escapeHtml(work.name)}を下へ移動" title="下へ" ${isLast ? "disabled" : ""}>↓</button>
+        <button class="ghost" data-action="edit-work" data-id="${work.id}">編集</button>
+      </div>
     </div>
   `;
+}
+
+function moveWorkInList(workId, direction) {
+  const index = state.db.works.findIndex((item) => item.id === workId);
+  const nextIndex = index + direction;
+  if (index < 0 || nextIndex < 0 || nextIndex >= state.db.works.length) return false;
+  const [work] = state.db.works.splice(index, 1);
+  state.db.works.splice(nextIndex, 0, work);
+  state.selectedWorkId = work.id;
+  return true;
 }
 
 function renderCharacterCard(char) {
   const work = byId(state.db.works, char.workId);
   const assetCount = state.db.assets.filter((asset) => asset.characterId === char.id).length;
+  const charAudios = audioItemsForCharacter(char.id);
+  const latestAudio = charAudios[0];
   return `
     <article class="character-card">
       ${char.portraitUrl ? `<img class="portrait" src="${escapeHtml(char.portraitUrl)}" alt="">` : `<div class="portrait empty">立ち絵なし</div>`}
       <div class="body">
         <div>
           <div class="char-name">${escapeHtml(char.name)}</div>
-          <div class="meta">${escapeHtml(work?.name || "未所属")} / ${assetCount} 画像</div>
+          <div class="meta">${escapeHtml(work?.name || "未所属")} / ${assetCount} 画像 / ${charAudios.length} 音声</div>
         </div>
         <div class="tag-row">
           <span class="tag">${promptFormatLabel(promptFormatOf(char))}</span>
           ${char.basePrompt ? `<span class="tag">base prompt</span>` : ""}
           ${char.negativePrompt ? `<span class="tag">negative</span>` : ""}
+          ${charAudios.length ? `<span class="tag">voice ${charAudios.length}</span>` : ""}
         </div>
+        ${latestAudio ? `
+          <div class="voice-mini">
+            <div class="meta">${escapeHtml(latestAudio.title)} / ${escapeHtml(latestAudio.voice)}</div>
+            <audio controls preload="none" src="${escapeHtml(latestAudio.url)}"></audio>
+          </div>
+        ` : ""}
         <div class="card-actions">
           <button class="ghost" data-action="show-character-images" data-id="${char.id}">画像一覧</button>
+          ${charAudios.length ? `<button class="ghost" data-action="show-character-audios" data-id="${char.id}">音声一覧</button>` : ""}
           <button class="ghost" data-action="edit-character" data-id="${char.id}">編集</button>
         </div>
       </div>
@@ -1856,6 +2535,25 @@ function allVideoReferences() {
       createdAt: media.createdAt
     });
   });
+  (state.db.audioItems || []).forEach((audio) => {
+    const char = byId(state.db.characters, audio.characterId);
+    const work = byId(state.db.works, audio.workId || char?.workId);
+    push({
+      key: `audio:${audio.id}`,
+      source: "generated-audio",
+      kind: "audio",
+      id: audio.id,
+      workId: audio.workId || char?.workId || null,
+      characterId: audio.characterId || null,
+      worldItemId: null,
+      name: audio.title || "生成音声",
+      url: audio.url,
+      subject: char ? `${char.name} / 生成音声` : work ? `${work.name} / 生成音声` : "生成音声",
+      prompt: audio.input || "",
+      dimensions: audio.voice ? `voice: ${audio.voice}` : "",
+      createdAt: audio.createdAt
+    });
+  });
   return items.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
 }
 
@@ -1955,10 +2653,11 @@ function videoControlValue(id, fallback = "") {
 }
 
 function videoControlsFromDom() {
+  const defaultModel = compatibleVideoModelId(state.videoPromptDraft?.model || state.db.settings.seedanceModel, state.db.settings.seedanceBaseUrl);
   return {
     workId: videoControlValue("video-work", state.videoWorkId || state.selectedWorkId || ""),
     mode: videoControlValue("video-mode", state.videoPromptDraft?.mode || "reference"),
-    model: videoControlValue("video-seedance-model", state.db.settings.seedanceModel || "dreamina-seedance-2-0-260128"),
+    model: videoControlValue("video-seedance-model", state.videoPromptDraft?.model || state.db.settings.seedanceModel || defaultModel),
     duration: Number(videoControlValue("video-duration", state.videoPromptDraft?.duration || 5)) || 5,
     ratio: videoControlValue("video-ratio", state.videoPromptDraft?.ratio || "16:9"),
     resolution: videoControlValue("video-resolution", state.videoPromptDraft?.resolution || state.db.settings.seedanceResolution || "720p"),
@@ -2040,7 +2739,7 @@ function buildVideoAgentText(inputText, controls, selectedItems) {
 ${inputText}
 
 現在の設定:
-mode=${controls.mode}, duration=${controls.duration}, ratio=${controls.ratio}, resolution=${controls.resolution}, generateAudio=${controls.generateAudio}, cameraFixed=${controls.cameraFixed}, watermark=${controls.watermark}
+model=${controls.model}, mode=${controls.mode}, duration=${controls.duration}, ratio=${controls.ratio}, resolution=${controls.resolution}, generateAudio=${controls.generateAudio}, cameraFixed=${controls.cameraFixed}, watermark=${controls.watermark}
 
 作品情報 / 世界観:
 ${buildPromptLabWorldContext(work)}
@@ -2076,6 +2775,7 @@ function mergeVideoDraft(result, fallbackControls) {
   return {
     title: source.title || "Seedance video",
     prompt: source.prompt || "",
+    model: source.model || fallbackControls.model,
     mode: source.mode || fallbackControls.mode || "reference",
     duration: Number(source.duration || fallbackControls.duration || 5),
     ratio: source.ratio || fallbackControls.ratio || "16:9",
@@ -2322,6 +3022,363 @@ async function uploadVideoReferenceFiles(files) {
   }
 }
 
+function renderTtsVoiceOptions(selectedVoice = "Kore") {
+  const current = ttsVoices.some(([voice]) => voice === selectedVoice) ? selectedVoice : "Kore";
+  return ttsVoices.map(([voice, label]) => `<option value="${voice}" ${voice === current ? "selected" : ""}>${escapeHtml(voice)} (${escapeHtml(label)})</option>`).join("");
+}
+
+function audioCharacterOptions() {
+  return state.db.characters.filter((char) => !state.audioWorkId || char.workId === state.audioWorkId);
+}
+
+function audioCharacterLabel(audio) {
+  const char = byId(state.db.characters, audio.characterId);
+  const work = byId(state.db.works, audio.workId || char?.workId);
+  return `${char?.name || "キャラ指定なし"}${work ? ` / ${work.name}` : ""}`;
+}
+
+function audioControlsFromDom() {
+  const selectedCharId = document.querySelector("#audio-character")?.value || state.audioCharacterId || "";
+  const selectedChar = byId(state.db.characters, selectedCharId);
+  return {
+    workId: selectedChar?.workId || document.querySelector("#audio-work")?.value || state.audioWorkId || state.selectedWorkId || "",
+    characterId: selectedCharId,
+    voice: document.querySelector("#audio-voice")?.value || state.audioVoice || state.db.settings.audioVoice || "Kore",
+    title: document.querySelector("#audio-title")?.value.trim() || state.audioPromptDraft?.title || "生成音声",
+    input: document.querySelector("#audio-input-text")?.value.trim() || state.audioPromptDraft?.input || ""
+  };
+}
+
+function buildAudioAgentSystemPrompt() {
+  const voices = ttsVoices.map(([voice, label]) => `${voice}: ${label}`).join("\n");
+  return `あなたは創作向けの音声演出エージェントです。ユーザーの要望、作品情報、キャラ情報から、OpenRouter TTSに送る読み上げテキストを作ります。
+
+必ず次のJSONだけを返してください。
+{
+  "message": "ユーザーに見せる日本語の返答。確認事項や作成意図を短く説明。",
+  "ready": true または false,
+  "questions": ["必要な確認事項"],
+  "draft": {
+    "title": "短い音声タイトル",
+    "input": "TTSにそのまま送る読み上げテキスト。必要なら [whispers] [laughs] [short pause] などのインライン演技タグを入れる。",
+    "voice": "下記ボイス名のどれか",
+    "agentNote": "演技意図の短いメモ"
+  }
+}
+
+音声作成ルール:
+- APIに送るのは説明文ではなく、実際に読み上げる本文にする。
+- キャラ指定がある場合は、キャラの性格、立場、メモ、作品世界に合う声色と台詞にする。
+- キャラ指定がない場合は、ナレーションや汎用ボイスとして自然に使える本文にする。
+- 過剰な演技タグは避け、重要な間や感情だけに使う。
+- 日本語の台詞は日本語のまま自然に整える。英語に翻訳しない。
+
+利用可能ボイス:
+${voices}`;
+}
+
+function buildAudioAgentText(inputText, controls) {
+  const selectedChar = byId(state.db.characters, controls.characterId || state.audioCharacterId);
+  const work = byId(state.db.works, selectedChar?.workId) || byId(state.db.works, controls.workId) || byId(state.db.works, state.selectedWorkId);
+  const chars = selectedChar ? [selectedChar] : work ? charactersForWork(work.id).slice(0, 12) : [];
+  const charText = chars.map((char) => [
+    `名前=${char.name}`,
+    `メモ=${compactPromptText(char.memo, 460)}`,
+    `生成プロンプト=${compactPromptText(char.basePrompt, 520)}`,
+    `NG=${compactPromptText(char.negativePrompt, 220)}`
+  ].join(" / ")).join("\n");
+  const history = state.audioChatMessages.slice(-10).map((message) => `${message.role}: ${message.content}`).join("\n");
+  return `ユーザー入力:
+${inputText}
+
+現在の設定:
+voice=${controls.voice}, title=${controls.title}, characterId=${controls.characterId || "未指定"}
+
+作品情報 / 世界観:
+${buildPromptLabWorldContext(work)}
+
+参照キャラ:
+${charText || "未指定"}
+
+直近チャット:
+${history}
+
+返答では、今ある情報だけで作れる場合は draft を入れてください。`;
+}
+
+function mergeAudioDraft(result, fallbackControls) {
+  const source = result?.draft || result?.proposal || result?.audio || {};
+  if (!source.input && result?.input) source.input = result.input;
+  if (!source.input && result?.text) source.input = result.text;
+  if (!source.input) return null;
+  const voice = source.voice || fallbackControls.voice || "Kore";
+  return {
+    title: source.title || fallbackControls.title || "生成音声",
+    input: source.input || "",
+    voice: ttsVoices.some(([item]) => item === voice) ? voice : fallbackControls.voice || "Kore",
+    agentNote: source.agentNote || source.note || result?.message || ""
+  };
+}
+
+async function handleAudioAgentMessage(forceDraft = false) {
+  const input = document.querySelector("#audio-chat-input")?.value.trim();
+  const message = input || (forceDraft ? "ここまでの会話と選択中のキャラ設定から、音声生成用の読み上げテキスト案を作ってください。" : "");
+  if (!message) return toast("メッセージを入力してください。");
+  const controls = audioControlsFromDom();
+  state.audioWorkId = controls.workId || null;
+  state.audioCharacterId = controls.characterId || "";
+  state.audioVoice = controls.voice;
+  state.audioChatMessages.push({ role: "user", content: message });
+  state.audioIsThinking = true;
+  render();
+  try {
+    const content = await callOpenRouter({
+      purpose: "audio",
+      textOnly: true,
+      temperature: 0.45,
+      maxTokens: 2400,
+      responseFormat: { type: "json_object" },
+      messages: [
+        { role: "system", content: buildAudioAgentSystemPrompt() },
+        { role: "user", content: buildAudioAgentText(message, controls) }
+      ]
+    });
+    const result = parseAiJson(content);
+    state.audioChatMessages.push({ role: "assistant", content: result.message || result.answer || "音声案を更新しました。" });
+    const draft = mergeAudioDraft(result, controls);
+    if (draft) {
+      state.audioPromptDraft = draft;
+      state.audioVoice = draft.voice;
+    }
+    state.audioIsThinking = false;
+    render();
+  } catch (error) {
+    state.audioIsThinking = false;
+    state.audioChatMessages.push({ role: "assistant", content: `エラー: ${error.message}` });
+    render();
+  }
+}
+
+async function startAudioGeneration() {
+  const controls = audioControlsFromDom();
+  const key = apiKey();
+  if (!key) return toast("設定画面で OpenRouter API キーを保存してください。");
+  if (!controls.input) return toast("読み上げテキストを入力してください。");
+  const selectedChar = byId(state.db.characters, controls.characterId);
+  const work = byId(state.db.works, selectedChar?.workId || controls.workId);
+  state.audioIsGenerating = true;
+  state.audioWorkId = work?.id || controls.workId || null;
+  state.audioCharacterId = selectedChar?.id || "";
+  state.audioVoice = controls.voice;
+  state.db.settings.audioVoice = controls.voice;
+  state.db.settings.audioModel = openRouterTtsModel;
+  render();
+  try {
+    const payload = await postJson("/api/openrouter/speech", {
+      apiKey: key,
+      model: openRouterTtsModel,
+      input: controls.input,
+      voice: controls.voice,
+      responseFormat: "mp3",
+      title: controls.title
+    });
+    const audio = normalizeAudioItem({
+      id: uid(),
+      workId: work?.id || null,
+      characterId: selectedChar?.id || null,
+      title: controls.title,
+      input: controls.input,
+      voice: controls.voice,
+      model: openRouterTtsModel,
+      format: "mp3",
+      url: payload.url,
+      localPath: payload.path,
+      mimeType: payload.mimeType,
+      generationId: payload.generationId,
+      size: payload.size,
+      agentNote: state.audioPromptDraft?.agentNote || "",
+      createdAt: new Date().toISOString()
+    });
+    state.db.audioItems.unshift(audio);
+    await saveDb();
+    state.audioIsGenerating = false;
+    render();
+    toast(selectedChar ? `${selectedChar.name} の音声として保存しました。` : "音声を保存しました。");
+  } catch (error) {
+    state.audioIsGenerating = false;
+    toast(error.message);
+    render();
+  }
+}
+
+function renderAudioItem(audio) {
+  return `
+    <article class="audio-job">
+      <div>
+        <div class="char-name">${escapeHtml(audio.title || "生成音声")}</div>
+        <div class="meta">${escapeHtml(audioCharacterLabel(audio))} / ${escapeHtml(audio.voice || "Kore")} / ${audio.createdAt ? escapeHtml(new Date(audio.createdAt).toLocaleString("ja-JP")) : ""}</div>
+      </div>
+      <audio class="generated-audio" controls preload="none" src="${escapeHtml(audio.url)}"></audio>
+      <div class="result-text">${escapeHtml(compactPromptText(audio.input, 900))}</div>
+      ${audio.agentNote ? `<div class="meta">${escapeHtml(audio.agentNote)}</div>` : ""}
+      ${audio.localPath ? `<div class="meta">保存先: ${escapeHtml(audio.localPath)}</div>` : ""}
+    </article>
+  `;
+}
+
+function renderAudioAgent() {
+  const work = byId(state.db.works, state.audioWorkId) || byId(state.db.works, state.selectedWorkId) || state.db.works[0] || null;
+  if (!state.audioWorkId && work) state.audioWorkId = work.id;
+  const chars = audioCharacterOptions();
+  if (state.audioCharacterId && !chars.some((char) => char.id === state.audioCharacterId)) {
+    state.audioCharacterId = "";
+  }
+  const controls = state.audioPromptDraft || {};
+  const voiceValue = controls.voice || state.audioVoice || state.db.settings.audioVoice || "Kore";
+  const history = audioItemsForWork(state.audioWorkId)
+    .filter((item) => !state.audioCharacterId || item.characterId === state.audioCharacterId)
+    .slice(0, 12);
+  return `
+    <div class="video-layout audio-layout">
+      <section class="panel">
+        <div class="panel-header"><h2>生成設定</h2></div>
+        <div class="panel-body form-grid">
+          <label class="full">作品
+            <select id="audio-work">
+              <option value="">全作品</option>
+              ${state.db.works.map((item) => `<option value="${item.id}" ${state.audioWorkId === item.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="full">キャラ指定
+            <select id="audio-character">
+              <option value="">指定なし</option>
+              ${chars.map((char) => `<option value="${char.id}" ${state.audioCharacterId === char.id ? "selected" : ""}>${escapeHtml(char.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="full">ボイス
+            <select id="audio-voice">${renderTtsVoiceOptions(voiceValue)}</select>
+          </label>
+          <label class="full">タイトル<input id="audio-title" value="${escapeHtml(controls.title || "生成音声")}"></label>
+          <div class="full meta">生成モデル: ${escapeHtml(openRouterTtsModel)} / 形式: MP3</div>
+        </div>
+      </section>
+      <section class="video-main">
+        <section class="panel video-chat-panel">
+          <div class="panel-header">
+            <h2>エージェント</h2>
+            <button class="ghost" data-action="audio-make-draft" ${state.audioIsThinking ? "disabled" : ""}>音声案</button>
+          </div>
+          <div class="panel-body">
+            <div class="chat-log">
+              ${state.audioChatMessages.map((message) => `<div class="chat-message ${message.role}"><div>${escapeHtml(message.content)}</div></div>`).join("")}
+              ${state.audioIsThinking ? `<div class="chat-message assistant"><div>考えています...</div></div>` : ""}
+            </div>
+            <div class="chat-input-row">
+              <textarea id="audio-chat-input" placeholder="例：燐谷奏汰の低く落ち着いた声で、雨音の中の独白を作って"></textarea>
+              <button data-action="audio-send-message" ${state.audioIsThinking ? "disabled" : ""}>送信</button>
+            </div>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>読み上げテキスト</h2>
+              <div class="meta">${escapeHtml(state.audioPromptDraft?.agentNote || "手動入力できます。")}</div>
+            </div>
+            <div class="group">
+              <button class="ghost" data-action="audio-copy-input">コピー</button>
+              <button class="accent" data-action="audio-start-generation" ${state.audioIsGenerating ? "disabled" : ""}>生成開始</button>
+            </div>
+          </div>
+          <div class="panel-body">
+            <textarea id="audio-input-text" class="seedance-prompt-text audio-input-text" placeholder="ここに読み上げる台詞やナレーションを入力します。">${escapeHtml(controls.input || "")}</textarea>
+            ${state.audioIsGenerating ? renderAudioGenerating() : ""}
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-header"><h2>生成履歴</h2></div>
+          <div class="panel-body audio-history-list">
+            ${history.length ? history.map(renderAudioItem).join("") : `<div class="empty compact">生成音声はまだありません。</div>`}
+          </div>
+        </section>
+      </section>
+    </div>
+  `;
+}
+
+function renderAudioGenerating() {
+  return `
+    <div class="seedance-animation audio-generating">
+      <div class="wave-loader"><span></span><span></span><span></span><span></span></div>
+      <div>
+        <strong>音声生成中</strong>
+        <div class="meta">完了後にキャラ情報と参照素材へ保存します。</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderVideoCostSummary(summary, currentRate) {
+  const collapsed = state.videoCostCollapsed;
+  const updatedText = summary.updatedAt ? new Date(summary.updatedAt).toLocaleString("ja-JP") : "未取得";
+  const rateDisplay = currentRate.usdPerSecond !== null
+    ? `${formatUsd(currentRate.usdPerSecond, 4)} / 秒`
+    : "未取得";
+  const rateJpyDisplay = currentRate.jpyPerSecond !== null
+    ? `${formatJpy(currentRate.jpyPerSecond)} / 秒`
+    : "未取得";
+  const statusText = state.videoPricingStatus === "loading"
+    ? "取得中です。"
+    : state.videoPricingError || `最終更新: ${updatedText} / USD-JPY ${formatPlainNumber(summary.usdJpyRate, 3)} (${summary.usdJpySource})`;
+  const estimateText = summary.estimatedUsd > 0
+    ? `概算 ${formatUsd(summary.estimatedUsd)} を含みます。`
+    : "実コストが取れるジョブは実コストを優先します。";
+  const unknownText = summary.unknown ? `単価未取得の ${summary.unknown} 件は未計上です。` : estimateText;
+  return `
+    <section class="panel video-cost-panel ${collapsed ? "collapsed" : ""}">
+      <div class="panel-header">
+        <div>
+          <div class="video-cost-title-row">
+            <h2>今月の動画コスト</h2>
+            <strong>${formatJpy(summary.jpy)}</strong>
+          </div>
+          <div class="meta">${escapeHtml(summary.label)} / ${escapeHtml(statusText)}</div>
+        </div>
+        <div class="video-cost-actions">
+          <button class="ghost" data-action="toggle-video-cost" aria-expanded="${collapsed ? "false" : "true"}">
+            ${collapsed ? "詳細を表示" : "折りたたむ"}
+          </button>
+          <button class="ghost" data-action="refresh-video-pricing" ${state.videoPricingStatus === "loading" ? "disabled" : ""}>
+            ${state.videoPricingStatus === "loading" ? "取得中..." : "現在料金を取得"}
+          </button>
+        </div>
+      </div>
+      ${collapsed ? "" : `<div class="panel-body">
+        <div class="video-cost-grid">
+          <div class="video-cost-main">
+            <div class="meta">今月の日本円概算</div>
+            <strong>${formatJpy(summary.jpy)}</strong>
+          </div>
+          <div>
+            <div class="meta">USD概算</div>
+            <strong>${formatUsd(summary.usd)}</strong>
+          </div>
+          <div>
+            <div class="meta">生成数 / 秒数</div>
+            <strong>${formatPlainNumber(summary.jobCount)}件 / ${formatPlainNumber(summary.seconds)}秒</strong>
+          </div>
+          <div>
+            <div class="meta">現在モデルの1秒料金</div>
+            <strong>${escapeHtml(rateDisplay)}</strong>
+            <div class="meta">${escapeHtml(rateJpyDisplay)} / ${escapeHtml(videoPricingSourceLabel(currentRate.source))}</div>
+          </div>
+        </div>
+        <div class="meta cost-note">${escapeHtml(unknownText)}</div>
+      </div>`}
+    </section>
+  `;
+}
+
 function renderVideoAgent() {
   const work = byId(state.db.works, state.videoWorkId) || byId(state.db.works, state.selectedWorkId) || state.db.works[0] || null;
   if (!state.videoWorkId && work) state.videoWorkId = work.id;
@@ -2330,14 +3387,36 @@ function renderVideoAgent() {
     state.videoCharacterId = "";
   }
   const controls = state.videoPromptDraft || {};
+  const currentModelId = compatibleVideoModelId(controls.model || state.db.settings.seedanceModel, state.db.settings.seedanceBaseUrl);
+  const currentModel = videoModelConfig(currentModelId);
+  const modeOptions = videoModeOptionsForModel(currentModel);
+  const durationOptions = optionList(currentModel.supported_durations, [5]);
+  const ratioOptions = optionList(currentModel.supported_aspect_ratios, ["16:9"]);
+  const resolutionOptions = optionList(currentModel.supported_resolutions, [state.db.settings.seedanceResolution || "720p"]);
+  const modeValue = modeOptions.some(([value]) => value === (controls.mode || "reference")) ? (controls.mode || "reference") : modeOptions[0][0];
+  const durationValue = optionValue(controls.duration || 5, durationOptions);
+  const ratioValue = optionValue(controls.ratio || "16:9", ratioOptions);
+  const resolutionValue = optionValue(controls.resolution || state.db.settings.seedanceResolution || "720p", resolutionOptions);
+  const audioOptions = currentModel.generate_audio === false ? [["false", "生成しない"]] : [["true", "生成する"], ["false", "生成しない"]];
+  const generateAudioValue = currentModel.generate_audio === false ? "false" : String(controls.generateAudio ?? true);
+  const modelStatusText = isOpenRouterSeedanceBaseUrl()
+    ? state.openRouterVideoModelStatus === "loaded"
+      ? "OpenRouter動画モデルの対応設定を読み込み済み。"
+      : state.openRouterVideoModelStatus === "loading"
+        ? "OpenRouter動画モデルの対応設定を読み込み中。"
+        : state.openRouterVideoModelError || "フォールバック設定を使用中。"
+    : "公式API向けの既定設定です。";
   const references = filteredVideoReferences();
   const selectedItems = selectedVideoReferences();
   const counts = selectedVideoReferenceCounts(selectedItems);
+  const monthlyCost = monthlyVideoCostSummary();
+  const currentRate = currentVideoRateSummary(currentModelId, resolutionValue, ratioValue);
   const jobs = (state.db.videoJobs || [])
     .filter((job) => !state.videoWorkId || job.workId === state.videoWorkId)
     .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
     .slice(0, 12);
   return `
+    ${renderVideoCostSummary(monthlyCost, currentRate)}
     <div class="video-layout">
       <section class="panel">
         <div class="panel-header"><h2>生成設定</h2></div>
@@ -2350,30 +3429,30 @@ function renderVideoAgent() {
           </label>
           <label>モード
             <select id="video-mode">
-              ${[
-                ["reference", "参照素材"],
-                ["text", "テキストのみ"],
-                ["first_frame", "開始フレーム"],
-                ["first_last", "開始＋終了"]
-              ].map(([value, label]) => `<option value="${value}" ${(controls.mode || "reference") === value ? "selected" : ""}>${label}</option>`).join("")}
+              ${modeOptions.map(([value, label]) => `<option value="${value}" ${modeValue === value ? "selected" : ""}>${label}</option>`).join("")}
             </select>
           </label>
-          <label>秒数<input id="video-duration" type="number" min="4" max="15" step="1" value="${escapeHtml(controls.duration || 5)}"></label>
+          <label>秒数
+            <select id="video-duration">
+              ${durationOptions.map((value) => `<option value="${escapeHtml(value)}" ${durationValue === value ? "selected" : ""}>${escapeHtml(value)}秒</option>`).join("")}
+            </select>
+          </label>
           <label>アスペクト比
             <select id="video-ratio">
-              ${["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"].map((value) => `<option value="${value}" ${(controls.ratio || "16:9") === value ? "selected" : ""}>${value}</option>`).join("")}
+              ${ratioOptions.map((value) => `<option value="${escapeHtml(value)}" ${ratioValue === value ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}
             </select>
           </label>
           <label>解像度
             <select id="video-resolution">
-              ${["480p", "720p", "1080p", "2K"].map((value) => `<option value="${value}" ${(controls.resolution || state.db.settings.seedanceResolution || "720p") === value ? "selected" : ""}>${value}</option>`).join("")}
+              ${resolutionOptions.map((value) => `<option value="${escapeHtml(value)}" ${resolutionValue === value ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}
             </select>
           </label>
-          <label class="full">Seedanceモデル<input id="video-seedance-model" value="${escapeHtml(state.db.settings.seedanceModel || "dreamina-seedance-2-0-260128")}"></label>
+          <label class="full">動画モデル
+            ${renderVideoModelSelect("video-seedance-model", currentModelId)}
+          </label>
           <label>音声
             <select id="video-generate-audio">
-              <option value="true" ${(controls.generateAudio ?? true) ? "selected" : ""}>生成する</option>
-              <option value="false" ${!(controls.generateAudio ?? true) ? "selected" : ""}>生成しない</option>
+              ${audioOptions.map(([value, label]) => `<option value="${value}" ${generateAudioValue === value ? "selected" : ""}>${label}</option>`).join("")}
             </select>
           </label>
           <label>カメラ固定
@@ -2395,6 +3474,7 @@ function renderVideoAgent() {
             </select>
           </label>
           <label class="full">Seed<input id="video-seed" type="number" value="${escapeHtml(controls.seed ?? -1)}"></label>
+          <div class="full meta">${escapeHtml(modelStatusText)}</div>
         </div>
         <div class="panel-header compact-header">
           <h2>参照素材</h2>
@@ -2479,11 +3559,15 @@ function renderSeedanceAnimation() {
 
 function renderVideoJob(job) {
   const work = byId(state.db.works, job.workId);
+  const cost = videoJobCostSummary(job);
+  const costText = cost.usd !== null
+    ? `${cost.source === "actual" ? "実コスト" : "概算"} ${formatUsd(cost.usd)}`
+    : "";
   return `
     <article class="video-job ${job.status}">
       <div>
         <div class="char-name">${escapeHtml(job.title || "Seedance video")}</div>
-        <div class="meta">${escapeHtml(work?.name || "全作品")} / ${escapeHtml(job.status || "unknown")} / ${job.updatedAt ? escapeHtml(new Date(job.updatedAt).toLocaleString("ja-JP")) : ""}</div>
+        <div class="meta">${escapeHtml(work?.name || "全作品")} / ${escapeHtml(job.status || "unknown")} / ${job.updatedAt ? escapeHtml(new Date(job.updatedAt).toLocaleString("ja-JP")) : ""}${costText ? ` / ${escapeHtml(costText)}` : ""}</div>
       </div>
       ${job.localUrl ? `<video class="generated-video" controls src="${escapeHtml(job.localUrl)}"></video>` : ""}
       <div class="result-text">${escapeHtml(compactPromptText(job.prompt, 900))}</div>
@@ -2563,6 +3647,17 @@ function renderSettings() {
     loaded: `${state.openRouterModels.length} 件のモデルを読み込みました。`,
     failed: `モデル一覧を取得できませんでした。保存済み候補を表示しています。${state.openRouterModelError ? ` ${state.openRouterModelError}` : ""}`
   }[state.openRouterModelStatus] || "";
+  const settingsVideoModelId = compatibleVideoModelId(state.db.settings.seedanceModel, state.db.settings.seedanceBaseUrl);
+  const videoModel = videoModelConfig(settingsVideoModelId, state.db.settings.seedanceBaseUrl);
+  const settingsResolutionOptions = optionList(videoModel.supported_resolutions, [state.db.settings.seedanceResolution || "720p"]);
+  const settingsResolution = optionValue(state.db.settings.seedanceResolution || "720p", settingsResolutionOptions);
+  const videoStatusText = isOpenRouterSeedanceBaseUrl()
+    ? state.openRouterVideoModelStatus === "loaded"
+      ? "OpenRouter動画モデルの対応設定を読み込みました。"
+      : state.openRouterVideoModelStatus === "loading"
+        ? "OpenRouter動画モデルの対応設定を読み込み中です。"
+        : state.openRouterVideoModelError || "OpenRouter動画モデルはフォールバック設定で表示しています。"
+    : "公式API向けの既定設定です。";
   return `
     <section class="panel">
       <div class="panel-header"><h2>OpenRouter</h2></div>
@@ -2574,8 +3669,12 @@ function renderSettings() {
         ${renderModelSelect("setting-text-model", "テキスト生成モデル", state.db.settings.textModel || "", "text")}
         ${renderModelSelect("setting-world-model", "世界観読み込みモデル", state.db.settings.worldModel || state.db.settings.defaultModel || "", "image")}
         ${renderModelSelect("setting-video-agent-model", "動画エージェントモデル", state.db.settings.videoAgentModel || state.db.settings.textModel || "", "image")}
+        ${renderModelSelect("setting-audio-agent-model", "音声エージェントモデル", state.db.settings.audioAgentModel || state.db.settings.textModel || "", "text")}
+        <label class="full">音声生成モデル
+          <input value="${escapeHtml(openRouterTtsModel)}" readonly>
+        </label>
         <div class="full meta">${escapeHtml(statusText)}</div>
-        <div class="full meta">キーはブラウザ内に保存されます。作品データと画像はこのアプリの data フォルダに保存されます。世界観読み込みモデルは設定シート画像の読解に使います。JSONが崩れる場合は、Gemini系やClaude Sonnet/Opus系など、長文と画像の両方に強いモデルを選ぶと安定しやすいです。</div>
+        <div class="full meta">キーはブラウザ内に保存されます。作品データ、画像、生成音声はこのアプリの data フォルダに保存されます。世界観読み込みモデルは設定シート画像の読解に使います。音声エージェントモデルは読み上げテキスト案の作成だけに使い、実際の音声生成は固定で google/gemini-3.1-flash-tts-preview を使います。</div>
         <div class="full toolbar">
           <button data-action="save-settings">設定を保存</button>
           <button class="ghost" data-action="test-openrouter">接続テスト</button>
@@ -2590,14 +3689,15 @@ function renderSettings() {
           <input id="setting-seedance-api-key" type="password" placeholder="BytePlus / OpenRouter API key" value="${escapeHtml(seedanceApiKey())}">
         </label>
         ${renderSeedanceApiBaseSelect(state.db.settings.seedanceBaseUrl)}
-        <label>Seedance モデル
-          <input id="setting-seedance-model" value="${escapeHtml(state.db.settings.seedanceModel || "dreamina-seedance-2-0-260128")}">
+        <label>動画モデル
+          ${renderVideoModelSelect("setting-seedance-model", settingsVideoModelId, state.db.settings.seedanceBaseUrl)}
         </label>
         <label>既定解像度
           <select id="setting-seedance-resolution">
-            ${["480p", "720p", "1080p", "2K"].map((value) => `<option value="${value}" ${value === (state.db.settings.seedanceResolution || "720p") ? "selected" : ""}>${value}</option>`).join("")}
+            ${settingsResolutionOptions.map((value) => `<option value="${escapeHtml(value)}" ${value === settingsResolution ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}
           </select>
         </label>
+        <div class="full meta">${escapeHtml(videoStatusText)}</div>
         <div class="full meta">生成動画は完了後に data/videos に保存されます。OpenRouterを選んだ場合は、上のOpenRouter APIキー欄のキーを優先して使います。</div>
       </div>
     </section>
@@ -2621,6 +3721,7 @@ function bindView() {
   if (state.view === "studio") bindStudio();
   if (state.view === "import") bindImport();
   if (state.view === "gallery") bindGallery();
+  if (state.view === "audio") bindAudioAgent();
   if (state.view === "video") bindVideoAgent();
   if (state.view === "library") bindLibrary();
   if (state.view === "prompt") bindPromptLab();
@@ -2633,6 +3734,15 @@ function bindStudio() {
       if (event.target.closest("button")) return;
       state.selectedWorkId = row.dataset.id;
       state.worldSheetFile = null;
+      render();
+    });
+  });
+  document.querySelectorAll("[data-action='move-work']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const direction = Number(button.dataset.direction);
+      const moved = moveWorkInList(button.dataset.id, direction);
+      if (!moved) return;
+      await saveDb();
       render();
     });
   });
@@ -2657,6 +3767,9 @@ function bindStudio() {
       state.view = "gallery";
       render();
     });
+  });
+  document.querySelectorAll("[data-action='show-character-audios']").forEach((button) => {
+    button.addEventListener("click", () => openCharacterAudioModal(byId(state.db.characters, button.dataset.id)));
   });
   document.querySelectorAll("[data-action='show-world-item-images']").forEach((button) => {
     button.addEventListener("click", () => {
@@ -3013,12 +4126,58 @@ function bindGallery() {
   });
 }
 
+function bindAudioAgent() {
+  const persistAudioControls = () => {
+    const controls = audioControlsFromDom();
+    state.audioWorkId = controls.workId || null;
+    state.audioCharacterId = controls.characterId || "";
+    state.audioVoice = controls.voice;
+    state.audioPromptDraft = {
+      ...(state.audioPromptDraft || {}),
+      title: controls.title,
+      input: controls.input,
+      voice: controls.voice
+    };
+    state.db.settings.audioVoice = controls.voice;
+  };
+  ["#audio-voice", "#audio-title", "#audio-input-text"].forEach((selector) => {
+    document.querySelector(selector)?.addEventListener("change", persistAudioControls);
+  });
+  document.querySelector("#audio-work")?.addEventListener("change", (event) => {
+    persistAudioControls();
+    state.audioWorkId = event.target.value || null;
+    state.selectedWorkId = state.audioWorkId;
+    if (state.audioCharacterId && !audioCharacterOptions().some((char) => char.id === state.audioCharacterId)) {
+      state.audioCharacterId = "";
+    }
+    render();
+  });
+  document.querySelector("#audio-character")?.addEventListener("change", (event) => {
+    persistAudioControls();
+    state.audioCharacterId = event.target.value || "";
+    const char = byId(state.db.characters, state.audioCharacterId);
+    if (char) {
+      state.audioWorkId = char.workId;
+      state.selectedWorkId = char.workId;
+    }
+    render();
+  });
+  document.querySelector("[data-action='audio-send-message']")?.addEventListener("click", () => handleAudioAgentMessage(false));
+  document.querySelector("[data-action='audio-make-draft']")?.addEventListener("click", () => handleAudioAgentMessage(true));
+  document.querySelector("[data-action='audio-copy-input']")?.addEventListener("click", () => {
+    const text = document.querySelector("#audio-input-text")?.value || "";
+    copyText(text);
+  });
+  document.querySelector("[data-action='audio-start-generation']")?.addEventListener("click", startAudioGeneration);
+}
+
 function bindVideoAgent() {
   const persistVideoControls = () => {
     const controls = videoControlsFromDom();
     state.videoCharacterId = controls.characterId || "";
     state.videoPromptDraft = {
       ...(state.videoPromptDraft || {}),
+      model: controls.model,
       mode: controls.mode,
       duration: controls.duration,
       ratio: controls.ratio,
@@ -3035,6 +4194,10 @@ function bindVideoAgent() {
   };
   ["#video-duration", "#video-ratio", "#video-resolution", "#video-seedance-model", "#video-generate-audio", "#video-camera-fixed", "#video-watermark", "#video-return-last-frame", "#video-seed", "#video-prompt-text"].forEach((selector) => {
     document.querySelector(selector)?.addEventListener("change", persistVideoControls);
+  });
+  document.querySelector("#video-seedance-model")?.addEventListener("change", () => {
+    persistVideoControls();
+    render();
   });
   document.querySelector("#video-work")?.addEventListener("change", (event) => {
     persistVideoControls();
@@ -3100,6 +4263,11 @@ function bindVideoAgent() {
   });
   document.querySelector("[data-action='video-send-message']")?.addEventListener("click", () => handleVideoAgentMessage(false));
   document.querySelector("[data-action='video-make-draft']")?.addEventListener("click", () => handleVideoAgentMessage(true));
+  document.querySelector("[data-action='toggle-video-cost']")?.addEventListener("click", () => {
+    state.videoCostCollapsed = !state.videoCostCollapsed;
+    render();
+  });
+  document.querySelector("[data-action='refresh-video-pricing']")?.addEventListener("click", refreshVideoPricing);
   document.querySelector("[data-action='video-copy-prompt']")?.addEventListener("click", () => {
     const text = document.querySelector("#video-prompt-text")?.value || "";
     copyText(text);
@@ -3114,6 +4282,7 @@ function bindVideoAgent() {
       if (job) copyText(job.prompt || "");
     });
   });
+  if (isOpenRouterSeedanceBaseUrl()) loadOpenRouterVideoModels();
 }
 
 async function classifyAsset(asset, knownDataUrl = null, fallbackPromptFormat = state.importPromptFormat) {
@@ -3234,13 +4403,22 @@ async function copyText(text) {
 
 function bindSettings() {
   loadOpenRouterModels();
+  if (isOpenRouterSeedanceBaseUrl()) loadOpenRouterVideoModels();
   document.querySelector("#setting-seedance-base-url")?.addEventListener("change", (event) => {
     const selected = seedanceApiBasePreset(event.target.value);
     const modelInput = document.querySelector("#setting-seedance-model");
     const knownDefaultModels = seedanceApiBaseOptions.map((option) => option.defaultModel);
-    if (modelInput && (!modelInput.value.trim() || knownDefaultModels.includes(modelInput.value.trim()))) {
-      modelInput.value = selected.defaultModel;
+    const nextModel = modelInput && (!modelInput.value.trim() || knownDefaultModels.includes(modelInput.value.trim()) || targetOpenRouterVideoModelIds.includes(modelInput.value.trim()))
+      ? selected.defaultModel
+      : modelInput?.value.trim() || selected.defaultModel;
+    updateSettingSeedanceModelOptions(selected.value, nextModel);
+    if (isOpenRouterSeedanceBaseUrl(selected.value)) {
+      loadOpenRouterVideoModels().then(() => updateSettingSeedanceModelOptions(selected.value, nextModel));
     }
+  });
+  document.querySelector("#setting-seedance-model")?.addEventListener("change", (event) => {
+    const baseUrl = document.querySelector("#setting-seedance-base-url")?.value || state.db.settings.seedanceBaseUrl;
+    updateSettingSeedanceResolutionOptions(event.target.value, baseUrl);
   });
   document.querySelector("[data-action='save-settings']")?.addEventListener("click", async () => {
     localStorage.setItem("openrouter_api_key", document.querySelector("#setting-api-key").value.trim());
@@ -3249,6 +4427,8 @@ function bindSettings() {
     state.db.settings.textModel = document.querySelector("#setting-text-model").value.trim();
     state.db.settings.worldModel = document.querySelector("#setting-world-model").value.trim();
     state.db.settings.videoAgentModel = document.querySelector("#setting-video-agent-model").value.trim();
+    state.db.settings.audioAgentModel = document.querySelector("#setting-audio-agent-model").value.trim();
+    state.db.settings.audioModel = openRouterTtsModel;
     state.db.settings.seedanceBaseUrl = document.querySelector("#setting-seedance-base-url")?.value.trim() || "https://ark.ap-southeast.bytepluses.com/api/v3";
     state.db.settings.seedanceModel = document.querySelector("#setting-seedance-model")?.value.trim() || "dreamina-seedance-2-0-260128";
     state.db.settings.seedanceResolution = document.querySelector("#setting-seedance-resolution")?.value || "720p";
@@ -3261,6 +4441,8 @@ function bindSettings() {
     state.db.settings.textModel = document.querySelector("#setting-text-model").value.trim();
     state.db.settings.worldModel = document.querySelector("#setting-world-model").value.trim();
     state.db.settings.videoAgentModel = document.querySelector("#setting-video-agent-model").value.trim();
+    state.db.settings.audioAgentModel = document.querySelector("#setting-audio-agent-model").value.trim();
+    state.db.settings.audioModel = openRouterTtsModel;
     try {
       await callOpenRouter({
         textOnly: true,
@@ -3897,6 +5079,23 @@ function openWorldSettingModal(work, sheetId = null) {
   );
 }
 
+function openCharacterAudioModal(char) {
+  if (!char) return;
+  const audios = audioItemsForCharacter(char.id);
+  openModal(
+    `${char.name} の音声`,
+    `
+      <div class="audio-history-list">
+        ${audios.length ? audios.map(renderAudioItem).join("") : `<div class="empty compact">このキャラに紐づいた音声はまだありません。</div>`}
+      </div>
+    `,
+    `<div></div><button data-action="close-audio-list">閉じる</button>`,
+    (modal, close) => {
+      modal.querySelector("[data-action='close-audio-list']").addEventListener("click", close);
+    }
+  );
+}
+
 function openAssetModal(asset) {
   const dimensions = assetDimensionLabel(asset);
   openModal(
@@ -3938,6 +5137,7 @@ async function boot() {
   try {
     state.db = await getJson("/api/db");
     state.selectedWorkId = state.db.works[0]?.id || null;
+    state.audioWorkId = state.selectedWorkId;
     state.videoWorkId = state.selectedWorkId;
     state.galleryWorkId = state.selectedWorkId;
     await normalizeStoredUploads();
