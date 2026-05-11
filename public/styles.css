@@ -759,6 +759,41 @@ textarea {
   width: 100%;
 }
 
+.irodori-settings,
+.elevenlabs-settings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  border: 1px solid rgba(31, 138, 132, 0.22);
+  border-radius: 8px;
+  background: rgba(246, 251, 250, 0.72);
+  padding: 12px;
+}
+
+.check-row {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.check-row input {
+  min-height: auto;
+  width: auto;
+}
+
+.irodori-reference {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px;
+}
+
+.irodori-reference audio {
+  width: 100%;
+}
+
 .video-layout {
   display: grid;
   grid-template-columns: minmax(300px, 420px) minmax(0, 1fr);
@@ -1134,6 +1169,8 @@ textarea {
   .world-summary,
   .world-sheet-row,
   .info-list,
+  .irodori-settings,
+  .elevenlabs-settings,
   .form-grid {
     grid-template-columns: 1fr;
   }

@@ -33,12 +33,18 @@ const state = {
   audioWorkId: null,
   audioCharacterId: "",
   audioVoice: "Kore",
+  audioProvider: "openrouter",
+  audioIrodoriReference: null,
   audioChatMessages: [
     { role: "assistant", content: "音声生成エージェントです。台詞、ナレーション、声の雰囲気、キャラ指定があれば教えてください。" }
   ],
   audioPromptDraft: null,
   audioIsThinking: false,
   audioIsGenerating: false,
+  audioGenerationStartedAt: 0,
+  audioGenerationTimer: null,
+  irodoriStatus: "idle",
+  irodoriStatusMessage: "",
   seedanceGuide: "",
   worldSheetFile: null,
   promptUseMemo: true,
@@ -49,6 +55,12 @@ const state = {
   openRouterVideoModels: [],
   openRouterVideoModelStatus: "idle",
   openRouterVideoModelError: "",
+  elevenLabsVoices: [],
+  elevenLabsVoiceStatus: "idle",
+  elevenLabsVoiceError: "",
+  elevenLabsModels: [],
+  elevenLabsModelStatus: "idle",
+  elevenLabsModelError: "",
   videoPricingStatus: "idle",
   videoPricingError: "",
   videoCostCollapsed: false
@@ -66,6 +78,52 @@ const navItems = [
 ];
 
 const openRouterTtsModel = "google/gemini-3.1-flash-tts-preview";
+
+const audioProviders = [
+  ["openrouter", "OpenRouter / Gemini TTS"],
+  ["elevenlabs", "ElevenLabs"],
+  ["irodori", "Irodori-TTS"]
+];
+
+const irodoriDefaultSettings = {
+  mode: "VoiceDesign",
+  caption: "落ち着いた自然な日本語の声で、距離感は近めに読み上げてください。",
+  modelDevice: "auto",
+  modelPrecision: "fp32",
+  codecDevice: "auto",
+  codecPrecision: "fp32",
+  numSteps: 40,
+  numCandidates: 1,
+  seed: "",
+  cfgScaleText: 3,
+  cfgScaleCaption: 4,
+  cfgScaleSpeaker: 5,
+  customCheckpoint: ""
+};
+
+const defaultAudioActingPrompt = "自然な日本語で、感情と間を大切にして読み上げてください。";
+
+const elevenLabsModelOptions = [
+  "eleven_multilingual_v2",
+  "eleven_turbo_v2_5",
+  "eleven_flash_v2_5",
+  "eleven_v3"
+];
+
+const elevenLabsModelNames = {
+  eleven_multilingual_v2: "Eleven Multilingual v2",
+  eleven_turbo_v2_5: "Eleven Turbo v2.5",
+  eleven_flash_v2_5: "Eleven Flash v2.5",
+  eleven_v3: "Eleven v3"
+};
+
+const elevenLabsOutputFormats = [
+  "mp3_44100_128",
+  "mp3_44100_192",
+  "mp3_22050_32",
+  "wav_44100",
+  "pcm_24000"
+];
 
 const ttsVoices = [
   ["Kore", "Firm / 女性"],
@@ -261,6 +319,7 @@ const worldItemsForWork = (workId) => (state.db.worldItems || []).filter((item) 
 const assetsForWork = (workId) => state.db.assets.filter((asset) => !workId || asset.workId === workId);
 const apiKey = () => localStorage.getItem("openrouter_api_key") || "";
 const seedanceApiKey = () => localStorage.getItem("seedance_api_key") || "";
+const elevenLabsApiKey = () => localStorage.getItem("elevenlabs_api_key") || "";
 const isOpenRouterSeedanceBaseUrl = (value = state.db?.settings?.seedanceBaseUrl) => String(value || "").includes("openrouter.ai");
 const activeSeedanceApiKey = (baseUrl = state.db?.settings?.seedanceBaseUrl) =>
   isOpenRouterSeedanceBaseUrl(baseUrl) ? (apiKey() || seedanceApiKey()) : seedanceApiKey();
@@ -779,21 +838,29 @@ function workWorldItemById(id) {
 }
 
 function normalizeAudioItem(item = {}) {
+  const provider = normalizedAudioProvider(item.provider || (item.model === "Irodori-TTS" ? "irodori" : "openrouter"));
+  const irodori = provider === "irodori" ? normalizedIrodoriSettings(item.irodori || item.parameters || item.request || {}) : null;
   return {
     id: item.id || uid(),
     workId: item.workId || null,
     characterId: item.characterId || null,
     title: item.title || item.name || "生成音声",
     input: item.input || item.text || "",
-    voice: item.voice || "Kore",
-    model: item.model || openRouterTtsModel,
-    format: item.format || "mp3",
+    provider,
+    voice: item.voice || (provider === "irodori" ? irodori?.mode || "VoiceDesign" : "Kore"),
+    model: item.model || (provider === "irodori" ? "Irodori-TTS" : openRouterTtsModel),
+    format: item.format || (provider === "irodori" ? "wav" : "mp3"),
     url: item.url || "",
     localPath: item.localPath || item.path || "",
-    mimeType: item.mimeType || "audio/mpeg",
+    mimeType: item.mimeType || (provider === "irodori" ? "audio/wav" : "audio/mpeg"),
     generationId: item.generationId || "",
     size: Number(item.size) || null,
     agentNote: item.agentNote || "",
+    caption: item.caption || irodori?.caption || "",
+    actingPrompt: item.actingPrompt || item.caption || "",
+    irodori,
+    elevenLabs: item.elevenLabs || null,
+    referenceAudio: item.referenceAudio || null,
     createdAt: item.createdAt || new Date().toISOString()
   };
 }
@@ -966,6 +1033,38 @@ function buildPromptLabWorldContext(work) {
   return lines.filter(Boolean).join("\n");
 }
 
+function normalizedAudioProvider(value) {
+  return audioProviders.some(([provider]) => provider === value) ? value : "openrouter";
+}
+
+function boundedSettingNumber(value, fallback, min, max, integer = false) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  const bounded = Math.min(max, Math.max(min, number));
+  return integer ? Math.round(bounded) : Number(bounded.toFixed(2));
+}
+
+function normalizedIrodoriSettings(value = {}) {
+  const source = { ...irodoriDefaultSettings, ...(value || {}) };
+  const modelDevice = ["auto", "cpu", "mps", "cuda"].includes(source.modelDevice) ? source.modelDevice : "auto";
+  const codecDevice = ["auto", "cpu", "mps", "cuda"].includes(source.codecDevice) ? source.codecDevice : "auto";
+  return {
+    mode: source.mode === "Reference" ? "Reference" : "VoiceDesign",
+    caption: String(source.caption || "").trim() || irodoriDefaultSettings.caption,
+    modelDevice,
+    modelPrecision: source.modelPrecision === "bf16" && modelDevice === "cuda" ? "bf16" : "fp32",
+    codecDevice,
+    codecPrecision: source.codecPrecision === "bf16" && codecDevice === "cuda" ? "bf16" : "fp32",
+    numSteps: boundedSettingNumber(source.numSteps, 40, 8, 80, true),
+    numCandidates: boundedSettingNumber(source.numCandidates, 1, 1, 4, true),
+    seed: String(source.seed || "").trim(),
+    cfgScaleText: boundedSettingNumber(source.cfgScaleText, 3, 0, 10),
+    cfgScaleCaption: boundedSettingNumber(source.cfgScaleCaption, 4, 0, 10),
+    cfgScaleSpeaker: boundedSettingNumber(source.cfgScaleSpeaker, 5, 0, 10),
+    customCheckpoint: String(source.customCheckpoint || "").trim()
+  };
+}
+
 function normalizeSettings() {
   state.db.settings = {
     defaultModel: "google/gemini-2.5-flash",
@@ -973,8 +1072,21 @@ function normalizeSettings() {
     worldModel: state.db.settings?.defaultModel || "google/gemini-2.5-flash",
     videoAgentModel: state.db.settings?.textModel || state.db.settings?.defaultModel || "google/gemini-2.5-flash",
     audioAgentModel: state.db.settings?.textModel || state.db.settings?.defaultModel || "google/gemini-2.5-flash",
+    audioProvider: "openrouter",
     audioModel: openRouterTtsModel,
     audioVoice: "Kore",
+    audioActingPrompt: defaultAudioActingPrompt,
+    elevenLabsVoiceId: "JBFqnCBsd6RMkjVDRZzb",
+    elevenLabsModelId: "eleven_multilingual_v2",
+    elevenLabsOutputFormat: "mp3_44100_128",
+    elevenLabsStability: 0.5,
+    elevenLabsSimilarityBoost: 0.75,
+    elevenLabsStyle: 0,
+    elevenLabsSpeed: 1,
+    elevenLabsSpeakerBoost: true,
+    elevenLabsLanguageCode: "ja",
+    irodoriAppDir: "vendor/Irodori-TTS",
+    irodoriDefaults: { ...irodoriDefaultSettings },
     seedanceBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3",
     seedanceModel: "dreamina-seedance-2-0-260128",
     seedanceResolution: "720p",
@@ -989,8 +1101,22 @@ function normalizeSettings() {
   if (!state.db.settings.worldModel) state.db.settings.worldModel = state.db.settings.defaultModel || state.db.settings.textModel;
   if (!state.db.settings.videoAgentModel) state.db.settings.videoAgentModel = state.db.settings.textModel || state.db.settings.defaultModel;
   if (!state.db.settings.audioAgentModel) state.db.settings.audioAgentModel = state.db.settings.textModel || state.db.settings.defaultModel;
+  state.db.settings.audioProvider = normalizedAudioProvider(state.db.settings.audioProvider);
+  state.audioProvider = normalizedAudioProvider(state.db.settings.audioProvider || state.audioProvider);
   state.db.settings.audioModel = state.db.settings.audioModel || openRouterTtsModel;
   state.db.settings.audioVoice = ttsVoices.some(([voice]) => voice === state.db.settings.audioVoice) ? state.db.settings.audioVoice : "Kore";
+  state.db.settings.audioActingPrompt = String(state.db.settings.audioActingPrompt || defaultAudioActingPrompt).trim() || defaultAudioActingPrompt;
+  state.db.settings.elevenLabsVoiceId = String(state.db.settings.elevenLabsVoiceId || "JBFqnCBsd6RMkjVDRZzb").trim() || "JBFqnCBsd6RMkjVDRZzb";
+  state.db.settings.elevenLabsModelId = String(state.db.settings.elevenLabsModelId || "eleven_multilingual_v2").trim() || "eleven_multilingual_v2";
+  state.db.settings.elevenLabsOutputFormat = String(state.db.settings.elevenLabsOutputFormat || "mp3_44100_128").trim() || "mp3_44100_128";
+  state.db.settings.elevenLabsStability = boundedSettingNumber(state.db.settings.elevenLabsStability, 0.5, 0, 1);
+  state.db.settings.elevenLabsSimilarityBoost = boundedSettingNumber(state.db.settings.elevenLabsSimilarityBoost, 0.75, 0, 1);
+  state.db.settings.elevenLabsStyle = boundedSettingNumber(state.db.settings.elevenLabsStyle, 0, 0, 1);
+  state.db.settings.elevenLabsSpeed = boundedSettingNumber(state.db.settings.elevenLabsSpeed, 1, 0.7, 1.2);
+  state.db.settings.elevenLabsSpeakerBoost = state.db.settings.elevenLabsSpeakerBoost !== false;
+  state.db.settings.elevenLabsLanguageCode = String(state.db.settings.elevenLabsLanguageCode || "ja").trim();
+  state.db.settings.irodoriAppDir = String(state.db.settings.irodoriAppDir || "vendor/Irodori-TTS").trim() || "vendor/Irodori-TTS";
+  state.db.settings.irodoriDefaults = normalizedIrodoriSettings(state.db.settings.irodoriDefaults);
   state.db.settings.videoPricing = {
     updatedAt: "",
     usdJpyRate: 155,
@@ -1602,14 +1728,46 @@ async function getJson(url) {
   return response.json();
 }
 
+function readableError(value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.map(readableError).filter(Boolean).join(" / ");
+  if (typeof value === "object") {
+    const nested = readableError(value.message)
+      || readableError(value.error)
+      || readableError(value.detail)
+      || readableError(value.reason)
+      || readableError(value.raw);
+    if (nested) return nested;
+    const json = JSON.stringify(value);
+    return json === "{}" ? "" : json;
+  }
+  return String(value);
+}
+
 async function postJson(url, body, method = "POST") {
   const response = await fetch(url, {
     method,
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body)
   });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || JSON.stringify(payload));
+  const text = await response.text();
+  let payload = {};
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch {
+    payload = {};
+  }
+	  if (!response.ok) {
+	    if (url.startsWith("/api/irodori/") && /Method not allowed|Not found/i.test(text)) {
+	      throw new Error("Irodori-TTS APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
+	    }
+	    if (url.startsWith("/api/elevenlabs/") && /Method not allowed|Not found/i.test(text)) {
+	      throw new Error("ElevenLabs APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
+	    }
+	    throw new Error(readableError(payload.error) || readableError(payload) || text || `${response.status} ${response.statusText}`);
+	  }
   return payload;
 }
 
@@ -1790,9 +1948,9 @@ function toast(message) {
   if (old) old.remove();
   const node = document.createElement("div");
   node.className = "toast";
-  node.textContent = message;
+  node.textContent = readableError(message) || String(message || "");
   document.body.append(node);
-  window.setTimeout(() => node.remove(), 3200);
+  window.setTimeout(() => node.remove(), node.textContent.length > 80 ? 8000 : 3200);
 }
 
 function cleanJsonCandidate(value) {
@@ -3022,9 +3180,244 @@ async function uploadVideoReferenceFiles(files) {
   }
 }
 
+async function uploadIrodoriReferenceFile(file) {
+  if (!file || !file.type.startsWith("audio/")) return toast("音声ファイルを選択してください。");
+  const selectedChar = byId(state.db.characters, state.audioCharacterId);
+  const work = byId(state.db.works, selectedChar?.workId || state.audioWorkId || state.selectedWorkId);
+  try {
+    const dataUrl = await fileToDataUrl(file);
+    const uploaded = await postJson("/api/media-upload", {
+      dataUrl,
+      name: file.name,
+      workName: work?.name
+    });
+    state.audioIrodoriReference = {
+      name: file.name,
+      url: uploaded.url,
+      localPath: uploaded.path,
+      mimeType: uploaded.mimeType || file.type
+    };
+    render();
+    toast("Irodori-TTSの参照音声を設定しました。");
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
 function renderTtsVoiceOptions(selectedVoice = "Kore") {
   const current = ttsVoices.some(([voice]) => voice === selectedVoice) ? selectedVoice : "Kore";
   return ttsVoices.map(([voice, label]) => `<option value="${voice}" ${voice === current ? "selected" : ""}>${escapeHtml(voice)} (${escapeHtml(label)})</option>`).join("");
+}
+
+function elevenLabsVoiceLabel(voice) {
+  const labelBits = [
+    voice.name || voice.voiceId,
+    voice.category,
+    voice.labels?.gender,
+    voice.labels?.accent
+  ].filter(Boolean);
+  return labelBits.join(" / ");
+}
+
+function renderElevenLabsVoiceOptions(selectedVoiceId) {
+  const current = String(selectedVoiceId || state.db.settings.elevenLabsVoiceId || "JBFqnCBsd6RMkjVDRZzb").trim();
+  const options = [];
+  const seen = new Set();
+  if (current) {
+    const savedVoice = state.elevenLabsVoices.find((voice) => voice.voiceId === current);
+    options.push({
+      value: current,
+      label: savedVoice ? `${elevenLabsVoiceLabel(savedVoice)} / ${current}` : `${current} / 保存中`
+    });
+    seen.add(current);
+  }
+  state.elevenLabsVoices.forEach((voice) => {
+    if (!voice.voiceId || seen.has(voice.voiceId)) return;
+    options.push({
+      value: voice.voiceId,
+      label: `${elevenLabsVoiceLabel(voice)} / ${voice.voiceId}`
+    });
+    seen.add(voice.voiceId);
+  });
+  if (!options.length) options.push({ value: "", label: "音声一覧取得後に選択" });
+  return options.map((option) => `<option value="${escapeHtml(option.value)}" ${option.value === current ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("");
+}
+
+function elevenLabsModelLabel(model) {
+  const modelId = model.modelId || model;
+  const name = model.name || elevenLabsModelNames[modelId] || modelId;
+  const traits = [];
+  if (model.canUseStyle) traits.push("style");
+  if (model.canUseSpeakerBoost) traits.push("speaker boost");
+  if (Array.isArray(model.languages) && model.languages.length) traits.push(`${model.languages.length} languages`);
+  return `${name} / ${modelId}${traits.length ? ` / ${traits.join(", ")}` : ""}`;
+}
+
+function elevenLabsModelItems(selectedModelId) {
+  const current = String(selectedModelId || state.db.settings.elevenLabsModelId || "eleven_multilingual_v2").trim();
+  const options = [];
+  const seen = new Set();
+  state.elevenLabsModels.forEach((model) => {
+    if (!model.modelId || seen.has(model.modelId)) return;
+    options.push(model);
+    seen.add(model.modelId);
+  });
+  elevenLabsModelOptions.forEach((modelId) => {
+    if (seen.has(modelId)) return;
+    options.push({ modelId, name: elevenLabsModelNames[modelId] || modelId });
+    seen.add(modelId);
+  });
+  if (current && !seen.has(current)) options.unshift({ modelId: current, name: `${current} / 保存中` });
+  return options;
+}
+
+function renderElevenLabsModelOptions(selectedModelId) {
+  const current = String(selectedModelId || state.db.settings.elevenLabsModelId || "eleven_multilingual_v2").trim();
+  return elevenLabsModelItems(current)
+    .map((model) => `<option value="${escapeHtml(model.modelId)}" ${model.modelId === current ? "selected" : ""}>${escapeHtml(elevenLabsModelLabel(model))}</option>`)
+    .join("");
+}
+
+function renderAudioProviderOptions(selectedProvider = "openrouter") {
+  const current = normalizedAudioProvider(selectedProvider);
+  return audioProviders.map(([provider, label]) => `<option value="${provider}" ${provider === current ? "selected" : ""}>${escapeHtml(label)}</option>`).join("");
+}
+
+function renderSimpleOptions(options, selected) {
+  return options.map((value) => `<option value="${escapeHtml(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(value)}</option>`).join("");
+}
+
+function renderIrodoriParameters(params, referenceAudio) {
+  const settings = normalizedIrodoriSettings(params);
+  return `
+    <div class="irodori-settings full">
+      <label>モード
+        <select id="audio-irodori-mode">
+          <option value="VoiceDesign" ${settings.mode === "VoiceDesign" ? "selected" : ""}>VoiceDesign</option>
+          <option value="Reference" ${settings.mode === "Reference" ? "selected" : ""}>Reference</option>
+        </select>
+      </label>
+      <label>候補数
+        <input id="audio-irodori-candidates" type="number" min="1" max="4" step="1" value="${settings.numCandidates}">
+      </label>
+      <label class="full">声の指定 / キャプション
+        <textarea id="audio-irodori-caption" rows="3">${escapeHtml(settings.caption)}</textarea>
+      </label>
+      <label>Steps
+        <input id="audio-irodori-steps" type="number" min="8" max="80" step="1" value="${settings.numSteps}">
+      </label>
+      <label>Seed
+        <input id="audio-irodori-seed" placeholder="空欄でランダム" value="${escapeHtml(settings.seed)}">
+      </label>
+      <label>Text CFG
+        <input id="audio-irodori-cfg-text" type="number" min="0" max="10" step="0.1" value="${settings.cfgScaleText}">
+      </label>
+      <label>Caption CFG
+        <input id="audio-irodori-cfg-caption" type="number" min="0" max="10" step="0.1" value="${settings.cfgScaleCaption}">
+      </label>
+      <label>Speaker CFG
+        <input id="audio-irodori-cfg-speaker" type="number" min="0" max="10" step="0.1" value="${settings.cfgScaleSpeaker}">
+      </label>
+      <label>モデル精度
+        <select id="audio-irodori-model-precision">${renderSimpleOptions(["bf16", "fp32"], settings.modelPrecision)}</select>
+      </label>
+      <label>モデルデバイス
+        <select id="audio-irodori-model-device">${renderSimpleOptions(["auto", "mps", "cuda", "cpu"], settings.modelDevice)}</select>
+      </label>
+      <label>Codecデバイス
+        <select id="audio-irodori-codec-device">${renderSimpleOptions(["auto", "mps", "cuda", "cpu"], settings.codecDevice)}</select>
+      </label>
+      <label>Codec精度
+        <select id="audio-irodori-codec-precision">${renderSimpleOptions(["bf16", "fp32"], settings.codecPrecision)}</select>
+      </label>
+      <label class="full">カスタムチェックポイント
+        <input id="audio-irodori-checkpoint" placeholder="空欄なら公式HFモデルを使用" value="${escapeHtml(settings.customCheckpoint)}">
+      </label>
+      <label class="full">Reference用の参照音声
+        <input id="audio-irodori-reference-file" type="file" accept="audio/*">
+      </label>
+      ${referenceAudio?.url ? `
+        <div class="full irodori-reference">
+          <div>
+            <strong>${escapeHtml(referenceAudio.name || "参照音声")}</strong>
+            <div class="meta">Referenceモードで使います。</div>
+          </div>
+          <audio controls preload="none" src="${escapeHtml(referenceAudio.url)}"></audio>
+          <button class="ghost" data-action="clear-irodori-reference">解除</button>
+        </div>
+      ` : `<div class="full meta">Referenceモードでは参照音声を指定できます。未指定でも --no-ref で生成できます。</div>`}
+    </div>
+  `;
+}
+
+function elevenLabsSettingsFromControls(source = {}) {
+  return {
+    voiceId: String(source.voiceId || state.db.settings.elevenLabsVoiceId || "JBFqnCBsd6RMkjVDRZzb").trim(),
+    modelId: String(source.modelId || state.db.settings.elevenLabsModelId || "eleven_multilingual_v2").trim() || "eleven_multilingual_v2",
+    outputFormat: String(source.outputFormat || state.db.settings.elevenLabsOutputFormat || "mp3_44100_128").trim() || "mp3_44100_128",
+    stability: boundedSettingNumber(source.stability ?? state.db.settings.elevenLabsStability, 0.5, 0, 1),
+    similarityBoost: boundedSettingNumber(source.similarityBoost ?? state.db.settings.elevenLabsSimilarityBoost, 0.75, 0, 1),
+    style: boundedSettingNumber(source.style ?? state.db.settings.elevenLabsStyle, 0, 0, 1),
+    speed: boundedSettingNumber(source.speed ?? state.db.settings.elevenLabsSpeed, 1, 0.7, 1.2),
+    useSpeakerBoost: source.useSpeakerBoost ?? state.db.settings.elevenLabsSpeakerBoost ?? true,
+    languageCode: String(source.languageCode ?? state.db.settings.elevenLabsLanguageCode ?? "ja").trim(),
+    seed: String(source.seed || "").trim()
+  };
+}
+
+function renderElevenLabsParameters(params = {}) {
+  const settings = elevenLabsSettingsFromControls(params);
+  const voicesStatus = state.elevenLabsVoiceStatus === "loaded"
+    ? `${state.elevenLabsVoices.length} 件の音声を読み込みました。`
+    : state.elevenLabsVoiceStatus === "loading"
+      ? "音声一覧を読み込み中です。"
+      : state.elevenLabsVoiceError || "voice ID はElevenLabsのVoices画面、または音声一覧取得で選べます。";
+  const modelsStatus = state.elevenLabsModelStatus === "loaded"
+    ? `${state.elevenLabsModels.length} 件のTTS対応モデルを読み込みました。`
+    : state.elevenLabsModelStatus === "loading"
+      ? "モデル一覧を読み込み中です。"
+      : state.elevenLabsModelError || "モデル未取得時は主要TTSモデルを候補表示します。";
+  return `
+    <div class="elevenlabs-settings full">
+      <label class="full">Voice ID
+        <select id="audio-elevenlabs-voice-id">${renderElevenLabsVoiceOptions(settings.voiceId)}</select>
+      </label>
+      <label>モデル
+        <select id="audio-elevenlabs-model-id">${renderElevenLabsModelOptions(settings.modelId)}</select>
+      </label>
+      <label>出力形式
+        <select id="audio-elevenlabs-output-format">${renderSimpleOptions(elevenLabsOutputFormats, settings.outputFormat)}</select>
+      </label>
+      <label>Stability
+        <input id="audio-elevenlabs-stability" type="number" min="0" max="1" step="0.05" value="${settings.stability}">
+      </label>
+      <label>Similarity
+        <input id="audio-elevenlabs-similarity" type="number" min="0" max="1" step="0.05" value="${settings.similarityBoost}">
+      </label>
+      <label>Style
+        <input id="audio-elevenlabs-style" type="number" min="0" max="1" step="0.05" value="${settings.style}">
+      </label>
+      <label>Speed
+        <input id="audio-elevenlabs-speed" type="number" min="0.7" max="1.2" step="0.05" value="${settings.speed}">
+      </label>
+      <label>言語コード
+        <input id="audio-elevenlabs-language-code" placeholder="ja / en など" value="${escapeHtml(settings.languageCode)}">
+      </label>
+      <label>Seed
+        <input id="audio-elevenlabs-seed" placeholder="空欄でランダム" value="${escapeHtml(settings.seed)}">
+      </label>
+      <label class="check-row full">
+        <input id="audio-elevenlabs-speaker-boost" type="checkbox" ${settings.useSpeakerBoost ? "checked" : ""}>
+        <span>Speaker Boostを使う</span>
+      </label>
+      <div class="full toolbar">
+        <button class="ghost" data-action="load-elevenlabs-voices" ${state.elevenLabsVoiceStatus === "loading" ? "disabled" : ""}>音声一覧取得</button>
+        <button class="ghost" data-action="load-elevenlabs-models" ${state.elevenLabsModelStatus === "loading" ? "disabled" : ""}>モデル一覧取得</button>
+      </div>
+      <div class="full meta">${escapeHtml(voicesStatus)}</div>
+      <div class="full meta">${escapeHtml(modelsStatus)}</div>
+    </div>
+  `;
 }
 
 function audioCharacterOptions() {
@@ -3040,38 +3433,99 @@ function audioCharacterLabel(audio) {
 function audioControlsFromDom() {
   const selectedCharId = document.querySelector("#audio-character")?.value || state.audioCharacterId || "";
   const selectedChar = byId(state.db.characters, selectedCharId);
+  const provider = normalizedAudioProvider(document.querySelector("#audio-provider")?.value || state.audioProvider || state.db.settings.audioProvider);
+  const actingPrompt = (
+    document.querySelector("#audio-acting-prompt")?.value
+    || state.audioPromptDraft?.actingPrompt
+    || (provider === "openrouter" ? state.audioPromptDraft?.caption : "")
+    || state.db.settings.audioActingPrompt
+    || defaultAudioActingPrompt
+  ).trim();
+  const irodori = normalizedIrodoriSettings({
+    ...state.db.settings.irodoriDefaults,
+    ...(state.audioPromptDraft || {}),
+    mode: document.querySelector("#audio-irodori-mode")?.value || state.audioPromptDraft?.mode || state.db.settings.irodoriDefaults?.mode,
+    caption: document.querySelector("#audio-irodori-caption")?.value || state.audioPromptDraft?.caption || state.db.settings.irodoriDefaults?.caption,
+    modelDevice: document.querySelector("#audio-irodori-model-device")?.value || state.db.settings.irodoriDefaults?.modelDevice,
+    modelPrecision: document.querySelector("#audio-irodori-model-precision")?.value || state.db.settings.irodoriDefaults?.modelPrecision,
+    codecDevice: document.querySelector("#audio-irodori-codec-device")?.value || state.db.settings.irodoriDefaults?.codecDevice,
+    codecPrecision: document.querySelector("#audio-irodori-codec-precision")?.value || state.db.settings.irodoriDefaults?.codecPrecision,
+    numSteps: document.querySelector("#audio-irodori-steps")?.value || state.db.settings.irodoriDefaults?.numSteps,
+    numCandidates: document.querySelector("#audio-irodori-candidates")?.value || state.db.settings.irodoriDefaults?.numCandidates,
+    seed: document.querySelector("#audio-irodori-seed")?.value || "",
+    cfgScaleText: document.querySelector("#audio-irodori-cfg-text")?.value || state.db.settings.irodoriDefaults?.cfgScaleText,
+    cfgScaleCaption: document.querySelector("#audio-irodori-cfg-caption")?.value || state.db.settings.irodoriDefaults?.cfgScaleCaption,
+    cfgScaleSpeaker: document.querySelector("#audio-irodori-cfg-speaker")?.value || state.db.settings.irodoriDefaults?.cfgScaleSpeaker,
+    customCheckpoint: document.querySelector("#audio-irodori-checkpoint")?.value || ""
+  });
+  const elevenLabs = elevenLabsSettingsFromControls({
+    voiceId: document.querySelector("#audio-elevenlabs-voice-id")?.value || state.audioPromptDraft?.elevenLabs?.voiceId,
+    modelId: document.querySelector("#audio-elevenlabs-model-id")?.value || state.audioPromptDraft?.elevenLabs?.modelId,
+    outputFormat: document.querySelector("#audio-elevenlabs-output-format")?.value || state.audioPromptDraft?.elevenLabs?.outputFormat,
+    stability: document.querySelector("#audio-elevenlabs-stability")?.value || state.audioPromptDraft?.elevenLabs?.stability,
+    similarityBoost: document.querySelector("#audio-elevenlabs-similarity")?.value || state.audioPromptDraft?.elevenLabs?.similarityBoost,
+    style: document.querySelector("#audio-elevenlabs-style")?.value || state.audioPromptDraft?.elevenLabs?.style,
+    speed: document.querySelector("#audio-elevenlabs-speed")?.value || state.audioPromptDraft?.elevenLabs?.speed,
+    languageCode: document.querySelector("#audio-elevenlabs-language-code")?.value || state.audioPromptDraft?.elevenLabs?.languageCode,
+    seed: document.querySelector("#audio-elevenlabs-seed")?.value || state.audioPromptDraft?.elevenLabs?.seed,
+    useSpeakerBoost: document.querySelector("#audio-elevenlabs-speaker-boost")?.checked ?? state.audioPromptDraft?.elevenLabs?.useSpeakerBoost
+  });
   return {
+    provider,
     workId: selectedChar?.workId || document.querySelector("#audio-work")?.value || state.audioWorkId || state.selectedWorkId || "",
     characterId: selectedCharId,
-    voice: document.querySelector("#audio-voice")?.value || state.audioVoice || state.db.settings.audioVoice || "Kore",
+    voice: provider === "elevenlabs" ? elevenLabs.voiceId : document.querySelector("#audio-voice")?.value || state.audioVoice || state.db.settings.audioVoice || "Kore",
+    irodori,
+    elevenLabs,
+    actingPrompt,
+    caption: provider === "irodori" ? irodori.caption : actingPrompt,
     title: document.querySelector("#audio-title")?.value.trim() || state.audioPromptDraft?.title || "生成音声",
     input: document.querySelector("#audio-input-text")?.value.trim() || state.audioPromptDraft?.input || ""
   };
 }
 
+function composeGeminiTtsInput(text, actingPrompt) {
+  const cleanText = String(text || "").trim();
+  const cleanPrompt = String(actingPrompt || "").trim();
+  if (!cleanPrompt) return cleanText;
+  return `次の演技指示に従って、読み上げ本文だけを音声化してください。
+
+演技指示:
+${cleanPrompt}
+
+読み上げ本文:
+${cleanText}`;
+}
+
 function buildAudioAgentSystemPrompt() {
   const voices = ttsVoices.map(([voice, label]) => `${voice}: ${label}`).join("\n");
-  return `あなたは創作向けの音声演出エージェントです。ユーザーの要望、作品情報、キャラ情報から、OpenRouter TTSに送る読み上げテキストを作ります。
+  return `あなたは創作向けの音声演出エージェントです。ユーザーの要望、作品情報、キャラ情報から、音声生成に送る読み上げテキストを作ります。
 
 必ず次のJSONだけを返してください。
 {
   "message": "ユーザーに見せる日本語の返答。確認事項や作成意図を短く説明。",
   "ready": true または false,
   "questions": ["必要な確認事項"],
-  "draft": {
-    "title": "短い音声タイトル",
-    "input": "TTSにそのまま送る読み上げテキスト。必要なら [whispers] [laughs] [short pause] などのインライン演技タグを入れる。",
-    "voice": "下記ボイス名のどれか",
-    "agentNote": "演技意図の短いメモ"
+    "draft": {
+      "title": "短い音声タイトル",
+      "input": "実際に読み上げる本文。説明文や演技指示は入れず、台詞・ナレーションだけにする。",
+      "voice": "下記ボイス名のどれか",
+      "actingPrompt": "演技指示。声質、感情、速度、間、距離感、アクセントを書く。Geminiでは必要なインライン音声タグも少量だけ使える。",
+      "caption": "Irodori-TTSで使う声質・演技・距離感の指定。actingPrompt と同じ方針でよい。",
+      "agentNote": "演技意図の短いメモ"
+    }
   }
-}
 
 音声作成ルール:
 - APIに送るのは説明文ではなく、実際に読み上げる本文にする。
 - キャラ指定がある場合は、キャラの性格、立場、メモ、作品世界に合う声色と台詞にする。
 - キャラ指定がない場合は、ナレーションや汎用ボイスとして自然に使える本文にする。
+- Gemini TTSの場合は actingPrompt に「低い声、怒りを抑える、少し速め、近い距離、語尾を弱める」などを具体的に書く。
+- Gemini TTSでは必要に応じて actingPrompt または input に [whispers] [laughs] [excited] [short pause] などのインライン音声タグを少量だけ使える。
+- ElevenLabsの場合は voice ID と voice_settings が主な制御なので、input は読み上げ本文に集中し、actingPrompt は画面で確認・保存できる演技指示として短くまとめる。
 - 過剰な演技タグは避け、重要な間や感情だけに使う。
 - 日本語の台詞は日本語のまま自然に整える。英語に翻訳しない。
+- Irodori-TTSの場合は caption に「低め、囁き、距離感、テンポ、感情」などの音声演出を書き、input には読み上げ本文だけを書く。
 
 利用可能ボイス:
 ${voices}`;
@@ -3092,7 +3546,7 @@ function buildAudioAgentText(inputText, controls) {
 ${inputText}
 
 現在の設定:
-voice=${controls.voice}, title=${controls.title}, characterId=${controls.characterId || "未指定"}
+provider=${controls.provider}, voice=${controls.voice}, actingPrompt=${controls.actingPrompt || ""}, elevenLabsVoiceId=${controls.elevenLabs?.voiceId || ""}, elevenLabsModel=${controls.elevenLabs?.modelId || ""}, irodoriMode=${controls.irodori?.mode || "VoiceDesign"}, caption=${controls.irodori?.caption || ""}, title=${controls.title}, characterId=${controls.characterId || "未指定"}
 
 作品情報 / 世界観:
 ${buildPromptLabWorldContext(work)}
@@ -3112,12 +3566,46 @@ function mergeAudioDraft(result, fallbackControls) {
   if (!source.input && result?.text) source.input = result.text;
   if (!source.input) return null;
   const voice = source.voice || fallbackControls.voice || "Kore";
+  const actingPrompt = String(
+    source.actingPrompt
+    || source.performancePrompt
+    || source.direction
+    || (fallbackControls.provider === "openrouter" ? source.caption : "")
+    || fallbackControls.actingPrompt
+    || fallbackControls.caption
+    || defaultAudioActingPrompt
+  ).trim();
+  const irodori = normalizedIrodoriSettings({ ...fallbackControls.irodori, caption: source.caption || actingPrompt || fallbackControls.irodori?.caption });
   return {
     title: source.title || fallbackControls.title || "生成音声",
     input: source.input || "",
     voice: ttsVoices.some(([item]) => item === voice) ? voice : fallbackControls.voice || "Kore",
+    provider: fallbackControls.provider || "openrouter",
+    elevenLabs: fallbackControls.elevenLabs,
+    ...irodori,
+    actingPrompt,
+    caption: fallbackControls.provider === "irodori" ? irodori.caption : actingPrompt,
     agentNote: source.agentNote || source.note || result?.message || ""
   };
+}
+
+function startAudioGenerationClock() {
+  state.audioGenerationStartedAt = Date.now();
+  if (state.audioGenerationTimer) clearInterval(state.audioGenerationTimer);
+  state.audioGenerationTimer = setInterval(() => {
+    if (!state.audioIsGenerating) {
+      clearInterval(state.audioGenerationTimer);
+      state.audioGenerationTimer = null;
+      return;
+    }
+    render();
+  }, 5000);
+}
+
+function stopAudioGenerationClock() {
+  if (state.audioGenerationTimer) clearInterval(state.audioGenerationTimer);
+  state.audioGenerationTimer = null;
+  state.audioGenerationStartedAt = 0;
 }
 
 async function handleAudioAgentMessage(forceDraft = false) {
@@ -3128,6 +3616,10 @@ async function handleAudioAgentMessage(forceDraft = false) {
   state.audioWorkId = controls.workId || null;
   state.audioCharacterId = controls.characterId || "";
   state.audioVoice = controls.voice;
+  state.audioProvider = controls.provider;
+  state.db.settings.audioProvider = controls.provider;
+  state.db.settings.audioActingPrompt = controls.actingPrompt || defaultAudioActingPrompt;
+  state.db.settings.irodoriDefaults = controls.irodori;
   state.audioChatMessages.push({ role: "user", content: message });
   state.audioIsThinking = true;
   render();
@@ -3161,62 +3653,163 @@ async function handleAudioAgentMessage(forceDraft = false) {
 
 async function startAudioGeneration() {
   const controls = audioControlsFromDom();
-  const key = apiKey();
-  if (!key) return toast("設定画面で OpenRouter API キーを保存してください。");
   if (!controls.input) return toast("読み上げテキストを入力してください。");
+  const key = apiKey();
+  const elevenKey = elevenLabsApiKey();
+  if (controls.provider === "openrouter" && !key) return toast("設定画面で OpenRouter API キーを保存してください。");
+  if (controls.provider === "elevenlabs" && !elevenKey) return toast("設定画面で ElevenLabs API キーを保存してください。");
+  if (controls.provider === "elevenlabs" && !controls.elevenLabs.voiceId) return toast("ElevenLabs voice ID を指定してください。");
   const selectedChar = byId(state.db.characters, controls.characterId);
   const work = byId(state.db.works, selectedChar?.workId || controls.workId);
   state.audioIsGenerating = true;
   state.audioWorkId = work?.id || controls.workId || null;
   state.audioCharacterId = selectedChar?.id || "";
   state.audioVoice = controls.voice;
+  state.audioProvider = controls.provider;
+  state.db.settings.audioProvider = controls.provider;
   state.db.settings.audioVoice = controls.voice;
+  state.db.settings.audioActingPrompt = controls.actingPrompt || defaultAudioActingPrompt;
   state.db.settings.audioModel = openRouterTtsModel;
+  state.db.settings.elevenLabsVoiceId = controls.elevenLabs.voiceId;
+  state.db.settings.elevenLabsModelId = controls.elevenLabs.modelId;
+  state.db.settings.elevenLabsOutputFormat = controls.elevenLabs.outputFormat;
+  state.db.settings.elevenLabsStability = controls.elevenLabs.stability;
+  state.db.settings.elevenLabsSimilarityBoost = controls.elevenLabs.similarityBoost;
+  state.db.settings.elevenLabsStyle = controls.elevenLabs.style;
+  state.db.settings.elevenLabsSpeed = controls.elevenLabs.speed;
+  state.db.settings.elevenLabsSpeakerBoost = controls.elevenLabs.useSpeakerBoost;
+  state.db.settings.elevenLabsLanguageCode = controls.elevenLabs.languageCode;
+  state.db.settings.irodoriDefaults = controls.irodori;
+  startAudioGenerationClock();
   render();
   try {
-    const payload = await postJson("/api/openrouter/speech", {
-      apiKey: key,
-      model: openRouterTtsModel,
-      input: controls.input,
-      voice: controls.voice,
-      responseFormat: "mp3",
-      title: controls.title
-    });
-    const audio = normalizeAudioItem({
-      id: uid(),
-      workId: work?.id || null,
-      characterId: selectedChar?.id || null,
-      title: controls.title,
-      input: controls.input,
-      voice: controls.voice,
-      model: openRouterTtsModel,
-      format: "mp3",
-      url: payload.url,
-      localPath: payload.path,
-      mimeType: payload.mimeType,
-      generationId: payload.generationId,
-      size: payload.size,
-      agentNote: state.audioPromptDraft?.agentNote || "",
-      createdAt: new Date().toISOString()
-    });
-    state.db.audioItems.unshift(audio);
+    let created = [];
+    if (controls.provider === "openrouter") {
+      const payload = await postJson("/api/openrouter/speech", {
+        apiKey: key,
+        model: openRouterTtsModel,
+        input: composeGeminiTtsInput(controls.input, controls.actingPrompt),
+        voice: controls.voice,
+        responseFormat: "pcm",
+        title: controls.title
+      });
+      const format = payload.format || (String(payload.mimeType || "").includes("wav") ? "wav" : "mp3");
+      created = [normalizeAudioItem({
+        id: uid(),
+        workId: work?.id || null,
+        characterId: selectedChar?.id || null,
+        provider: "openrouter",
+        title: controls.title,
+        input: controls.input,
+        voice: controls.voice,
+        model: openRouterTtsModel,
+        format,
+        caption: controls.actingPrompt,
+        actingPrompt: controls.actingPrompt,
+        url: payload.url,
+        localPath: payload.path,
+        mimeType: payload.mimeType,
+        generationId: payload.generationId,
+        size: payload.size,
+        agentNote: state.audioPromptDraft?.agentNote || "",
+        createdAt: new Date().toISOString()
+      })];
+    } else if (controls.provider === "elevenlabs") {
+      const payload = await postJson("/api/elevenlabs/speech", {
+        apiKey: elevenKey,
+        voiceId: controls.elevenLabs.voiceId,
+        modelId: controls.elevenLabs.modelId,
+        outputFormat: controls.elevenLabs.outputFormat,
+        input: controls.input,
+        title: controls.title,
+        languageCode: controls.elevenLabs.languageCode,
+        seed: controls.elevenLabs.seed,
+        voiceSettings: {
+          stability: controls.elevenLabs.stability,
+          similarityBoost: controls.elevenLabs.similarityBoost,
+          style: controls.elevenLabs.style,
+          speed: controls.elevenLabs.speed,
+          useSpeakerBoost: controls.elevenLabs.useSpeakerBoost
+        }
+      });
+      created = [normalizeAudioItem({
+        id: uid(),
+        workId: work?.id || null,
+        characterId: selectedChar?.id || null,
+        provider: "elevenlabs",
+        title: controls.title,
+        input: controls.input,
+        voice: controls.elevenLabs.voiceId,
+        model: controls.elevenLabs.modelId,
+        format: payload.format || "mp3",
+        url: payload.url,
+        localPath: payload.path,
+        mimeType: payload.mimeType,
+        generationId: payload.generationId,
+        size: payload.size,
+        caption: controls.actingPrompt,
+        actingPrompt: controls.actingPrompt,
+        elevenLabs: controls.elevenLabs,
+        agentNote: state.audioPromptDraft?.agentNote || "",
+        createdAt: new Date().toISOString()
+      })];
+    } else {
+      const payload = await postJson("/api/irodori/speech", {
+        appDir: state.db.settings.irodoriAppDir,
+        input: controls.input,
+        title: controls.title,
+        referenceAudioUrl: state.audioIrodoriReference?.url || "",
+        ...controls.irodori
+      });
+      const outputs = Array.isArray(payload.outputs) && payload.outputs.length ? payload.outputs : [payload];
+      created = outputs.map((output, index) => normalizeAudioItem({
+        id: uid(),
+        workId: work?.id || null,
+        characterId: selectedChar?.id || null,
+        provider: "irodori",
+        title: outputs.length > 1 ? `${controls.title} ${index + 1}` : controls.title,
+        input: controls.input,
+        voice: controls.irodori.mode,
+        model: "Irodori-TTS",
+        format: "wav",
+        url: output.url,
+        localPath: output.path,
+        mimeType: output.mimeType,
+        size: output.size,
+        caption: controls.irodori.caption,
+        irodori: controls.irodori,
+        referenceAudio: state.audioIrodoriReference,
+        agentNote: state.audioPromptDraft?.agentNote || "",
+        createdAt: new Date().toISOString()
+      }));
+    }
+    state.db.audioItems.unshift(...created);
     await saveDb();
     state.audioIsGenerating = false;
+    stopAudioGenerationClock();
     render();
-    toast(selectedChar ? `${selectedChar.name} の音声として保存しました。` : "音声を保存しました。");
+    const countText = created.length > 1 ? `${created.length} 件の` : "";
+    toast(selectedChar ? `${selectedChar.name} の${countText}音声として保存しました。` : `${countText}音声を保存しました。`);
   } catch (error) {
     state.audioIsGenerating = false;
+    stopAudioGenerationClock();
     toast(error.message);
     render();
   }
 }
 
 function renderAudioItem(audio) {
+  const providerLabel = audio.provider === "irodori" ? "Irodori-TTS" : audio.provider === "elevenlabs" ? "ElevenLabs" : "OpenRouter TTS";
+  const voiceLabel = audio.provider === "irodori"
+    ? `${audio.irodori?.mode || audio.voice || "VoiceDesign"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`
+    : audio.provider === "elevenlabs"
+      ? `${audio.voice || "voice ID未設定"} / ${audio.model || "eleven_multilingual_v2"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`
+    : `${audio.voice || "Kore"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`;
   return `
     <article class="audio-job">
       <div>
         <div class="char-name">${escapeHtml(audio.title || "生成音声")}</div>
-        <div class="meta">${escapeHtml(audioCharacterLabel(audio))} / ${escapeHtml(audio.voice || "Kore")} / ${audio.createdAt ? escapeHtml(new Date(audio.createdAt).toLocaleString("ja-JP")) : ""}</div>
+        <div class="meta">${escapeHtml(audioCharacterLabel(audio))} / ${escapeHtml(providerLabel)} / ${escapeHtml(voiceLabel)} / ${audio.createdAt ? escapeHtml(new Date(audio.createdAt).toLocaleString("ja-JP")) : ""}</div>
       </div>
       <audio class="generated-audio" controls preload="none" src="${escapeHtml(audio.url)}"></audio>
       <div class="result-text">${escapeHtml(compactPromptText(audio.input, 900))}</div>
@@ -3234,7 +3827,11 @@ function renderAudioAgent() {
     state.audioCharacterId = "";
   }
   const controls = state.audioPromptDraft || {};
+  const providerValue = normalizedAudioProvider(controls.provider || state.audioProvider || state.db.settings.audioProvider);
   const voiceValue = controls.voice || state.audioVoice || state.db.settings.audioVoice || "Kore";
+  const actingPromptValue = controls.actingPrompt || (providerValue === "openrouter" ? controls.caption : "") || state.db.settings.audioActingPrompt || defaultAudioActingPrompt;
+  const elevenLabsValue = elevenLabsSettingsFromControls(controls.elevenLabs || {});
+  const irodoriValue = normalizedIrodoriSettings({ ...state.db.settings.irodoriDefaults, ...controls });
   const history = audioItemsForWork(state.audioWorkId)
     .filter((item) => !state.audioCharacterId || item.characterId === state.audioCharacterId)
     .slice(0, 12);
@@ -3255,11 +3852,28 @@ function renderAudioAgent() {
               ${chars.map((char) => `<option value="${char.id}" ${state.audioCharacterId === char.id ? "selected" : ""}>${escapeHtml(char.name)}</option>`).join("")}
             </select>
           </label>
-          <label class="full">ボイス
-            <select id="audio-voice">${renderTtsVoiceOptions(voiceValue)}</select>
+          <label class="full">生成方式
+            <select id="audio-provider">${renderAudioProviderOptions(providerValue)}</select>
           </label>
+          ${providerValue === "openrouter" ? `
+            <label class="full">ボイス
+              <select id="audio-voice">${renderTtsVoiceOptions(voiceValue)}</select>
+            </label>
+            <label class="full">演技指示
+              <textarea id="audio-acting-prompt" rows="4" placeholder="例：低く静かな声。怒りを抑え、近い距離で囁くように。重要な間だけ [short pause] を入れる。">${escapeHtml(actingPromptValue)}</textarea>
+            </label>
+            <div class="full meta">生成モデル: ${escapeHtml(openRouterTtsModel)} / 形式: WAV（PCMを受信して保存）</div>
+          ` : providerValue === "elevenlabs" ? `
+            <div class="full meta">ElevenLabsを使って音声を生成します。voice ID と voice settings を指定できます。</div>
+            <label class="full">演技指示
+              <textarea id="audio-acting-prompt" rows="4" placeholder="例：穏やかで少し低め。親しい距離感で、語尾はやわらかく。大事な一文の前に短い間を置く。">${escapeHtml(actingPromptValue)}</textarea>
+            </label>
+            ${renderElevenLabsParameters(elevenLabsValue)}
+          ` : `
+            <div class="full meta">Irodori-TTSをローカル実行します。連携先は設定画面の「Irodori-TTS連携」で変更できます。</div>
+            ${renderIrodoriParameters(irodoriValue, state.audioIrodoriReference)}
+          `}
           <label class="full">タイトル<input id="audio-title" value="${escapeHtml(controls.title || "生成音声")}"></label>
-          <div class="full meta">生成モデル: ${escapeHtml(openRouterTtsModel)} / 形式: MP3</div>
         </div>
       </section>
       <section class="video-main">
@@ -3307,12 +3921,14 @@ function renderAudioAgent() {
 }
 
 function renderAudioGenerating() {
+  const elapsed = state.audioGenerationStartedAt ? Math.max(0, Math.floor((Date.now() - state.audioGenerationStartedAt) / 1000)) : 0;
+  const elapsedText = elapsed >= 60 ? `${Math.floor(elapsed / 60)}分${String(elapsed % 60).padStart(2, "0")}秒` : `${elapsed}秒`;
   return `
     <div class="seedance-animation audio-generating">
       <div class="wave-loader"><span></span><span></span><span></span><span></span></div>
       <div>
         <strong>音声生成中</strong>
-        <div class="meta">完了後にキャラ情報と参照素材へ保存します。</div>
+        <div class="meta">経過 ${escapeHtml(elapsedText)}。Irodori-TTSは数分かかることがあります。完了後にキャラ情報と参照素材へ保存します。</div>
       </div>
     </div>
   `;
@@ -3651,13 +4267,24 @@ function renderSettings() {
   const videoModel = videoModelConfig(settingsVideoModelId, state.db.settings.seedanceBaseUrl);
   const settingsResolutionOptions = optionList(videoModel.supported_resolutions, [state.db.settings.seedanceResolution || "720p"]);
   const settingsResolution = optionValue(state.db.settings.seedanceResolution || "720p", settingsResolutionOptions);
-  const videoStatusText = isOpenRouterSeedanceBaseUrl()
+	  const videoStatusText = isOpenRouterSeedanceBaseUrl()
     ? state.openRouterVideoModelStatus === "loaded"
       ? "OpenRouter動画モデルの対応設定を読み込みました。"
       : state.openRouterVideoModelStatus === "loading"
         ? "OpenRouter動画モデルの対応設定を読み込み中です。"
         : state.openRouterVideoModelError || "OpenRouter動画モデルはフォールバック設定で表示しています。"
-    : "公式API向けの既定設定です。";
+	    : "公式API向けの既定設定です。";
+	  const elevenLabsVoiceText = state.elevenLabsVoiceStatus === "loaded"
+	    ? `${state.elevenLabsVoices.length} 件のElevenLabs音声を読み込みました。`
+	    : state.elevenLabsVoiceStatus === "loading"
+	      ? "ElevenLabs音声一覧を読み込み中です。"
+	      : state.elevenLabsVoiceError || "ElevenLabs APIキーを保存すると、音声生成画面で音声一覧を取得できます。";
+	  const elevenLabsModelText = state.elevenLabsModelStatus === "loaded"
+	    ? `${state.elevenLabsModels.length} 件のElevenLabs TTS対応モデルを読み込みました。`
+	    : state.elevenLabsModelStatus === "loading"
+	      ? "ElevenLabsモデル一覧を読み込み中です。"
+	      : state.elevenLabsModelError || "未取得時は主要TTSモデルを候補表示します。";
+	  const irodoriStatusText = state.irodoriStatusMessage || "Irodori-TTSの配置場所を確認できます。未導入の環境ではセットアップを実行すると vendor/Irodori-TTS に取得します。";
   return `
     <section class="panel">
       <div class="panel-header"><h2>OpenRouter</h2></div>
@@ -3674,12 +4301,68 @@ function renderSettings() {
           <input value="${escapeHtml(openRouterTtsModel)}" readonly>
         </label>
         <div class="full meta">${escapeHtml(statusText)}</div>
-        <div class="full meta">キーはブラウザ内に保存されます。作品データ、画像、生成音声はこのアプリの data フォルダに保存されます。世界観読み込みモデルは設定シート画像の読解に使います。音声エージェントモデルは読み上げテキスト案の作成だけに使い、実際の音声生成は固定で google/gemini-3.1-flash-tts-preview を使います。</div>
+        <div class="full meta">キーはブラウザ内に保存されます。作品データ、画像、生成音声はこのアプリの data フォルダに保存されます。世界観読み込みモデルは設定シート画像の読解に使います。音声エージェントモデルは読み上げテキスト案の作成だけに使います。</div>
         <div class="full toolbar">
           <button data-action="save-settings">設定を保存</button>
           <button class="ghost" data-action="test-openrouter">接続テスト</button>
           <button class="ghost" data-action="reload-openrouter-models">モデル一覧を再取得</button>
         </div>
+      </div>
+	    </section>
+	    <section class="panel settings-panel">
+	      <div class="panel-header"><h2>ElevenLabs</h2></div>
+	      <div class="panel-body form-grid">
+	        <label class="full">API キー
+	          <input id="setting-elevenlabs-api-key" type="password" placeholder="xi-api-key" value="${escapeHtml(elevenLabsApiKey())}">
+	        </label>
+	        <label class="full">既定 Voice ID
+	          <select id="setting-elevenlabs-voice-id">${renderElevenLabsVoiceOptions(state.db.settings.elevenLabsVoiceId || "JBFqnCBsd6RMkjVDRZzb")}</select>
+	        </label>
+	        <label>既定モデル
+	          <select id="setting-elevenlabs-model-id">${renderElevenLabsModelOptions(state.db.settings.elevenLabsModelId || "eleven_multilingual_v2")}</select>
+	        </label>
+	        <label>既定出力形式
+	          <select id="setting-elevenlabs-output-format">${renderSimpleOptions(elevenLabsOutputFormats, state.db.settings.elevenLabsOutputFormat || "mp3_44100_128")}</select>
+	        </label>
+	        <label>Stability
+	          <input id="setting-elevenlabs-stability" type="number" min="0" max="1" step="0.05" value="${state.db.settings.elevenLabsStability}">
+	        </label>
+	        <label>Similarity
+	          <input id="setting-elevenlabs-similarity" type="number" min="0" max="1" step="0.05" value="${state.db.settings.elevenLabsSimilarityBoost}">
+	        </label>
+	        <label>Style
+	          <input id="setting-elevenlabs-style" type="number" min="0" max="1" step="0.05" value="${state.db.settings.elevenLabsStyle}">
+	        </label>
+	        <label>Speed
+	          <input id="setting-elevenlabs-speed" type="number" min="0.7" max="1.2" step="0.05" value="${state.db.settings.elevenLabsSpeed}">
+	        </label>
+	        <label>言語コード
+	          <input id="setting-elevenlabs-language-code" value="${escapeHtml(state.db.settings.elevenLabsLanguageCode || "ja")}">
+	        </label>
+	        <label class="check-row">
+	          <input id="setting-elevenlabs-speaker-boost" type="checkbox" ${state.db.settings.elevenLabsSpeakerBoost !== false ? "checked" : ""}>
+	          <span>Speaker Boost</span>
+	        </label>
+	        <div class="full meta">${escapeHtml(elevenLabsVoiceText)}</div>
+	        <div class="full meta">${escapeHtml(elevenLabsModelText)}</div>
+	        <div class="full toolbar">
+	          <button class="ghost" data-action="load-elevenlabs-voices" ${state.elevenLabsVoiceStatus === "loading" ? "disabled" : ""}>音声一覧取得</button>
+	          <button class="ghost" data-action="load-elevenlabs-models" ${state.elevenLabsModelStatus === "loading" ? "disabled" : ""}>モデル一覧取得</button>
+	        </div>
+	      </div>
+	    </section>
+	    <section class="panel settings-panel">
+      <div class="panel-header"><h2>Irodori-TTS連携</h2></div>
+      <div class="panel-body form-grid">
+        <label class="full">Irodori-TTSフォルダ
+          <input id="setting-irodori-app-dir" placeholder="vendor/Irodori-TTS または upstream/Irodori-TTS を含むフォルダ" value="${escapeHtml(state.db.settings.irodoriAppDir || "vendor/Irodori-TTS")}">
+        </label>
+        <div class="full meta">${escapeHtml(irodoriStatusText)}</div>
+        <div class="full toolbar">
+          <button class="ghost" data-action="check-irodori" ${state.irodoriStatus === "loading" ? "disabled" : ""}>連携確認</button>
+          <button class="ghost" data-action="setup-irodori" ${state.irodoriStatus === "loading" ? "disabled" : ""}>Irodori-TTSを取得</button>
+        </div>
+        <div class="full meta">この端末では既存のIrodori-TTSも検出できます。別のユーザーは「Irodori-TTSを取得」でGitHubから取得し、uv sync まで実行できます。初回生成時はモデルのダウンロードで時間がかかります。</div>
       </div>
     </section>
     <section class="panel settings-panel">
@@ -4132,16 +4815,82 @@ function bindAudioAgent() {
     state.audioWorkId = controls.workId || null;
     state.audioCharacterId = controls.characterId || "";
     state.audioVoice = controls.voice;
+    state.audioProvider = controls.provider;
     state.audioPromptDraft = {
       ...(state.audioPromptDraft || {}),
       title: controls.title,
       input: controls.input,
-      voice: controls.voice
+      voice: controls.voice,
+      provider: controls.provider,
+      elevenLabs: controls.elevenLabs,
+      ...controls.irodori,
+      actingPrompt: controls.actingPrompt,
+      caption: controls.caption
     };
+    state.db.settings.audioProvider = controls.provider;
     state.db.settings.audioVoice = controls.voice;
+    state.db.settings.audioActingPrompt = controls.actingPrompt || defaultAudioActingPrompt;
+    state.db.settings.elevenLabsVoiceId = controls.elevenLabs.voiceId;
+    state.db.settings.elevenLabsModelId = controls.elevenLabs.modelId;
+    state.db.settings.elevenLabsOutputFormat = controls.elevenLabs.outputFormat;
+    state.db.settings.elevenLabsStability = controls.elevenLabs.stability;
+    state.db.settings.elevenLabsSimilarityBoost = controls.elevenLabs.similarityBoost;
+    state.db.settings.elevenLabsStyle = controls.elevenLabs.style;
+    state.db.settings.elevenLabsSpeed = controls.elevenLabs.speed;
+    state.db.settings.elevenLabsSpeakerBoost = controls.elevenLabs.useSpeakerBoost;
+    state.db.settings.elevenLabsLanguageCode = controls.elevenLabs.languageCode;
+    state.db.settings.irodoriDefaults = controls.irodori;
   };
-  ["#audio-voice", "#audio-title", "#audio-input-text"].forEach((selector) => {
+  [
+    "#audio-voice",
+    "#audio-acting-prompt",
+    "#audio-title",
+    "#audio-input-text",
+    "#audio-elevenlabs-voice-id",
+    "#audio-elevenlabs-model-id",
+    "#audio-elevenlabs-output-format",
+    "#audio-elevenlabs-stability",
+    "#audio-elevenlabs-similarity",
+    "#audio-elevenlabs-style",
+    "#audio-elevenlabs-speed",
+    "#audio-elevenlabs-language-code",
+    "#audio-elevenlabs-seed",
+    "#audio-elevenlabs-speaker-boost",
+    "#audio-irodori-mode",
+    "#audio-irodori-caption",
+    "#audio-irodori-steps",
+    "#audio-irodori-candidates",
+    "#audio-irodori-seed",
+    "#audio-irodori-cfg-text",
+    "#audio-irodori-cfg-caption",
+    "#audio-irodori-cfg-speaker",
+    "#audio-irodori-model-device",
+    "#audio-irodori-model-precision",
+    "#audio-irodori-codec-device",
+    "#audio-irodori-codec-precision",
+    "#audio-irodori-checkpoint"
+  ].forEach((selector) => {
     document.querySelector(selector)?.addEventListener("change", persistAudioControls);
+  });
+  document.querySelector("#audio-provider")?.addEventListener("change", () => {
+    persistAudioControls();
+    render();
+  });
+  document.querySelector("#audio-irodori-reference-file")?.addEventListener("change", (event) => {
+    persistAudioControls();
+    uploadIrodoriReferenceFile(event.target.files?.[0]);
+  });
+  document.querySelector("[data-action='load-elevenlabs-voices']")?.addEventListener("click", async () => {
+    persistAudioControls();
+    await loadElevenLabsVoices();
+  });
+  document.querySelector("[data-action='load-elevenlabs-models']")?.addEventListener("click", async () => {
+    persistAudioControls();
+    await loadElevenLabsModels();
+  });
+  document.querySelector("[data-action='clear-irodori-reference']")?.addEventListener("click", () => {
+    state.audioIrodoriReference = null;
+    render();
   });
   document.querySelector("#audio-work")?.addEventListener("change", (event) => {
     persistAudioControls();
@@ -4401,6 +5150,109 @@ async function copyText(text) {
   toast("コピーしました。");
 }
 
+async function loadElevenLabsVoices() {
+  const key = elevenLabsApiKey();
+  if (!key) return toast("設定画面で ElevenLabs API キーを保存してください。");
+  state.elevenLabsVoiceStatus = "loading";
+  state.elevenLabsVoiceError = "";
+  if (state.view === "audio" || state.view === "settings") render();
+  try {
+    const result = await postJson("/api/elevenlabs/voices", { apiKey: key });
+    state.elevenLabsVoices = Array.isArray(result.voices) ? result.voices : [];
+    state.elevenLabsVoiceStatus = "loaded";
+    toast(`${state.elevenLabsVoices.length} 件のElevenLabs音声を読み込みました。`);
+  } catch (error) {
+    state.elevenLabsVoices = [];
+    state.elevenLabsVoiceStatus = "failed";
+    state.elevenLabsVoiceError = error.message;
+    toast(error.message);
+  }
+  if (state.view === "audio" || state.view === "settings") render();
+}
+
+async function loadElevenLabsModels() {
+  const key = elevenLabsApiKey();
+  if (!key) return toast("設定画面で ElevenLabs API キーを保存してください。");
+  state.elevenLabsModelStatus = "loading";
+  state.elevenLabsModelError = "";
+  if (state.view === "audio" || state.view === "settings") render();
+  try {
+    const result = await postJson("/api/elevenlabs/models", { apiKey: key });
+    state.elevenLabsModels = Array.isArray(result.models) ? result.models : [];
+    state.elevenLabsModelStatus = "loaded";
+    toast(`${state.elevenLabsModels.length} 件のElevenLabsモデルを読み込みました。`);
+  } catch (error) {
+    state.elevenLabsModels = [];
+    state.elevenLabsModelStatus = "failed";
+    state.elevenLabsModelError = error.message;
+    toast(error.message);
+  }
+  if (state.view === "audio" || state.view === "settings") render();
+}
+
+async function checkIrodoriConnection() {
+  const appDir = document.querySelector("#setting-irodori-app-dir")?.value.trim() || state.db.settings.irodoriAppDir || "vendor/Irodori-TTS";
+  state.db.settings.irodoriAppDir = appDir;
+  state.irodoriStatus = "loading";
+  state.irodoriStatusMessage = "Irodori-TTSの配置と uv を確認しています。";
+  render();
+  try {
+    const result = await postJson("/api/irodori/status", { appDir });
+    if (result.found && result.uvFound) {
+      state.irodoriStatus = "ready";
+      state.irodoriStatusMessage = `連携できます。Irodori-TTS: ${result.upstreamDir} / uv: ${result.uvCommand}`;
+      await saveDb();
+      toast("Irodori-TTSに連携できます。");
+    } else if (result.found) {
+      state.irodoriStatus = "missing";
+      state.irodoriStatusMessage = `Irodori-TTSは見つかりましたが uv が見つかりません。${result.upstreamDir}`;
+      toast("uv が見つかりません。");
+    } else {
+      state.irodoriStatus = "missing";
+      state.irodoriStatusMessage = `Irodori-TTSが見つかりません。候補: ${(result.candidates || []).join(" / ")}`;
+      toast("Irodori-TTSが見つかりません。");
+    }
+  } catch (error) {
+    state.irodoriStatus = "missing";
+    state.irodoriStatusMessage = error.message;
+    toast(error.message);
+  }
+  render();
+}
+
+async function setupIrodori() {
+  state.irodoriStatus = "loading";
+  state.irodoriStatusMessage = "Irodori-TTSを取得し、uv sync を実行しています。初回はしばらくかかります。";
+  render();
+  try {
+    await postJson("/api/irodori/setup", {});
+    state.db.settings.irodoriAppDir = "vendor/Irodori-TTS";
+    state.irodoriStatus = "ready";
+    state.irodoriStatusMessage = "Irodori-TTSを vendor/Irodori-TTS に準備しました。";
+    await saveDb();
+    toast("Irodori-TTSのセットアップが完了しました。");
+  } catch (error) {
+    state.irodoriStatus = "missing";
+    state.irodoriStatusMessage = error.message;
+    toast(error.message);
+  }
+  render();
+}
+
+function saveElevenLabsSettingsFromDom() {
+  const keyInput = document.querySelector("#setting-elevenlabs-api-key");
+  if (keyInput) localStorage.setItem("elevenlabs_api_key", keyInput.value.trim());
+  state.db.settings.elevenLabsVoiceId = document.querySelector("#setting-elevenlabs-voice-id")?.value.trim() || state.db.settings.elevenLabsVoiceId || "JBFqnCBsd6RMkjVDRZzb";
+  state.db.settings.elevenLabsModelId = document.querySelector("#setting-elevenlabs-model-id")?.value.trim() || state.db.settings.elevenLabsModelId || "eleven_multilingual_v2";
+  state.db.settings.elevenLabsOutputFormat = document.querySelector("#setting-elevenlabs-output-format")?.value || state.db.settings.elevenLabsOutputFormat || "mp3_44100_128";
+  state.db.settings.elevenLabsStability = boundedSettingNumber(document.querySelector("#setting-elevenlabs-stability")?.value, state.db.settings.elevenLabsStability || 0.5, 0, 1);
+  state.db.settings.elevenLabsSimilarityBoost = boundedSettingNumber(document.querySelector("#setting-elevenlabs-similarity")?.value, state.db.settings.elevenLabsSimilarityBoost || 0.75, 0, 1);
+  state.db.settings.elevenLabsStyle = boundedSettingNumber(document.querySelector("#setting-elevenlabs-style")?.value, state.db.settings.elevenLabsStyle || 0, 0, 1);
+  state.db.settings.elevenLabsSpeed = boundedSettingNumber(document.querySelector("#setting-elevenlabs-speed")?.value, state.db.settings.elevenLabsSpeed || 1, 0.7, 1.2);
+  state.db.settings.elevenLabsLanguageCode = document.querySelector("#setting-elevenlabs-language-code")?.value.trim() ?? state.db.settings.elevenLabsLanguageCode ?? "ja";
+  state.db.settings.elevenLabsSpeakerBoost = document.querySelector("#setting-elevenlabs-speaker-boost")?.checked ?? state.db.settings.elevenLabsSpeakerBoost ?? true;
+}
+
 function bindSettings() {
   loadOpenRouterModels();
   if (isOpenRouterSeedanceBaseUrl()) loadOpenRouterVideoModels();
@@ -4420,29 +5272,33 @@ function bindSettings() {
     const baseUrl = document.querySelector("#setting-seedance-base-url")?.value || state.db.settings.seedanceBaseUrl;
     updateSettingSeedanceResolutionOptions(event.target.value, baseUrl);
   });
-  document.querySelector("[data-action='save-settings']")?.addEventListener("click", async () => {
-    localStorage.setItem("openrouter_api_key", document.querySelector("#setting-api-key").value.trim());
-    localStorage.setItem("seedance_api_key", document.querySelector("#setting-seedance-api-key")?.value.trim() || "");
-    state.db.settings.defaultModel = document.querySelector("#setting-model").value.trim();
+	  document.querySelector("[data-action='save-settings']")?.addEventListener("click", async () => {
+	    localStorage.setItem("openrouter_api_key", document.querySelector("#setting-api-key").value.trim());
+	    localStorage.setItem("seedance_api_key", document.querySelector("#setting-seedance-api-key")?.value.trim() || "");
+	    saveElevenLabsSettingsFromDom();
+	    state.db.settings.defaultModel = document.querySelector("#setting-model").value.trim();
     state.db.settings.textModel = document.querySelector("#setting-text-model").value.trim();
     state.db.settings.worldModel = document.querySelector("#setting-world-model").value.trim();
     state.db.settings.videoAgentModel = document.querySelector("#setting-video-agent-model").value.trim();
     state.db.settings.audioAgentModel = document.querySelector("#setting-audio-agent-model").value.trim();
     state.db.settings.audioModel = openRouterTtsModel;
+    state.db.settings.irodoriAppDir = document.querySelector("#setting-irodori-app-dir")?.value.trim() || "vendor/Irodori-TTS";
     state.db.settings.seedanceBaseUrl = document.querySelector("#setting-seedance-base-url")?.value.trim() || "https://ark.ap-southeast.bytepluses.com/api/v3";
     state.db.settings.seedanceModel = document.querySelector("#setting-seedance-model")?.value.trim() || "dreamina-seedance-2-0-260128";
     state.db.settings.seedanceResolution = document.querySelector("#setting-seedance-resolution")?.value || "720p";
     await saveDb();
     toast("設定を保存しました。");
   });
-  document.querySelector("[data-action='test-openrouter']")?.addEventListener("click", async () => {
-    localStorage.setItem("openrouter_api_key", document.querySelector("#setting-api-key").value.trim());
-    state.db.settings.defaultModel = document.querySelector("#setting-model").value.trim();
+	  document.querySelector("[data-action='test-openrouter']")?.addEventListener("click", async () => {
+	    localStorage.setItem("openrouter_api_key", document.querySelector("#setting-api-key").value.trim());
+	    saveElevenLabsSettingsFromDom();
+	    state.db.settings.defaultModel = document.querySelector("#setting-model").value.trim();
     state.db.settings.textModel = document.querySelector("#setting-text-model").value.trim();
     state.db.settings.worldModel = document.querySelector("#setting-world-model").value.trim();
     state.db.settings.videoAgentModel = document.querySelector("#setting-video-agent-model").value.trim();
     state.db.settings.audioAgentModel = document.querySelector("#setting-audio-agent-model").value.trim();
     state.db.settings.audioModel = openRouterTtsModel;
+    state.db.settings.irodoriAppDir = document.querySelector("#setting-irodori-app-dir")?.value.trim() || "vendor/Irodori-TTS";
     try {
       await callOpenRouter({
         textOnly: true,
@@ -4454,7 +5310,17 @@ function bindSettings() {
     } catch (error) {
       toast(error.message);
     }
-  });
+	  });
+	  document.querySelector("[data-action='load-elevenlabs-voices']")?.addEventListener("click", async () => {
+	    saveElevenLabsSettingsFromDom();
+	    await loadElevenLabsVoices();
+	  });
+	  document.querySelector("[data-action='load-elevenlabs-models']")?.addEventListener("click", async () => {
+	    saveElevenLabsSettingsFromDom();
+	    await loadElevenLabsModels();
+	  });
+	  document.querySelector("[data-action='check-irodori']")?.addEventListener("click", checkIrodoriConnection);
+  document.querySelector("[data-action='setup-irodori']")?.addEventListener("click", setupIrodori);
   document.querySelector("[data-action='reload-openrouter-models']")?.addEventListener("click", () => loadOpenRouterModels({ force: true }));
 }
 

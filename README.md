@@ -1,7 +1,7 @@
 # Creative File Studio
 
 ローカル環境で動く、創作支援向けのファイル管理アプリです。作品、キャラ設定、取り込み画像、AIによる振り分け、生成プロンプト作成をまとめて扱えます。
-Seedance / OpenRouter 経由の動画生成エージェントも搭載しています。
+Seedance / OpenRouter 経由の動画生成エージェントと、OpenRouter / ElevenLabs / Irodori-TTS を切り替えられる音声生成を搭載しています。
 
 ## 起動
 
@@ -91,6 +91,7 @@ ZIPに含めるもの:
 - `start-windows.bat`
 - `update-mac.command`
 - `update-windows.bat`
+- `scripts/setup-irodori.sh`
 - `public/`
 - `data/.gitkeep`
 
@@ -98,7 +99,9 @@ ZIPに含めないもの:
 
 - `data/db.json`
 - `data/uploads/`
+- `data/audios/`
 - `data/videos/`
+- `vendor/`
 - `.env`
 - `node_modules/`
 - `.DS_Store`
@@ -126,7 +129,9 @@ ZIPに含めないもの:
 - 差分プロンプト生成時にキャラメモを加味するか切り替え
 - 作品情報、世界観、キャラ情報、参照素材を読んだ動画生成エージェント
 - 作品情報、世界観、キャラ情報を読んだ音声生成エージェント
-- OpenRouter `google/gemini-3.1-flash-tts-preview` によるTTS生成
+- OpenRouter `google/gemini-3.1-flash-tts-preview`、ElevenLabs、またはローカル Irodori-TTS によるTTS生成
+- ElevenLabs選択時のVoice ID、モデル、出力形式、Stability、Similarity、Style、Speed、Speaker Boost指定
+- Irodori-TTS選択時のVoiceDesign/Reference、Steps、候補数、Seed、CFG、デバイス、精度、参照音声指定
 - 生成音声をキャラ情報に紐づけ、作品ページのキャラカードから確認
 - Seedance 2.0 向けのプロンプト案作成
 - Seedance API Base URL を公式 / OpenRouter から選択
@@ -148,6 +153,7 @@ ZIPに含めないもの:
 - 動画生成用に追加した素材: `data/uploads/作品名/_動画生成_画像/`、`_動画生成_動画/`、`_動画生成_音声/`
 - 生成完了後に保存された動画: `data/videos/`
 - OpenRouter API キー: ブラウザの localStorage
+- ElevenLabs API キー: ブラウザの localStorage
 - Seedance API キー: ブラウザの localStorage
 
 既存の `data/uploads/` 直下にある画像は、アプリ読み込み時に現在の作品・キャラ割当に合わせて自動で移動されます。未割当画像は `作品名/_未割当/` に入ります。
@@ -162,6 +168,7 @@ ZIPに含めないもの:
 
 - `data/*`
 - `node_modules/`
+- `vendor/`
 - `.env`
 - `.DS_Store`
 
@@ -175,18 +182,46 @@ ZIPに含めないもの:
 - テキスト生成モデル: 通常のテキスト生成に使います。
 - 世界観読み込みモデル: 設定シート画像の読解に使います。vision と長文JSONに強いモデルが向いています。
 - 動画エージェントモデル: 動画生成画面のチャットエージェントに使います。参照画像を読むため、vision 対応モデルが向いています。
-- 音声エージェントモデル: 音声生成画面のチャットエージェントに使います。実際の音声生成モデルは `google/gemini-3.1-flash-tts-preview` 固定です。
+- 音声エージェントモデル: 音声生成画面のチャットエージェントに使います。実際の音声生成は、音声生成画面で選んだ OpenRouter TTS、ElevenLabs、または Irodori-TTS で行います。
 
 モデル一覧は設定画面の「モデル一覧を再取得」で OpenRouter から読み込みます。
 
-## OpenRouter / 音声生成
+## 音声生成
 
-音声生成画面では、作品、キャラ、ボイス、読み上げテキストを指定して音声を作成できます。キャラ指定は任意です。
+音声生成画面では、作品、キャラ、生成方式、読み上げテキストを指定して音声を作成できます。キャラ指定は任意です。
+
+生成方式は以下から選択できます。
+
+- OpenRouter / Gemini TTS: `google/gemini-3.1-flash-tts-preview` を使います。
+- ElevenLabs: 指定した Voice ID とモデルでElevenLabs APIを呼び出し、音声ファイルを保存します。
+- Irodori-TTS: この端末上の Irodori-TTS を `uv run python infer.py` で実行し、WAVを保存します。
+
+OpenRouter選択時:
 
 - 生成モデル: `google/gemini-3.1-flash-tts-preview`
-- 出力形式: MP3
+- 出力形式: OpenRouterからPCMで受け取り、アプリ内ではWAVとして保存します。
 - APIキー: 設定画面のOpenRouter APIキーを使います。
-- エージェント: 作品情報、世界観、キャラメモを参照して読み上げテキスト案を作ります。
+- 演技指示: 声質、感情、速度、間、距離感、アクセント、インライン音声タグを指定できます。
+- エージェント: 作品情報、世界観、キャラメモを参照して、読み上げ本文と演技指示を分けて作ります。生成時は両方をGemini TTS向けのプロンプトに合成します。
+
+ElevenLabs選択時:
+
+- APIキー: 設定画面のElevenLabs APIキーを使います。
+- Voice ID: 既定値を設定画面で保存でき、音声生成画面でもプルダウンから生成ごとに変更できます。
+- 音声一覧: 設定画面または音声生成画面の「音声一覧取得」で利用可能なVoice IDを読み込み、声の名前付きプルダウンから選べます。
+- モデル: `eleven_multilingual_v2`、`eleven_turbo_v2_5`、`eleven_flash_v2_5`、`eleven_v3` などをプルダウンから選べます。「モデル一覧取得」でElevenLabs APIのTTS対応モデルも読み込めます。
+- 出力形式: MP3、WAV、PCMを選べます。PCMはアプリ内で再生しやすいようWAVに変換して保存します。
+- 演技指示: 音声生成画面で声質、感情、速度、間、距離感をメモとして指定でき、生成履歴にも保存されます。
+- Voice settings: Stability、Similarity、Style、Speed、Speaker Boost、言語コード、Seedを指定できます。
+
+Irodori-TTS選択時:
+
+- 出力形式: WAV
+- VoiceDesign / Reference を選択できます。
+- Steps、候補数、Seed、Text CFG、Caption CFG、Speaker CFG、モデル/Codecのデバイスと精度、カスタムチェックポイントを指定できます。
+- Reference用の参照音声をアップロードできます。
+- 設定画面の「Irodori-TTS連携」で既存のIrodori-TTSフォルダを指定できます。
+- 未導入環境では「Irodori-TTSを取得」を押すと `scripts/setup-irodori.sh` が `vendor/Irodori-TTS` にGitHubから取得し、`uv sync` を実行します。`uv` がない場合はインストール案内が表示されます。
 
 キャラを指定して生成した音声は、そのキャラに紐づいて保存されます。作品ページのキャラカードから最新音声を再生でき、「音声一覧」で過去の音声も確認できます。
 

@@ -16,6 +16,9 @@ const videoDir = path.join(dataDir, "videos");
 const audioDir = path.join(dataDir, "audios");
 const dbPath = path.join(dataDir, "db.json");
 const seedanceGuidePath = path.join(__dirname, "Seedance2.0_Prompt_Guide_v2.md");
+const irodoriSetupScriptPath = path.join(__dirname, "scripts", "setup-irodori.sh");
+const irodoriVendorDir = path.join(__dirname, "vendor", "Irodori-TTS");
+const localIrodoriAppDir = "/Users/guarhiro/Documents/irodori TTSアプリ";
 const port = Number(process.env.PORT || 4173);
 
 const mimeTypes = {
@@ -46,8 +49,35 @@ const emptyDb = {
     worldModel: "google/gemini-2.5-flash",
     videoAgentModel: "google/gemini-2.5-flash",
     audioAgentModel: "google/gemini-2.5-flash",
+    audioProvider: "openrouter",
     audioModel: "google/gemini-3.1-flash-tts-preview",
     audioVoice: "Kore",
+    audioActingPrompt: "自然な日本語で、感情と間を大切にして読み上げてください。",
+    elevenLabsVoiceId: "JBFqnCBsd6RMkjVDRZzb",
+    elevenLabsModelId: "eleven_multilingual_v2",
+    elevenLabsOutputFormat: "mp3_44100_128",
+    elevenLabsStability: 0.5,
+    elevenLabsSimilarityBoost: 0.75,
+    elevenLabsStyle: 0,
+    elevenLabsSpeed: 1,
+    elevenLabsSpeakerBoost: true,
+    elevenLabsLanguageCode: "ja",
+    irodoriAppDir: "vendor/Irodori-TTS",
+    irodoriDefaults: {
+      mode: "VoiceDesign",
+      caption: "落ち着いた自然な日本語の声で、距離感は近めに読み上げてください。",
+      modelDevice: "auto",
+      modelPrecision: "fp32",
+      codecDevice: "auto",
+      codecPrecision: "fp32",
+      numSteps: 40,
+      numCandidates: 1,
+      seed: "",
+      cfgScaleText: 3,
+      cfgScaleCaption: 4,
+      cfgScaleSpeaker: 5,
+      customCheckpoint: ""
+    },
     seedanceBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3",
     seedanceModel: "dreamina-seedance-2-0-260128",
     seedanceResolution: "720p"
@@ -105,6 +135,22 @@ function sendJson(res, status, value) {
 function sendText(res, status, value) {
   res.writeHead(status, { "content-type": "text/plain; charset=utf-8" });
   res.end(value);
+}
+
+function readableProviderError(value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.map(readableProviderError).filter(Boolean).join(" / ");
+  if (typeof value === "object") {
+    return readableProviderError(value.message)
+      || readableProviderError(value.error)
+      || readableProviderError(value.detail)
+      || readableProviderError(value.reason)
+      || readableProviderError(value.raw)
+      || JSON.stringify(value);
+  }
+  return String(value);
 }
 
 async function readBody(req, maxBytes = 28 * 1024 * 1024) {
@@ -177,6 +223,11 @@ function uploadUrlFor(filePath) {
   return `/uploads/${relative.split(path.sep).map(encodeURIComponent).join("/")}`;
 }
 
+function audioUrlFor(filePath) {
+  const relative = path.relative(audioDir, filePath);
+  return `/audios/${relative.split(path.sep).map(encodeURIComponent).join("/")}`;
+}
+
 function uploadPathFromUrl(uploadUrl) {
   const parsed = new URL(uploadUrl, "http://localhost");
   if (!parsed.pathname.startsWith("/uploads/")) throw new Error("uploads 配下の画像URLではありません。");
@@ -213,6 +264,140 @@ async function localUploadAsDataUrl(uploadUrl, maxBytes = 64 * 1024 * 1024) {
   const ext = path.extname(filePath).toLowerCase();
   const data = await fs.readFile(filePath);
   return `data:${mimeForExtension(ext)};base64,${data.toString("base64")}`;
+}
+
+function expandLocalPath(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const home = process.env.HOME || "";
+  if (raw === "~") return home;
+  if (raw.startsWith("~/")) return path.join(home, raw.slice(2));
+  return path.isAbsolute(raw) ? raw : path.resolve(__dirname, raw);
+}
+
+async function isFile(filePath) {
+  try {
+    return (await fs.stat(filePath)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function clipProcessOutput(value, maxLength = 24000) {
+  const text = String(value || "");
+  return text.length > maxLength ? `${text.slice(0, 4000)}\n...\n${text.slice(-maxLength + 4000)}` : text;
+}
+
+function commandLabel(commandParts) {
+  return commandParts.map((part) => /\s/.test(part) ? JSON.stringify(part) : part).join(" ");
+}
+
+function runProcess(commandParts, { cwd = __dirname, timeoutMs = 120000, env = {} } = {}) {
+  return new Promise((resolve) => {
+    const [command, ...args] = commandParts;
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const child = spawn(command, args, {
+      cwd,
+      env: {
+        ...process.env,
+        PYTHONPYCACHEPREFIX: process.env.PYTHONPYCACHEPREFIX || "/private/tmp/creative-file-studio-irodori-pycache",
+        ...env
+      },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    const finish = (payload) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({
+        ...payload,
+        command: commandLabel(commandParts),
+        stdout: clipProcessOutput(stdout),
+        stderr: clipProcessOutput(stderr)
+      });
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      finish({ ok: false, code: null, timedOut: true, error: "処理がタイムアウトしました。" });
+    }, timeoutMs);
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (error) => finish({ ok: false, code: null, error: error.message }));
+    child.on("close", (code) => finish({ ok: code === 0, code, error: code === 0 ? "" : `終了コード ${code}` }));
+  });
+}
+
+async function findUvCommand() {
+  const home = process.env.HOME || "";
+  const candidates = [
+    ["uv"],
+    [path.join(home, "Library/Python/3.9/bin/uv")],
+    [path.join(home, ".local/bin/uv")],
+    ["python3", "-m", "uv"]
+  ];
+  for (const candidate of candidates) {
+    const result = await runProcess([...candidate, "--version"], { timeoutMs: 10000 });
+    if (result.ok) return { command: candidate, version: result.stdout.trim() || result.stderr.trim() };
+  }
+  return null;
+}
+
+async function resolveIrodoriWorkspace(configuredPath = "") {
+  const candidates = [
+    configuredPath,
+    process.env.IRODORI_TTS_DIR,
+    irodoriVendorDir,
+    localIrodoriAppDir,
+    path.join(localIrodoriAppDir, "upstream", "Irodori-TTS")
+  ]
+    .map(expandLocalPath)
+    .filter(Boolean);
+  const seen = new Set();
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    const directInfer = path.join(candidate, "infer.py");
+    if (await isFile(directInfer)) {
+      const nestedInApp = path.basename(candidate) === "Irodori-TTS" && path.basename(path.dirname(candidate)) === "upstream";
+      return {
+        found: true,
+        configuredPath: candidate,
+        appDir: nestedInApp ? path.dirname(path.dirname(candidate)) : candidate,
+        upstreamDir: candidate,
+        inferPath: directInfer
+      };
+    }
+    const nestedInfer = path.join(candidate, "upstream", "Irodori-TTS", "infer.py");
+    if (await isFile(nestedInfer)) {
+      return {
+        found: true,
+        configuredPath: candidate,
+        appDir: candidate,
+        upstreamDir: path.dirname(nestedInfer),
+        inferPath: nestedInfer
+      };
+    }
+  }
+  return {
+    found: false,
+    configuredPath: expandLocalPath(configuredPath),
+    candidates: [...seen],
+    setupScript: irodoriSetupScriptPath,
+    suggestedPath: path.relative(__dirname, irodoriVendorDir) || irodoriVendorDir
+  };
+}
+
+function boundedNumber(value, fallback, min, max, integer = false) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  const bounded = Math.min(max, Math.max(min, number));
+  return integer ? Math.round(bounded) : bounded;
 }
 
 async function uniqueFilePath(dir, fileName) {
@@ -662,6 +847,46 @@ function extensionFromAudioResponse(contentType, responseFormat = "mp3") {
   return responseFormat === "pcm" ? ".pcm" : ".mp3";
 }
 
+function extensionFromElevenLabsFormat(format = "mp3_44100_128") {
+  const codec = String(format || "").split("_")[0].toLowerCase();
+  if (codec === "mp3") return ".mp3";
+  if (codec === "wav") return ".wav";
+  if (codec === "pcm") return ".pcm";
+  if (codec === "ulaw") return ".ulaw";
+  return ".mp3";
+}
+
+function sampleRateFromElevenLabsFormat(format = "pcm_24000") {
+  const sampleRate = Number(String(format || "").split("_")[1]);
+  return Number.isFinite(sampleRate) && sampleRate >= 8000 && sampleRate <= 48000 ? sampleRate : 24000;
+}
+
+function modelRequiresPcmAudio(model) {
+  const id = String(model || "").toLowerCase();
+  return id.includes("gemini") && id.includes("tts");
+}
+
+function pcmToWavBuffer(pcmBuffer, { sampleRate = 24000, channels = 1, bitDepth = 16 } = {}) {
+  const bytesPerSample = bitDepth / 8;
+  const blockAlign = channels * bytesPerSample;
+  const byteRate = sampleRate * blockAlign;
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + pcmBuffer.length, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitDepth, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(pcmBuffer.length, 40);
+  return Buffer.concat([header, pcmBuffer]);
+}
+
 async function handleOpenRouterSpeech(req, res) {
   const {
     apiKey,
@@ -673,7 +898,7 @@ async function handleOpenRouterSpeech(req, res) {
     title = "generated-audio"
   } = await readJson(req, 2 * 1024 * 1024);
   const cleanInput = String(input || "").trim();
-  const cleanFormat = responseFormat === "pcm" ? "pcm" : "mp3";
+  const cleanFormat = modelRequiresPcmAudio(model) ? "pcm" : responseFormat === "pcm" ? "pcm" : "mp3";
   if (!apiKey) return sendJson(res, 400, { error: "OpenRouter API キーが未設定です。" });
   if (!model) return sendJson(res, 400, { error: "音声生成モデルが未設定です。" });
   if (!cleanInput) return sendJson(res, 400, { error: "読み上げテキストが必要です。" });
@@ -709,18 +934,31 @@ async function handleOpenRouterSpeech(req, res) {
       } catch {
         payload = { error: text || `OpenRouter TTS が ${response.status} を返しました。` };
       }
-      return sendJson(res, response.status, payload);
+      const message = readableProviderError(payload.error) || readableProviderError(payload) || `OpenRouter TTS が ${response.status} を返しました。`;
+      return sendJson(res, response.status, {
+        ...payload,
+        error: message,
+        providerError: payload.error || payload
+      });
     }
 
-    const ext = extensionFromAudioResponse(response.headers.get("content-type"), cleanFormat);
-    const fileName = safeUploadName(title, ext);
+    const contentType = response.headers.get("content-type") || "";
+    const ext = extensionFromAudioResponse(contentType, cleanFormat);
+    const saveAsWav = cleanFormat === "pcm" || ext === ".pcm";
+    const fileName = safeUploadName(title, saveAsWav ? ".wav" : ext);
     const filePath = path.join(audioDir, fileName);
-    await pipeline(Readable.fromWeb(response.body), createWriteStream(filePath));
+    if (saveAsWav) {
+      const pcmBuffer = Buffer.from(await response.arrayBuffer());
+      await fs.writeFile(filePath, pcmToWavBuffer(pcmBuffer));
+    } else {
+      await pipeline(Readable.fromWeb(response.body), createWriteStream(filePath));
+    }
     const stat = await fs.stat(filePath);
     sendJson(res, 200, {
       url: `/audios/${encodeURIComponent(fileName)}`,
       path: filePath,
-      mimeType: response.headers.get("content-type") || mimeForExtension(ext),
+      mimeType: saveAsWav ? "audio/wav" : contentType || mimeForExtension(ext),
+      format: saveAsWav ? "wav" : ext.replace(".", "") || cleanFormat,
       generationId: response.headers.get("x-generation-id") || "",
       size: stat.size,
       request: {
@@ -731,6 +969,373 @@ async function handleOpenRouterSpeech(req, res) {
   } catch (error) {
     sendJson(res, 502, { error: `OpenRouter 音声生成に失敗しました: ${error.message}` });
   }
+}
+
+async function handleElevenLabsVoices(req, res) {
+  const { apiKey } = await readJson(req, 256 * 1024);
+  if (!apiKey) return sendJson(res, 400, { error: "ElevenLabs API キーが未設定です。" });
+  try {
+    const response = await fetch("https://api.elevenlabs.io/v2/voices?page_size=100", {
+      headers: {
+        "xi-api-key": apiKey,
+        "accept": "application/json"
+      },
+      signal: AbortSignal.timeout(30000)
+    });
+    const text = await response.text();
+    let payload;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = { error: text || `ElevenLabs voices API が ${response.status} を返しました。` };
+    }
+    if (!response.ok) {
+      return sendJson(res, response.status, {
+        ...payload,
+        error: readableProviderError(payload.error) || readableProviderError(payload) || `ElevenLabs voices API が ${response.status} を返しました。`,
+        providerError: payload.error || payload
+      });
+    }
+    const voices = Array.isArray(payload.voices) ? payload.voices.map((voice) => ({
+      voiceId: voice.voice_id,
+      name: voice.name || voice.voice_id,
+      category: voice.category || "",
+      description: voice.description || "",
+      labels: voice.labels || {},
+      previewUrl: voice.preview_url || "",
+      settings: voice.settings || null
+    })).filter((voice) => voice.voiceId) : [];
+    sendJson(res, 200, { voices, raw: payload });
+  } catch (error) {
+    sendJson(res, 502, { error: `ElevenLabs 音声一覧の取得に失敗しました: ${error.message}` });
+  }
+}
+
+async function handleElevenLabsModels(req, res) {
+  const { apiKey } = await readJson(req, 256 * 1024);
+  if (!apiKey) return sendJson(res, 400, { error: "ElevenLabs API キーが未設定です。" });
+  try {
+    const response = await fetch("https://api.elevenlabs.io/v1/models", {
+      headers: {
+        "xi-api-key": apiKey,
+        "accept": "application/json"
+      },
+      signal: AbortSignal.timeout(30000)
+    });
+    const text = await response.text();
+    let payload;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = { error: text || `ElevenLabs models API が ${response.status} を返しました。` };
+    }
+    if (!response.ok) {
+      return sendJson(res, response.status, {
+        ...payload,
+        error: readableProviderError(payload.error) || readableProviderError(payload) || `ElevenLabs models API が ${response.status} を返しました。`,
+        providerError: payload.error || payload
+      });
+    }
+    const source = Array.isArray(payload) ? payload : Array.isArray(payload.models) ? payload.models : [];
+    const models = source.map((model) => ({
+      modelId: model.model_id || model.modelId || model.id || "",
+      name: model.name || model.model_id || model.id || "",
+      description: model.description || "",
+      canDoTextToSpeech: model.can_do_text_to_speech !== false,
+      canUseStyle: Boolean(model.can_use_style),
+      canUseSpeakerBoost: Boolean(model.can_use_speaker_boost),
+      languages: Array.isArray(model.languages) ? model.languages : [],
+      maxCharactersFreeUser: model.max_characters_request_free_user || null,
+      maxCharactersSubscribedUser: model.max_characters_request_subscribed_user || null,
+      maximumTextLengthPerRequest: model.maximum_text_length_per_request || null
+    })).filter((model) => model.modelId && model.canDoTextToSpeech);
+    sendJson(res, 200, { models, raw: payload });
+  } catch (error) {
+    sendJson(res, 502, { error: `ElevenLabs モデル一覧の取得に失敗しました: ${error.message}` });
+  }
+}
+
+async function handleElevenLabsSpeech(req, res) {
+  const {
+    apiKey,
+    voiceId,
+    modelId = "eleven_multilingual_v2",
+    input,
+    outputFormat = "mp3_44100_128",
+    title = "elevenlabs-audio",
+    languageCode = "",
+    seed,
+    voiceSettings = {}
+  } = await readJson(req, 2 * 1024 * 1024);
+  const cleanInput = String(input || "").trim();
+  const cleanVoiceId = String(voiceId || "").trim();
+  const cleanModelId = String(modelId || "eleven_multilingual_v2").trim() || "eleven_multilingual_v2";
+  const cleanOutputFormat = String(outputFormat || "mp3_44100_128").trim() || "mp3_44100_128";
+  if (!apiKey) return sendJson(res, 400, { error: "ElevenLabs API キーが未設定です。" });
+  if (!cleanVoiceId) return sendJson(res, 400, { error: "ElevenLabs voice ID が未設定です。" });
+  if (!cleanInput) return sendJson(res, 400, { error: "読み上げテキストが必要です。" });
+
+  const stability = boundedNumber(voiceSettings.stability, 0.5, 0, 1);
+  const similarityBoost = boundedNumber(voiceSettings.similarityBoost ?? voiceSettings.similarity_boost, 0.75, 0, 1);
+  const style = boundedNumber(voiceSettings.style, 0, 0, 1);
+  const speed = boundedNumber(voiceSettings.speed, 1, 0.7, 1.2);
+  const useSpeakerBoost = Boolean(voiceSettings.useSpeakerBoost ?? voiceSettings.use_speaker_boost ?? true);
+  const seedText = String(seed || "").trim();
+  const requestPayload = {
+    text: cleanInput,
+    model_id: cleanModelId,
+    voice_settings: {
+      stability,
+      similarity_boost: similarityBoost,
+      style,
+      use_speaker_boost: useSpeakerBoost,
+      speed
+    }
+  };
+  if (languageCode) requestPayload.language_code = String(languageCode).trim();
+  if (/^\d+$/.test(seedText)) requestPayload.seed = Number(seedText);
+
+  try {
+    const endpoint = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(cleanVoiceId)}?output_format=${encodeURIComponent(cleanOutputFormat)}`;
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "xi-api-key": apiKey,
+        "content-type": "application/json",
+        "accept": "audio/*,*/*"
+      },
+      body: JSON.stringify(requestPayload),
+      signal: AbortSignal.timeout(120000)
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      let payload;
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        payload = { error: text || `ElevenLabs TTS が ${response.status} を返しました。` };
+      }
+      return sendJson(res, response.status, {
+        ...payload,
+        error: readableProviderError(payload.error) || readableProviderError(payload) || `ElevenLabs TTS が ${response.status} を返しました。`,
+        providerError: payload.error || payload
+      });
+    }
+
+    const contentType = response.headers.get("content-type") || "";
+    const savePcmAsWav = cleanOutputFormat.startsWith("pcm_");
+    const ext = savePcmAsWav
+      ? ".wav"
+      : extensionFromAudioResponse(contentType, cleanOutputFormat.startsWith("pcm") ? "pcm" : "mp3");
+    const fallbackExt = extensionFromElevenLabsFormat(cleanOutputFormat);
+    const fileName = safeUploadName(title, ext === ".mp3" && fallbackExt !== ".mp3" ? fallbackExt : ext);
+    const filePath = path.join(audioDir, fileName);
+    if (savePcmAsWav) {
+      const pcmBuffer = Buffer.from(await response.arrayBuffer());
+      await fs.writeFile(filePath, pcmToWavBuffer(pcmBuffer, { sampleRate: sampleRateFromElevenLabsFormat(cleanOutputFormat) }));
+    } else {
+      await pipeline(Readable.fromWeb(response.body), createWriteStream(filePath));
+    }
+    const stat = await fs.stat(filePath);
+    sendJson(res, 200, {
+      url: `/audios/${encodeURIComponent(fileName)}`,
+      path: filePath,
+      mimeType: savePcmAsWav ? "audio/wav" : contentType || mimeForExtension(path.extname(fileName)),
+      format: savePcmAsWav ? "wav" : path.extname(fileName).replace(".", "") || cleanOutputFormat,
+      generationId: response.headers.get("request-id") || response.headers.get("history-item-id") || "",
+      size: stat.size,
+      request: {
+        ...requestPayload,
+        voice_id: cleanVoiceId,
+        output_format: cleanOutputFormat,
+        text: cleanInput.length > 1200 ? `${cleanInput.slice(0, 1200)}...` : cleanInput
+      }
+    });
+  } catch (error) {
+    sendJson(res, 502, { error: `ElevenLabs 音声生成に失敗しました: ${error.message}` });
+  }
+}
+
+const irodoriBaseCheckpoint = "Aratako/Irodori-TTS-500M-v2";
+const irodoriVoiceDesignCheckpoint = "Aratako/Irodori-TTS-500M-v2-VoiceDesign";
+
+function irodoriPrecision(value, device) {
+  return value === "bf16" && device === "cuda" ? "bf16" : "fp32";
+}
+
+function irodoriDevice(value) {
+  const clean = String(value || "auto").trim().toLowerCase();
+  return ["cpu", "mps", "cuda"].includes(clean) ? clean : "";
+}
+
+function savedIrodoriOutputPaths(outputPath, numCandidates) {
+  if (numCandidates <= 1) return [outputPath];
+  const parsed = path.parse(outputPath);
+  return Array.from({ length: numCandidates }, (_, index) => path.join(parsed.dir, `${parsed.name}_${String(index + 1).padStart(3, "0")}${parsed.ext || ".wav"}`));
+}
+
+async function outputInfo(filePath) {
+  const stat = await fs.stat(filePath);
+  return {
+    url: audioUrlFor(filePath),
+    path: filePath,
+    mimeType: mimeForExtension(path.extname(filePath) || ".wav"),
+    size: stat.size
+  };
+}
+
+async function handleIrodoriStatus(req, res) {
+  const { appDir } = await readJson(req, 256 * 1024);
+  const workspace = await resolveIrodoriWorkspace(appDir);
+  const uv = await findUvCommand();
+  return sendJson(res, 200, {
+    ...workspace,
+    uvFound: Boolean(uv),
+    uvCommand: uv ? commandLabel(uv.command) : "",
+    uvVersion: uv?.version || "",
+    setupScript: irodoriSetupScriptPath,
+    suggestedPath: path.relative(__dirname, irodoriVendorDir) || irodoriVendorDir
+  });
+}
+
+async function handleIrodoriSetup(req, res) {
+  const exists = await isFile(irodoriSetupScriptPath);
+  if (!exists) return sendJson(res, 404, { error: "Irodori-TTS セットアップスクリプトが見つかりません。" });
+  const result = await runProcess(["bash", irodoriSetupScriptPath], { cwd: __dirname, timeoutMs: 45 * 60 * 1000 });
+  const workspace = await resolveIrodoriWorkspace(irodoriVendorDir);
+  return sendJson(res, result.ok ? 200 : 500, {
+    ok: result.ok,
+    error: result.ok ? "" : `Irodori-TTS セットアップに失敗しました: ${result.error || result.stderr || "unknown error"}`,
+    workspace,
+    result
+  });
+}
+
+async function handleIrodoriSpeech(req, res) {
+  const body = await readJson(req, 4 * 1024 * 1024);
+  const cleanInput = String(body.input || "").trim();
+  const title = String(body.title || "irodori-audio").trim() || "irodori-audio";
+  if (!cleanInput) return sendJson(res, 400, { error: "読み上げテキストが必要です。" });
+
+  const workspace = await resolveIrodoriWorkspace(body.appDir);
+  if (!workspace.found) {
+    return sendJson(res, 400, {
+      error: "Irodori-TTS が見つかりません。設定画面でパスを指定するか、Irodori-TTS をセットアップしてください。",
+      workspace
+    });
+  }
+  const uv = await findUvCommand();
+  if (!uv) {
+    return sendJson(res, 400, {
+      error: "uv が見つかりません。Irodori-TTS の実行には uv が必要です。",
+      installHint: "python3 -m pip install --user uv または https://astral.sh/uv/ の手順で uv を入れてください。"
+    });
+  }
+
+  const mode = body.mode === "Reference" ? "Reference" : "VoiceDesign";
+  const numSteps = boundedNumber(body.numSteps, 40, 8, 80, true);
+  const numCandidates = boundedNumber(body.numCandidates, 1, 1, 4, true);
+  const cfgScaleText = boundedNumber(body.cfgScaleText, 3, 0, 10);
+  const cfgScaleCaption = boundedNumber(body.cfgScaleCaption, 4, 0, 10);
+  const cfgScaleSpeaker = boundedNumber(body.cfgScaleSpeaker, 5, 0, 10);
+  const modelDevice = irodoriDevice(body.modelDevice);
+  const codecDevice = irodoriDevice(body.codecDevice);
+  const modelPrecision = irodoriPrecision(body.modelPrecision, modelDevice);
+  const codecPrecision = irodoriPrecision(body.codecPrecision, codecDevice);
+  const caption = String(body.caption || "").trim();
+  const customCheckpoint = String(body.customCheckpoint || "").trim();
+  const outputName = safeUploadName(title, ".wav");
+  const outputPath = path.join(audioDir, outputName);
+  const args = [
+    ...uv.command,
+    "run",
+    "python",
+    "infer.py",
+    "--text",
+    cleanInput,
+    "--output-wav",
+    outputPath,
+    "--model-precision",
+    modelPrecision,
+    "--codec-precision",
+    codecPrecision,
+    "--num-steps",
+    String(numSteps),
+    "--num-candidates",
+    String(numCandidates),
+    "--cfg-scale-text",
+    String(cfgScaleText),
+    "--cfg-scale-caption",
+    String(cfgScaleCaption),
+    "--cfg-scale-speaker",
+    String(mode === "VoiceDesign" ? 0 : cfgScaleSpeaker),
+    "--cfg-min-t",
+    "0.5",
+    "--cfg-max-t",
+    "1.0"
+  ];
+  if (modelDevice) args.push("--model-device", modelDevice);
+  if (codecDevice) args.push("--codec-device", codecDevice);
+  if (customCheckpoint) {
+    args.push("--checkpoint", customCheckpoint);
+  } else {
+    args.push("--hf-checkpoint", mode === "VoiceDesign" ? irodoriVoiceDesignCheckpoint : irodoriBaseCheckpoint);
+  }
+  if (caption) args.push("--caption", caption);
+  const seed = String(body.seed || "").trim();
+  if (/^-?\d+$/.test(seed)) args.push("--seed", seed);
+  if (mode === "Reference" && body.referenceAudioUrl) {
+    try {
+      const refPath = localMediaPathFromUrl(body.referenceAudioUrl);
+      await fs.access(refPath);
+      args.push("--ref-wav", refPath);
+    } catch (error) {
+      return sendJson(res, 400, { error: `参照音声を読み込めません: ${error.message}` });
+    }
+  } else {
+    args.push("--no-ref");
+  }
+
+  const result = await runProcess(args, { cwd: workspace.upstreamDir, timeoutMs: 45 * 60 * 1000 });
+  if (!result.ok) {
+    return sendJson(res, 500, {
+      error: `Irodori-TTS 音声生成に失敗しました: ${result.error || result.stderr || "unknown error"}`,
+      result
+    });
+  }
+
+  const candidatePaths = savedIrodoriOutputPaths(outputPath, numCandidates);
+  const outputs = [];
+  for (const candidatePath of candidatePaths) {
+    if (await isFile(candidatePath)) outputs.push(await outputInfo(candidatePath));
+  }
+  if (!outputs.length) {
+    return sendJson(res, 500, {
+      error: "Irodori-TTS は完了しましたが、出力 WAV が見つかりませんでした。",
+      result
+    });
+  }
+  sendJson(res, 200, {
+    ...outputs[0],
+    outputs,
+    request: {
+      provider: "irodori",
+      mode,
+      caption,
+      numSteps,
+      numCandidates,
+      cfgScaleText,
+      cfgScaleCaption,
+      cfgScaleSpeaker,
+      modelDevice: modelDevice || "auto",
+      codecDevice: codecDevice || "auto",
+      modelPrecision,
+      codecPrecision,
+      checkpoint: customCheckpoint || (mode === "VoiceDesign" ? irodoriVoiceDesignCheckpoint : irodoriBaseCheckpoint),
+      input: cleanInput.length > 1200 ? `${cleanInput.slice(0, 1200)}...` : cleanInput
+    },
+    result
+  });
 }
 
 function normalizeVideoDownloadUrl(videoUrl, baseUrl) {
@@ -1005,6 +1610,30 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/openrouter/speech") {
       return await handleOpenRouterSpeech(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/elevenlabs/voices") {
+      return await handleElevenLabsVoices(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/elevenlabs/models") {
+      return await handleElevenLabsModels(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/elevenlabs/speech") {
+      return await handleElevenLabsSpeech(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/irodori/status") {
+      return await handleIrodoriStatus(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/irodori/setup") {
+      return await handleIrodoriSetup(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/irodori/speech") {
+      return await handleIrodoriSpeech(req, res);
     }
 
     if (req.method === "GET" && url.pathname === "/api/exchange-rate/usd-jpy") {
