@@ -52,7 +52,7 @@ const emptyDb = {
     audioProvider: "openrouter",
     audioModel: "google/gemini-3.1-flash-tts-preview",
     audioVoice: "Kore",
-    audioActingPrompt: "自然な日本語で、感情と間を大切にして読み上げてください。",
+    audioActingPrompt: "自然な日本語で、感情と間を大切にして読み上げてください。音声案の本文には [laughs] [whispers] [sighs] [excited] などの感情タグを必ず1つ以上入れてください。",
     elevenLabsVoiceId: "JBFqnCBsd6RMkjVDRZzb",
     elevenLabsModelId: "eleven_multilingual_v2",
     elevenLabsOutputFormat: "mp3_44100_128",
