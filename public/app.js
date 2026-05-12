@@ -24,7 +24,7 @@ const state = {
   videoSelectedReferenceIds: [],
   videoReferenceRoles: {},
   videoChatMessages: [
-    { role: "assistant", content: "Seedance用の動画生成エージェントです。作りたい場面、秒数、縦横比、使いたい参照素材を教えてください。" }
+    { role: "assistant", content: "動画生成エージェントです。作りたい場面、秒数、縦横比、使いたい参照素材を教えてください。" }
   ],
   videoPromptDraft: null,
   videoIsThinking: false,
@@ -1241,6 +1241,27 @@ function videoModelConfig(modelId, baseUrl = state.db?.settings?.seedanceBaseUrl
   return openRouterVideoModelChoices(modelId).find((model) => model.id === modelId) || openRouterVideoModelChoices()[0];
 }
 
+function videoModelBrand(modelId = "", baseUrl = state.db?.settings?.seedanceBaseUrl) {
+  const model = videoModelConfig(modelId || state.db?.settings?.seedanceModel, baseUrl);
+  const text = `${model?.name || ""} ${model?.id || modelId || ""}`.toLowerCase();
+  if (text.includes("kling")) return "Kling";
+  if (text.includes("seedance") || text.includes("bytedance")) return "Seedance";
+  if (text.includes("veo")) return "Veo";
+  if (text.includes("sora")) return "Sora";
+  return "動画生成";
+}
+
+function defaultVideoJobTitle(modelId = "", baseUrl = state.db?.settings?.seedanceBaseUrl) {
+  const brand = videoModelBrand(modelId, baseUrl);
+  return brand === "動画生成" ? "動画生成" : `${brand} video`;
+}
+
+function displayVideoJobTitle(job) {
+  const title = String(job?.title || "").trim();
+  if (title && title !== "Seedance video") return title;
+  return defaultVideoJobTitle(job?.settings?.model || job?.request?.model || state.db?.settings?.seedanceModel, job?.settings?.baseUrl);
+}
+
 function compatibleVideoModelId(modelId, baseUrl = state.db?.settings?.seedanceBaseUrl) {
   const defaultModel = seedanceApiBasePreset(baseUrl).defaultModel;
   const value = modelId || defaultModel;
@@ -2081,7 +2102,7 @@ function currentTitle() {
   if (state.view === "import") return ["画像取込", "複数画像を取り込み、AIでキャラ別に振り分けます。"];
   if (state.view === "gallery") return ["画像一覧", "作品ごと、キャラごとに保存済み画像を閲覧します。"];
   if (state.view === "audio") return ["音声生成", "OpenRouter TTSでキャラ音声やナレーションを作ります。"];
-  if (state.view === "video") return ["動画生成", "Seedance向けの指示書作成と生成を行います。"];
+  if (state.view === "video") return ["動画生成", "選択した動画モデル向けの指示書作成と生成を行います。"];
   if (state.view === "library") return ["画像整理", "取り込んだ画像を作品・キャラ・状態で確認します。"];
   if (state.view === "prompt") return ["Prompt Lab", "差分やシーン案から生成プロンプトをまとめて作ります。"];
   return ["設定", "OpenRouter の接続情報とモデルを設定します。"];
@@ -2902,7 +2923,7 @@ async function loadSeedanceGuide() {
 }
 
 function buildSeedanceAgentSystemPrompt(guideText) {
-  return `あなたはSeedance 2.0向けの動画監督エージェントです。ユーザーのチャット、作品情報、世界観、キャラ情報、参照素材を読み、足りない情報があれば短く聞き取り、十分ならAPI送信用プロンプト案を作ります。
+  return `あなたは動画生成モデル向けの動画監督エージェントです。ユーザーのチャット、作品情報、世界観、キャラ情報、参照素材を読み、足りない情報があれば短く聞き取り、十分ならAPI送信用プロンプト案を作ります。
 
 必ず次のJSONだけを返してください。
 {
@@ -2911,7 +2932,7 @@ function buildSeedanceAgentSystemPrompt(guideText) {
   "questions": ["必要な確認事項"],
   "draft": {
     "title": "短いタイトル",
-    "prompt": "Seedance APIに送る英語プロンプト。参照素材がある場合は @Image1 / @Video1 / @Audio1 を使う。",
+    "prompt": "動画生成APIに送る英語プロンプト。参照素材がある場合は @Image1 / @Video1 / @Audio1 を使う。",
     "mode": "text|first_frame|first_last|reference",
     "duration": 4から15の整数,
     "ratio": "16:9|9:16|1:1|4:3|3:4|21:9|adaptive",
@@ -2923,7 +2944,7 @@ function buildSeedanceAgentSystemPrompt(guideText) {
   }
 }
 
-Seedanceプロンプトの優先ルール:
+動画生成プロンプトの優先ルール:
 - プロンプトは絵の説明ではなく撮影指示書として書く。
 - Subject -> Action -> Environment -> Camera -> Style -> Constraints の順にまとめる。
 - 主カメラ指示は1つだけにする。
@@ -2984,7 +3005,7 @@ function mergeVideoDraft(result, fallbackControls) {
   if (!source.prompt && result?.prompt) source.prompt = result.prompt;
   if (!source.prompt) return null;
   return {
-    title: source.title || "Seedance video",
+    title: source.title || defaultVideoJobTitle(fallbackControls.model),
     prompt: source.prompt || "",
     model: source.model || fallbackControls.model,
     mode: source.mode || fallbackControls.mode || "reference",
@@ -3001,7 +3022,7 @@ function mergeVideoDraft(result, fallbackControls) {
 
 async function handleVideoAgentMessage(forceDraft = false) {
   const input = document.querySelector("#video-chat-input")?.value.trim();
-  const message = input || (forceDraft ? "ここまでの会話と選択素材から、Seedance API送信用のプロンプト案を作ってください。" : "");
+  const message = input || (forceDraft ? "ここまでの会話と選択素材から、動画生成API送信用のプロンプト案を作ってください。" : "");
   if (!message) return toast("メッセージを入力してください。");
   const controls = videoControlsFromDom();
   state.videoWorkId = controls.workId || null;
@@ -3078,7 +3099,7 @@ async function startSeedanceGeneration() {
     job = {
       id: uid(),
       workId: controls.workId || null,
-      title: state.videoPromptDraft?.title || "Seedance video",
+      title: state.videoPromptDraft?.title || defaultVideoJobTitle(controls.model, state.db.settings.seedanceBaseUrl),
       prompt,
       status: "submitting",
       providerTaskId: "",
@@ -3139,7 +3160,7 @@ async function startSeedanceGeneration() {
     job.providerTaskId = payload.id || payload.task_id || "";
     if (!job.providerTaskId) {
       job.status = "failed";
-      job.error = "Seedance の task id を取得できませんでした。";
+      job.error = "動画生成タスクIDを取得できませんでした。";
       job.updatedAt = new Date().toISOString();
       await saveDb();
       render();
@@ -3149,7 +3170,7 @@ async function startSeedanceGeneration() {
     job.updatedAt = new Date().toISOString();
     await saveDb();
     render();
-    toast("Seedance生成タスクを開始しました。");
+    toast("動画生成タスクを開始しました。");
     await pollSeedanceJob(job.id);
   } catch (error) {
     state.videoIsGenerating = false;
@@ -4233,7 +4254,7 @@ function renderSeedanceAnimation() {
     <div class="seedance-animation">
       <div class="film-loader"><span></span><span></span><span></span><span></span></div>
       <div>
-        <strong>Seedance生成中</strong>
+        <strong>動画生成中</strong>
         <div class="meta">完了後に自動保存します。</div>
       </div>
     </div>
@@ -4251,7 +4272,7 @@ function renderVideoJob(job) {
   return `
     <article class="video-job ${status}">
       <div>
-        <div class="char-name">${escapeHtml(job.title || "Seedance video")}</div>
+        <div class="char-name">${escapeHtml(displayVideoJobTitle(job))}</div>
         <div class="meta">${escapeHtml(work?.name || "全作品")} / ${escapeHtml(status || "unknown")} / ${job.updatedAt ? escapeHtml(new Date(job.updatedAt).toLocaleString("ja-JP")) : ""}${costText ? ` / ${escapeHtml(costText)}` : ""}</div>
       </div>
       ${job.localUrl ? `<video class="generated-video" controls src="${escapeHtml(job.localUrl)}"></video>` : ""}
