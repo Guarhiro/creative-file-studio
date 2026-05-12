@@ -2110,8 +2110,8 @@ function preserveLiveTextDrafts() {
   if (videoChatInput) state.videoChatDraft = videoChatInput.value;
 }
 
-function render() {
-  preserveLiveTextDrafts();
+function render(options = {}) {
+  if (options.preserveLiveTextDrafts !== false) preserveLiveTextDrafts();
   const [title, sub] = currentTitle();
   app.innerHTML = `
     <div class="app-shell">
@@ -3098,7 +3098,7 @@ async function handleVideoAgentMessage(forceDraft = false) {
     const draft = mergeVideoDraft(result, controls);
     if (draft) state.videoPromptDraft = draft;
     state.videoIsThinking = false;
-    render();
+    render({ preserveLiveTextDrafts: !draft });
   } catch (error) {
     state.videoIsThinking = false;
     state.videoChatMessages.push({ role: "assistant", content: `エラー: ${error.message}` });
@@ -3788,7 +3788,7 @@ async function handleAudioAgentMessage(forceDraft = false) {
       state.audioVoice = draft.voice;
     }
     state.audioIsThinking = false;
-    render();
+    render({ preserveLiveTextDrafts: !draft });
   } catch (error) {
     state.audioIsThinking = false;
     state.audioChatMessages.push({ role: "assistant", content: `エラー: ${error.message}` });
