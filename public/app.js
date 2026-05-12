@@ -24,7 +24,7 @@ const state = {
   videoSelectedReferenceIds: [],
   videoReferenceRoles: {},
   videoChatMessages: [
-    { role: "assistant", content: "動画生成エージェントです。作りたい場面、秒数、縦横比、使いたい参照素材を教えてください。" }
+    { role: "assistant", content: "動画生成エージェントです。作りたい場面の構成、タイムライン、使いたいエフェクトやカメラ効果を教えてください。" }
   ],
   videoPromptDraft: null,
   videoIsThinking: false,
