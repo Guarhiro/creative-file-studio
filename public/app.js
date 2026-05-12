@@ -45,6 +45,7 @@ const state = {
   audioIsGenerating: false,
   audioGenerationStartedAt: 0,
   audioGenerationTimer: null,
+  lastOpenRouterDebug: null,
   irodoriStatus: "idle",
   irodoriStatusMessage: "",
   seedanceGuide: "",
@@ -929,6 +930,11 @@ function renderSubjectOptions(workId, selectedValue, { includeAll = true } = {})
 function compactPromptText(value, limit = 900) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   return text.length > limit ? `${text.slice(0, limit)}...` : text;
+}
+
+function compactRawText(value, limit = 4000) {
+  const text = String(value || "").trim();
+  return text.length > limit ? `${text.slice(0, limit)}\n...` : text;
 }
 
 function compactPromptList(value, limit = 10) {
@@ -1824,7 +1830,10 @@ async function postJson(url, body, method = "POST") {
 	    if (url.startsWith("/api/elevenlabs/") && /Method not allowed|Not found/i.test(text)) {
 	      throw new Error("ElevenLabs APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
 	    }
-	    throw new Error(readableError(payload.error) || readableError(payload) || text || `${response.status} ${response.statusText}`);
+	    const error = new Error(readableError(payload.error) || readableError(payload) || text || `${response.status} ${response.statusText}`);
+	    error.payload = payload;
+	    error.responseText = text;
+	    throw error;
 	  }
   return payload;
 }
@@ -2063,7 +2072,9 @@ function parseAiJson(content) {
     }
   }
   const preview = text.slice(0, 180).replace(/\s+/g, " ");
-  throw new Error(`AI応答を JSON として読み取れませんでした。応答の先頭: ${preview || "空の応答"}`);
+  const error = new Error(`AI応答を JSON として読み取れませんでした。応答の先頭: ${preview || "空の応答"}`);
+  error.rawContent = text;
+  throw error;
 }
 
 function selectedOpenRouterModel({ textOnly = false, purpose = "" } = {}) {
@@ -2086,7 +2097,46 @@ async function callOpenRouter({ messages, responseFormat, temperature = 0.2, max
     temperature,
     max_tokens: maxTokens
   });
-  return payload.choices?.[0]?.message?.content || "";
+  const content = payload.choices?.[0]?.message?.content || "";
+  state.lastOpenRouterDebug = {
+    purpose,
+    model,
+    content,
+    payload,
+    createdAt: new Date().toISOString()
+  };
+  return content;
+}
+
+function openRouterDebugText(error) {
+  const rawContent = String(error?.rawContent || "").trim();
+  if (rawContent) return rawContent;
+  if (error?.payload || error?.responseText) {
+    return [
+      error.responseText ? `responseText:\n${error.responseText}` : "",
+      error.payload ? `payload:\n${JSON.stringify(error.payload, null, 2)}` : ""
+    ].filter(Boolean).join("\n\n");
+  }
+  const debug = state.lastOpenRouterDebug;
+  if (!debug) return "";
+  const choice = debug.payload?.choices?.[0] || {};
+  const lines = [
+    `model: ${debug.model || ""}`,
+    `purpose: ${debug.purpose || ""}`,
+    `createdAt: ${debug.createdAt || ""}`,
+    `finish_reason: ${choice.finish_reason || ""}`,
+    `message.content: ${debug.content || "(空)"}`,
+    "",
+    "OpenRouter raw payload:",
+    JSON.stringify(debug.payload || {}, null, 2)
+  ];
+  return lines.join("\n");
+}
+
+function debugChatText(error, limit = 4000) {
+  const debugText = openRouterDebugText(error);
+  if (!debugText) return "";
+  return `\n\n--- デバッグ用のOpenRouter応答 ---\n${compactRawText(debugText, limit)}`;
 }
 
 function preserveLiveTextDrafts() {
@@ -3101,7 +3151,7 @@ async function handleVideoAgentMessage(forceDraft = false) {
     render({ preserveLiveTextDrafts: !draft });
   } catch (error) {
     state.videoIsThinking = false;
-    state.videoChatMessages.push({ role: "assistant", content: `エラー: ${error.message}` });
+    state.videoChatMessages.push({ role: "assistant", content: `エラー: ${error.message}${debugChatText(error)}` });
     render();
   }
 }
@@ -3791,7 +3841,7 @@ async function handleAudioAgentMessage(forceDraft = false) {
     render({ preserveLiveTextDrafts: !draft });
   } catch (error) {
     state.audioIsThinking = false;
-    state.audioChatMessages.push({ role: "assistant", content: `エラー: ${error.message}` });
+    state.audioChatMessages.push({ role: "assistant", content: `エラー: ${error.message}${debugChatText(error)}` });
     render();
   }
 }
