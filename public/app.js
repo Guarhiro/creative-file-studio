@@ -27,6 +27,7 @@ const state = {
     { role: "assistant", content: "動画生成エージェントです。作りたい場面の構成、タイムライン、使いたいエフェクトやカメラ効果を教えてください。" }
   ],
   videoPromptDraft: null,
+  videoChatDraft: "",
   videoIsThinking: false,
   videoIsGenerating: false,
   videoPollingJobId: "",
@@ -39,6 +40,7 @@ const state = {
     { role: "assistant", content: "音声生成エージェントです。台詞、ナレーション、声の雰囲気、キャラ指定があれば教えてください。" }
   ],
   audioPromptDraft: null,
+  audioChatDraft: "",
   audioIsThinking: false,
   audioIsGenerating: false,
   audioGenerationStartedAt: 0,
@@ -103,7 +105,9 @@ const irodoriDefaultSettings = {
   customCheckpoint: ""
 };
 
-const defaultAudioActingPrompt = "自然な日本語で、感情と間を大切にして読み上げてください。";
+const defaultAudioActingPrompt = "自然な日本語で、感情と間を大切にして読み上げてください。音声案の本文には [laughs] [whispers] [sighs] [excited] などの感情タグを必ず1つ以上入れてください。";
+
+const audioEmotionTags = ["[laughs]", "[whispers]", "[sighs]", "[excited]"];
 
 const elevenLabsModelOptions = [
   "eleven_multilingual_v2",
@@ -1039,6 +1043,26 @@ function buildPromptLabWorldContext(work) {
 
 function normalizedAudioProvider(value) {
   return audioProviders.some(([provider]) => provider === value) ? value : "openrouter";
+}
+
+function hasAudioInlineTag(text) {
+  const matches = String(text || "").match(/\[[a-z][a-z0-9 _-]{1,32}\]/gi) || [];
+  return matches.some((tag) => !/\b(pause|silence|break)\b/i.test(tag));
+}
+
+function suggestedAudioEmotionTag(text, actingPrompt = "") {
+  const source = `${text || ""}\n${actingPrompt || ""}`.toLowerCase();
+  if (/笑|楽|明る|冗談|微笑|happy|laugh|smile/.test(source)) return "[laughs]";
+  if (/囁|ささや|静か|近い|内緒|whisper/.test(source)) return "[whispers]";
+  if (/ため息|吐息|疲|諦|呆|sigh/.test(source)) return "[sighs]";
+  if (/怒|戦闘|叫|熱血|興奮|勢い|驚|必死|excited|angry|shout/.test(source)) return "[excited]";
+  return audioEmotionTags[0];
+}
+
+function ensureAudioEmotionTag(text, actingPrompt = "") {
+  const cleanText = String(text || "").trim();
+  if (!cleanText || hasAudioInlineTag(cleanText)) return cleanText;
+  return `${suggestedAudioEmotionTag(cleanText, actingPrompt)} ${cleanText}`;
 }
 
 function boundedSettingNumber(value, fallback, min, max, integer = false) {
@@ -2065,7 +2089,29 @@ async function callOpenRouter({ messages, responseFormat, temperature = 0.2, max
   return payload.choices?.[0]?.message?.content || "";
 }
 
+function preserveLiveTextDrafts() {
+  const audioInput = document.querySelector("#audio-input-text");
+  if (audioInput) {
+    state.audioPromptDraft = {
+      ...(state.audioPromptDraft || {}),
+      input: audioInput.value
+    };
+  }
+  const audioChatInput = document.querySelector("#audio-chat-input");
+  if (audioChatInput) state.audioChatDraft = audioChatInput.value;
+  const videoPrompt = document.querySelector("#video-prompt-text");
+  if (videoPrompt) {
+    state.videoPromptDraft = {
+      ...(state.videoPromptDraft || {}),
+      prompt: videoPrompt.value
+    };
+  }
+  const videoChatInput = document.querySelector("#video-chat-input");
+  if (videoChatInput) state.videoChatDraft = videoChatInput.value;
+}
+
 function render() {
+  preserveLiveTextDrafts();
   const [title, sub] = currentTitle();
   app.innerHTML = `
     <div class="app-shell">
@@ -2886,6 +2932,7 @@ function videoControlValue(id, fallback = "") {
 
 function videoControlsFromDom() {
   const defaultModel = compatibleVideoModelId(state.videoPromptDraft?.model || state.db.settings.seedanceModel, state.db.settings.seedanceBaseUrl);
+  const promptInput = document.querySelector("#video-prompt-text");
   return {
     workId: videoControlValue("video-work", state.videoWorkId || state.selectedWorkId || ""),
     mode: videoControlValue("video-mode", state.videoPromptDraft?.mode || "reference"),
@@ -2899,7 +2946,7 @@ function videoControlsFromDom() {
     returnLastFrame: videoControlValue("video-return-last-frame", String(state.videoPromptDraft?.returnLastFrame ?? false)) === "true",
     seed: Number(videoControlValue("video-seed", state.videoPromptDraft?.seed ?? -1)),
     characterId: videoControlValue("video-character", state.videoCharacterId || ""),
-    prompt: document.querySelector("#video-prompt-text")?.value.trim() || state.videoPromptDraft?.prompt || ""
+    prompt: promptInput ? promptInput.value : state.videoPromptDraft?.prompt || ""
   };
 }
 
@@ -3021,11 +3068,14 @@ function mergeVideoDraft(result, fallbackControls) {
 }
 
 async function handleVideoAgentMessage(forceDraft = false) {
-  const input = document.querySelector("#video-chat-input")?.value.trim();
+  const chatInput = document.querySelector("#video-chat-input");
+  const input = chatInput?.value.trim();
   const message = input || (forceDraft ? "ここまでの会話と選択素材から、動画生成API送信用のプロンプト案を作ってください。" : "");
   if (!message) return toast("メッセージを入力してください。");
   const controls = videoControlsFromDom();
   state.videoWorkId = controls.workId || null;
+  state.videoChatDraft = "";
+  if (chatInput) chatInput.value = "";
   state.videoChatMessages.push({ role: "user", content: message });
   state.videoIsThinking = true;
   render();
@@ -3086,7 +3136,7 @@ function validateSeedanceReferenceLimits(references) {
 
 async function startSeedanceGeneration() {
   const controls = videoControlsFromDom();
-  const prompt = controls.prompt;
+  const prompt = controls.prompt.trim();
   const seedanceKey = activeSeedanceApiKey();
   if (!seedanceKey) return toast(isOpenRouterSeedanceBaseUrl() ? "設定画面で OpenRouter API キーを保存してください。" : "設定画面で Seedance API キーを保存してください。");
   if (!prompt) return toast("API送信用プロンプトを入力してください。");
@@ -3522,6 +3572,7 @@ function audioControlsFromDom() {
   const selectedCharId = document.querySelector("#audio-character")?.value || state.audioCharacterId || "";
   const selectedChar = byId(state.db.characters, selectedCharId);
   const provider = normalizedAudioProvider(document.querySelector("#audio-provider")?.value || state.audioProvider || state.db.settings.audioProvider);
+  const audioInput = document.querySelector("#audio-input-text");
   const actingPrompt = (
     document.querySelector("#audio-acting-prompt")?.value
     || state.audioPromptDraft?.actingPrompt
@@ -3568,7 +3619,7 @@ function audioControlsFromDom() {
     actingPrompt,
     caption: provider === "irodori" ? irodori.caption : actingPrompt,
     title: document.querySelector("#audio-title")?.value.trim() || state.audioPromptDraft?.title || "生成音声",
-    input: document.querySelector("#audio-input-text")?.value.trim() || state.audioPromptDraft?.input || ""
+    input: audioInput ? audioInput.value : state.audioPromptDraft?.input || ""
   };
 }
 
@@ -3596,9 +3647,9 @@ function buildAudioAgentSystemPrompt() {
   "questions": ["必要な確認事項"],
     "draft": {
       "title": "短い音声タイトル",
-      "input": "実際に読み上げる本文。説明文や演技指示は入れず、台詞・ナレーションだけにする。",
+      "input": "実際に読み上げる本文。説明文や演技指示は入れず、台詞・ナレーションだけにする。本文中に [laughs] [whispers] [sighs] [excited] のような感情タグを必ず1つ以上入れる。",
       "voice": "下記ボイス名のどれか",
-      "actingPrompt": "演技指示。声質、感情、速度、間、距離感、アクセントを書く。Geminiでは必要なインライン音声タグも少量だけ使える。",
+      "actingPrompt": "演技指示。声質、感情、速度、間、距離感、アクセントを書く。本文に入れた感情タグの意図も短く書く。",
       "caption": "Irodori-TTSで使う声質・演技・距離感の指定。actingPrompt と同じ方針でよい。",
       "agentNote": "演技意図の短いメモ"
     }
@@ -3606,12 +3657,14 @@ function buildAudioAgentSystemPrompt() {
 
 音声作成ルール:
 - APIに送るのは説明文ではなく、実際に読み上げる本文にする。
+- draft.input には角括弧の感情タグを必ず1つ以上入れる。例: [laughs] [whispers] [sighs] [excited]。
+- 感情タグは文脈に合う位置に置く。笑いなら [laughs]、囁きなら [whispers]、ため息なら [sighs]、強い感情や勢いなら [excited] を使う。
 - キャラ指定がある場合は、キャラの性格、立場、メモ、作品世界に合う声色と台詞にする。
 - キャラ指定がない場合は、ナレーションや汎用ボイスとして自然に使える本文にする。
 - Gemini TTSの場合は actingPrompt に「低い声、怒りを抑える、少し速め、近い距離、語尾を弱める」などを具体的に書く。
-- Gemini TTSでは必要に応じて actingPrompt または input に [whispers] [laughs] [excited] [short pause] などのインライン音声タグを少量だけ使える。
+- Gemini TTSでは input に [whispers] [laughs] [sighs] [excited] [short pause] などのインライン音声タグを少量だけ使える。感情タグは必須、間のタグは必要時だけ使う。
 - ElevenLabsの場合は voice ID と voice_settings が主な制御なので、input は読み上げ本文に集中し、actingPrompt は画面で確認・保存できる演技指示として短くまとめる。
-- 過剰な演技タグは避け、重要な間や感情だけに使う。
+- 過剰な演技タグは避け、重要な間や感情だけに使う。1案につき1〜3個程度を目安にする。
 - 日本語の台詞は日本語のまま自然に整える。英語に翻訳しない。
 - Irodori-TTSの場合は caption に「低め、囁き、距離感、テンポ、感情」などの音声演出を書き、input には読み上げ本文だけを書く。
 
@@ -3663,10 +3716,11 @@ function mergeAudioDraft(result, fallbackControls) {
     || fallbackControls.caption
     || defaultAudioActingPrompt
   ).trim();
+  const taggedInput = ensureAudioEmotionTag(source.input || "", actingPrompt);
   const irodori = normalizedIrodoriSettings({ ...fallbackControls.irodori, caption: source.caption || actingPrompt || fallbackControls.irodori?.caption });
   return {
     title: source.title || fallbackControls.title || "生成音声",
-    input: source.input || "",
+    input: taggedInput,
     voice: ttsVoices.some(([item]) => item === voice) ? voice : fallbackControls.voice || "Kore",
     provider: fallbackControls.provider || "openrouter",
     elevenLabs: fallbackControls.elevenLabs,
@@ -3697,7 +3751,8 @@ function stopAudioGenerationClock() {
 }
 
 async function handleAudioAgentMessage(forceDraft = false) {
-  const input = document.querySelector("#audio-chat-input")?.value.trim();
+  const chatInput = document.querySelector("#audio-chat-input");
+  const input = chatInput?.value.trim();
   const message = input || (forceDraft ? "ここまでの会話と選択中のキャラ設定から、音声生成用の読み上げテキスト案を作ってください。" : "");
   if (!message) return toast("メッセージを入力してください。");
   const controls = audioControlsFromDom();
@@ -3708,6 +3763,8 @@ async function handleAudioAgentMessage(forceDraft = false) {
   state.db.settings.audioProvider = controls.provider;
   state.db.settings.audioActingPrompt = controls.actingPrompt || defaultAudioActingPrompt;
   state.db.settings.irodoriDefaults = controls.irodori;
+  state.audioChatDraft = "";
+  if (chatInput) chatInput.value = "";
   state.audioChatMessages.push({ role: "user", content: message });
   state.audioIsThinking = true;
   render();
@@ -3741,6 +3798,7 @@ async function handleAudioAgentMessage(forceDraft = false) {
 
 async function startAudioGeneration() {
   const controls = audioControlsFromDom();
+  controls.input = controls.input.trim();
   if (!controls.input) return toast("読み上げテキストを入力してください。");
   const key = apiKey();
   const elevenKey = elevenLabsApiKey();
@@ -3976,7 +4034,7 @@ function renderAudioAgent() {
               ${state.audioIsThinking ? `<div class="chat-message assistant"><div>考えています...</div></div>` : ""}
             </div>
             <div class="chat-input-row">
-              <textarea id="audio-chat-input" placeholder="例：燐谷奏汰の低く落ち着いた声で、雨音の中の独白を作って"></textarea>
+              <textarea id="audio-chat-input" placeholder="例：燐谷奏汰の低く落ち着いた声で、雨音の中の独白を作って">${escapeHtml(state.audioChatDraft || "")}</textarea>
               <button data-action="audio-send-message" ${state.audioIsThinking ? "disabled" : ""}>送信</button>
             </div>
           </div>
@@ -4217,7 +4275,7 @@ function renderVideoAgent() {
               ${state.videoIsThinking ? `<div class="chat-message assistant"><div>考えています...</div></div>` : ""}
             </div>
             <div class="chat-input-row">
-              <textarea id="video-chat-input" placeholder="例：雛森陽澄が雨の路地で振り返る、8秒、縦型、静かな不穏さ"></textarea>
+              <textarea id="video-chat-input" placeholder="例：雛森陽澄が雨の路地で振り返る、8秒、縦型、静かな不穏さ">${escapeHtml(state.videoChatDraft || "")}</textarea>
               <button data-action="video-send-message" ${state.videoIsThinking ? "disabled" : ""}>送信</button>
             </div>
           </div>
@@ -4992,6 +5050,15 @@ function bindAudioAgent() {
   ].forEach((selector) => {
     document.querySelector(selector)?.addEventListener("change", persistAudioControls);
   });
+  document.querySelector("#audio-input-text")?.addEventListener("input", (event) => {
+    state.audioPromptDraft = {
+      ...(state.audioPromptDraft || {}),
+      input: event.target.value
+    };
+  });
+  document.querySelector("#audio-chat-input")?.addEventListener("input", (event) => {
+    state.audioChatDraft = event.target.value;
+  });
   document.querySelector("#audio-provider")?.addEventListener("change", () => {
     persistAudioControls();
     render();
@@ -5063,6 +5130,15 @@ function bindVideoAgent() {
   };
   ["#video-duration", "#video-ratio", "#video-resolution", "#video-seedance-model", "#video-generate-audio", "#video-camera-fixed", "#video-watermark", "#video-return-last-frame", "#video-seed", "#video-prompt-text"].forEach((selector) => {
     document.querySelector(selector)?.addEventListener("change", persistVideoControls);
+  });
+  document.querySelector("#video-prompt-text")?.addEventListener("input", (event) => {
+    state.videoPromptDraft = {
+      ...(state.videoPromptDraft || {}),
+      prompt: event.target.value
+    };
+  });
+  document.querySelector("#video-chat-input")?.addEventListener("input", (event) => {
+    state.videoChatDraft = event.target.value;
   });
   document.querySelector("#video-seedance-model")?.addEventListener("change", () => {
     persistVideoControls();
