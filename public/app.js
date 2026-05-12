@@ -110,6 +110,8 @@ const defaultAudioActingPrompt = "自然な日本語で、感情と間を大切�
 
 const audioEmotionTags = ["[laughs]", "[whispers]", "[sighs]", "[excited]"];
 
+const activeVideoJobStatuses = ["submitting", "submitted", "pending", "queued", "running", "processing"];
+
 const elevenLabsModelOptions = [
   "eleven_multilingual_v2",
   "eleven_turbo_v2_5",
@@ -935,6 +937,15 @@ function compactPromptText(value, limit = 900) {
 function compactRawText(value, limit = 4000) {
   const text = String(value || "").trim();
   return text.length > limit ? `${text.slice(0, limit)}\n...` : text;
+}
+
+function cleanFileLabel(value, fallback = "file") {
+  return String(value || fallback)
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001f]+/g, "_")
+    .replace(/\s+/g, "_")
+    .replace(/\.+$/g, "")
+    .slice(0, 80) || fallback;
 }
 
 function compactPromptList(value, limit = 10) {
@@ -3290,8 +3301,15 @@ async function pollSeedanceJob(jobId) {
   const job = byId(state.db.videoJobs || [], jobId);
   const jobBaseUrl = job?.settings?.baseUrl || state.db.settings.seedanceBaseUrl;
   const seedanceKey = activeSeedanceApiKey(jobBaseUrl);
+  if (job && !activeVideoJobStatuses.includes(job.status)) {
+    state.videoIsGenerating = false;
+    if (state.videoPollingJobId === job.id) state.videoPollingJobId = "";
+    render();
+    return;
+  }
   if (!job?.providerTaskId || !seedanceKey) {
     state.videoIsGenerating = false;
+    if (state.videoPollingJobId === job?.id) state.videoPollingJobId = "";
     return;
   }
   state.videoPollingJobId = job.id;
@@ -3311,9 +3329,25 @@ async function pollSeedanceJob(jobId) {
     await saveDb();
     const done = ["succeeded", "failed", "expired", "cancelled"].includes(job.status);
     if (done) {
+      let lastFrameMessage = "";
+      if (job.status === "succeeded") {
+        try {
+          const lastFrame = await saveVideoLastFrameReference(job);
+          if (lastFrame) {
+            job.updatedAt = new Date().toISOString();
+            await saveDb();
+            lastFrameMessage = " 最終フレームも参照素材へ保存しました。";
+          }
+        } catch (frameError) {
+          job.lastFrameError = frameError.message;
+          job.updatedAt = new Date().toISOString();
+          await saveDb();
+          lastFrameMessage = " 最終フレームの保存には失敗しました。";
+        }
+      }
       state.videoIsGenerating = false;
       state.videoPollingJobId = "";
-      toast(job.status === "succeeded" ? "生成動画を保存しました。" : `生成タスクが ${job.status} で終了しました。`);
+      toast(job.status === "succeeded" ? `生成動画を保存しました。${lastFrameMessage}` : `生成タスクが ${job.status} で終了しました。`);
       render();
       return;
     }
@@ -3366,6 +3400,114 @@ async function uploadVideoReferenceFiles(files) {
   } catch (error) {
     toast(error.message);
   }
+}
+
+function captureVideoLastFrameDataUrl(videoUrl) {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    const cleanup = () => {
+      video.removeAttribute("src");
+      video.load();
+    };
+    const fail = (message) => {
+      cleanup();
+      reject(new Error(message));
+    };
+    video.preload = "auto";
+    video.muted = true;
+    video.playsInline = true;
+    video.addEventListener("error", () => fail("最終フレーム抽出用の動画を読み込めませんでした。"), { once: true });
+    video.addEventListener("loadedmetadata", () => {
+      const duration = Number(video.duration);
+      if (!Number.isFinite(duration) || duration <= 0) {
+        fail("動画の長さを取得できませんでした。");
+        return;
+      }
+      video.currentTime = Math.max(0, duration - 0.08);
+    }, { once: true });
+    video.addEventListener("seeked", () => {
+      try {
+        const width = video.videoWidth;
+        const height = video.videoHeight;
+        if (!width || !height) {
+          fail("動画フレームのサイズを取得できませんでした。");
+          return;
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext("2d").drawImage(video, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL("image/png");
+        cleanup();
+        resolve(dataUrl);
+      } catch (error) {
+        fail(`最終フレームを画像化できませんでした: ${error.message}`);
+      }
+    }, { once: true });
+    video.src = `${videoUrl}${String(videoUrl).includes("?") ? "&" : "?"}lastFrame=${Date.now()}`;
+    video.load();
+  });
+}
+
+async function saveVideoLastFrameReference(job) {
+  if (!job?.settings?.returnLastFrame || !job.localUrl || job.lastFrameUrl) return null;
+  const existing = (state.db.videoMedia || []).find((media) => media.sourceJobId === job.id && media.kind === "image");
+  if (existing) {
+    job.lastFrameUrl = existing.url;
+    job.lastFrameLocalPath = existing.localPath || "";
+    return null;
+  }
+  const work = byId(state.db.works, job.workId);
+  const dataUrl = await captureVideoLastFrameDataUrl(job.localUrl);
+  const safeTitle = cleanFileLabel(displayVideoJobTitle(job) || "video");
+  const uploaded = await postJson("/api/media-upload", {
+    dataUrl,
+    name: `${safeTitle}_last_frame.png`,
+    workName: work?.name
+  });
+  const info = await getImageInfo(dataUrl);
+  const media = {
+    id: uid(),
+    workId: job.workId || null,
+    characterId: null,
+    kind: "image",
+    name: `${displayVideoJobTitle(job)} 最終フレーム`,
+    url: uploaded.url,
+    localPath: uploaded.path,
+    mimeType: uploaded.mimeType || "image/png",
+    width: info.width || null,
+    height: info.height || null,
+    aspectRatio: info.aspectRatio || null,
+    aspectRatioText: info.aspectRatioText || "",
+    sourceJobId: job.id,
+    subject: "生成動画の最終フレーム",
+    memo: job.prompt || "",
+    createdAt: new Date().toISOString()
+  };
+  state.db.videoMedia.unshift(media);
+  job.lastFrameUrl = media.url;
+  job.lastFrameLocalPath = media.localPath;
+  return media;
+}
+
+async function discardVideoWaitingJobs() {
+  const activeJobs = (state.db.videoJobs || []).filter((job) => activeVideoJobStatuses.includes(job.status));
+  state.videoIsGenerating = false;
+  state.videoPollingJobId = "";
+  if (!activeJobs.length) {
+    render();
+    return toast("待機中の動画生成はありません。");
+  }
+  activeJobs.forEach((job) => {
+    job.status = "cancelled";
+    if (job.providerTaskId) job.cancelledProviderTaskId = job.providerTaskId;
+    job.providerTaskId = "";
+    job.error = "ユーザー操作で待機状態を破棄しました。外部サービス側の生成自体は停止できない場合があります。";
+    job.updatedAt = new Date().toISOString();
+  });
+  await saveDb();
+  render();
+  toast(`${activeJobs.length} 件の待機中ジョブを破棄しました。`);
 }
 
 async function uploadIrodoriReferenceFile(file) {
@@ -4227,6 +4369,7 @@ function renderVideoAgent() {
     .filter((job) => !state.videoWorkId || job.workId === state.videoWorkId)
     .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
     .slice(0, 12);
+  const activeJobs = (state.db.videoJobs || []).filter((job) => activeVideoJobStatuses.includes(job.status));
   return `
     ${renderVideoCostSummary(monthlyCost, currentRate)}
     <div class="video-layout">
@@ -4338,6 +4481,7 @@ function renderVideoAgent() {
             </div>
             <div class="group">
               <button class="ghost" data-action="video-copy-prompt">コピー</button>
+              ${(state.videoIsGenerating || state.videoPollingJobId || activeJobs.length) ? `<button class="ghost danger" data-action="discard-video-waiting">待機を破棄</button>` : ""}
               <button class="accent" data-action="video-start-generation" ${state.videoIsGenerating ? "disabled" : ""}>生成開始</button>
             </div>
           </div>
@@ -4388,8 +4532,11 @@ function renderVideoJob(job) {
       <div class="card-actions">
         <button class="ghost" data-action="refresh-video-job" data-id="${job.id}" ${!job.providerTaskId || ["succeeded", "failed", "expired", "cancelled"].includes(status) ? "disabled" : ""}>更新</button>
         <button class="ghost" data-action="copy-video-job-prompt" data-id="${job.id}">プロンプト</button>
+        ${status === "succeeded" && job.settings?.returnLastFrame && job.localUrl && !job.lastFrameUrl ? `<button class="ghost" data-action="save-video-last-frame" data-id="${job.id}">最終フレーム保存</button>` : ""}
       </div>
       ${job.localPath ? `<div class="meta">保存先: ${escapeHtml(job.localPath)}</div>` : ""}
+      ${job.lastFrameUrl ? `<div class="meta">最終フレーム: ${escapeHtml(job.lastFrameLocalPath || job.lastFrameUrl)}</div>` : ""}
+      ${job.lastFrameError ? `<div class="meta danger-text">最終フレーム保存エラー: ${escapeHtml(job.lastFrameError)}</div>` : ""}
       ${providerError ? `<div class="meta danger-text">${escapeHtml(providerError)}</div>` : ""}
     </article>
   `;
@@ -5267,6 +5414,7 @@ function bindVideoAgent() {
     const text = document.querySelector("#video-prompt-text")?.value || "";
     copyText(text);
   });
+  document.querySelector("[data-action='discard-video-waiting']")?.addEventListener("click", discardVideoWaitingJobs);
   document.querySelector("[data-action='video-start-generation']")?.addEventListener("click", startSeedanceGeneration);
   document.querySelectorAll("[data-action='refresh-video-job']").forEach((button) => {
     button.addEventListener("click", () => pollSeedanceJob(button.dataset.id));
@@ -5275,6 +5423,23 @@ function bindVideoAgent() {
     button.addEventListener("click", () => {
       const job = byId(state.db.videoJobs || [], button.dataset.id);
       if (job) copyText(job.prompt || "");
+    });
+  });
+  document.querySelectorAll("[data-action='save-video-last-frame']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const job = byId(state.db.videoJobs || [], button.dataset.id);
+      if (!job) return;
+      try {
+        const lastFrame = await saveVideoLastFrameReference(job);
+        await saveDb();
+        render();
+        toast(lastFrame ? "最終フレームを参照素材へ保存しました。" : "最終フレームはすでに保存済みです。");
+      } catch (error) {
+        job.lastFrameError = error.message;
+        await saveDb();
+        render();
+        toast(error.message);
+      }
     });
   });
   if (isOpenRouterSeedanceBaseUrl()) loadOpenRouterVideoModels();
@@ -6311,7 +6476,7 @@ async function boot() {
     state.galleryWorkId = state.selectedWorkId;
     await normalizeStoredUploads();
     render();
-    const activeJob = (state.db.videoJobs || []).find((job) => job.providerTaskId && ["submitting", "submitted", "pending", "queued", "running", "processing"].includes(job.status));
+    const activeJob = (state.db.videoJobs || []).find((job) => job.providerTaskId && activeVideoJobStatuses.includes(job.status));
     if (activeJob) window.setTimeout(() => pollSeedanceJob(activeJob.id), 1200);
   } catch (error) {
     app.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
