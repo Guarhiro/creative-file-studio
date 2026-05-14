@@ -3227,6 +3227,8 @@ async function startSeedanceGeneration() {
         name: item.name,
         url: item.url
       })),
+      progress: 0,
+      progressMessage: "送信中",
       videoUrl: "",
       localUrl: "",
       localPath: "",
@@ -3278,6 +3280,8 @@ async function startSeedanceGeneration() {
       throw new Error(job.error);
     }
     job.status = payload.status || "submitted";
+    job.progress = payload.progress ?? job.progress ?? 0;
+    job.progressMessage = payload.progressMessage || job.progressMessage || "";
     job.updatedAt = new Date().toISOString();
     await saveDb();
     render();
@@ -3321,6 +3325,8 @@ async function pollSeedanceJob(jobId) {
       taskId: job.providerTaskId
     });
     job.status = payload.status || job.status;
+    job.progress = payload.progress ?? (job.status === "succeeded" ? 100 : job.progress ?? null);
+    job.progressMessage = payload.progressMessage || job.progressMessage || "";
     job.videoUrl = payload.videoUrl || job.videoUrl || "";
     job.localUrl = payload.localUrl || job.localUrl || "";
     job.localPath = payload.localPath || job.localPath || "";
@@ -4333,6 +4339,54 @@ function renderVideoCostSummary(summary, currentRate) {
   `;
 }
 
+function videoJobProgress(job) {
+  const values = [
+    job?.progress,
+    job?.providerPayload?.progress,
+    job?.providerPayload?.data?.progress,
+    job?.providerPayload?.percent,
+    job?.providerPayload?.percentage
+  ];
+  for (const value of values) {
+    if (value === null || value === undefined || value === "") continue;
+    const number = Number(String(value).replace("%", ""));
+    if (!Number.isFinite(number)) continue;
+    const progress = number > 0 && number <= 1 ? number * 100 : number;
+    return Math.max(0, Math.min(100, Math.round(progress)));
+  }
+  if (job?.status === "succeeded") return 100;
+  return null;
+}
+
+function videoStatusLabel(status) {
+  return {
+    submitting: "送信中",
+    submitted: "送信済み",
+    pending: "待機中",
+    queued: "待機中",
+    running: "生成中",
+    processing: "生成中",
+    succeeded: "完了",
+    failed: "失敗",
+    expired: "期限切れ",
+    cancelled: "破棄済み"
+  }[status] || status || "確認中";
+}
+
+function activeVideoJob() {
+  return byId(state.db.videoJobs || [], state.videoPollingJobId)
+    || (state.db.videoJobs || []).find((job) => activeVideoJobStatuses.includes(job.status))
+    || null;
+}
+
+function elapsedVideoText(job) {
+  if (!job?.createdAt) return "";
+  const elapsed = Math.max(0, Math.floor((Date.now() - new Date(job.createdAt).getTime()) / 1000));
+  if (elapsed >= 3600) return `${Math.floor(elapsed / 3600)}時間${Math.floor((elapsed % 3600) / 60)}分`;
+  if (elapsed >= 60) return `${Math.floor(elapsed / 60)}分${String(elapsed % 60).padStart(2, "0")}秒`;
+  return `${elapsed}秒`;
+}
+
 function renderVideoAgent() {
   const work = byId(state.db.works, state.videoWorkId) || byId(state.db.works, state.selectedWorkId) || state.db.works[0] || null;
   if (!state.videoWorkId && work) state.videoWorkId = work.id;
@@ -4502,12 +4556,28 @@ function renderVideoAgent() {
 }
 
 function renderSeedanceAnimation() {
+  const job = activeVideoJob();
+  const status = job?.status || (state.videoIsGenerating ? "submitting" : "pending");
+  const progress = videoJobProgress(job);
+  const elapsed = elapsedVideoText(job);
+  const updatedAt = job?.updatedAt ? new Date(job.updatedAt).toLocaleTimeString("ja-JP") : "";
+  const progressMessage = job?.progressMessage || job?.providerPayload?.progressMessage || "";
+  const detail = [
+    videoStatusLabel(status),
+    progress !== null ? `${progress}%` : "",
+    elapsed ? `経過 ${elapsed}` : "",
+    updatedAt ? `最終更新 ${updatedAt}` : ""
+  ].filter(Boolean).join(" / ");
   return `
     <div class="seedance-animation">
       <div class="film-loader"><span></span><span></span><span></span><span></span></div>
-      <div>
+      <div class="generation-status">
         <strong>動画生成中</strong>
-        <div class="meta">完了後に自動保存します。</div>
+        <div class="progress-track ${progress === null ? "indeterminate" : ""}">
+          <span style="width:${progress === null ? 38 : progress}%"></span>
+        </div>
+        <div class="meta">${escapeHtml(detail || "完了後に自動保存します。")}</div>
+        ${progressMessage ? `<div class="meta">${escapeHtml(progressMessage)}</div>` : ""}
       </div>
     </div>
   `;
@@ -4518,6 +4588,7 @@ function renderVideoJob(job) {
   const cost = videoJobCostSummary(job);
   const providerError = job.error || readableError(job.providerPayload?.error) || readableError(job.providerPayload?.providerPayload?.error);
   const status = !job.providerTaskId && providerError ? "failed" : job.status;
+  const progress = videoJobProgress(job);
   const costText = cost.usd !== null
     ? `${cost.source === "actual" ? "実コスト" : "概算"} ${formatUsd(cost.usd)}`
     : "";
@@ -4525,8 +4596,13 @@ function renderVideoJob(job) {
     <article class="video-job ${status}">
       <div>
         <div class="char-name">${escapeHtml(displayVideoJobTitle(job))}</div>
-        <div class="meta">${escapeHtml(work?.name || "全作品")} / ${escapeHtml(status || "unknown")} / ${job.updatedAt ? escapeHtml(new Date(job.updatedAt).toLocaleString("ja-JP")) : ""}${costText ? ` / ${escapeHtml(costText)}` : ""}</div>
+        <div class="meta">${escapeHtml(work?.name || "全作品")} / ${escapeHtml(videoStatusLabel(status))}${progress !== null ? ` ${escapeHtml(`${progress}%`)}` : ""} / ${job.updatedAt ? escapeHtml(new Date(job.updatedAt).toLocaleString("ja-JP")) : ""}${costText ? ` / ${escapeHtml(costText)}` : ""}</div>
       </div>
+      ${activeVideoJobStatuses.includes(status) ? `
+        <div class="progress-track ${progress === null ? "indeterminate" : ""}">
+          <span style="width:${progress === null ? 38 : progress}%"></span>
+        </div>
+      ` : ""}
       ${job.localUrl ? `<video class="generated-video" controls src="${escapeHtml(job.localUrl)}"></video>` : ""}
       <div class="result-text">${escapeHtml(compactPromptText(job.prompt, 900))}</div>
       <div class="card-actions">
@@ -6026,13 +6102,7 @@ async function extractPromptFromImage(dataUrl, name, promptFormat = "natural") {
 }
 
 function buildWorldSettingRequest(work, sourceName, sourceSummary = "") {
-  const promptSchema = createEmptyWorldSetting();
-  delete promptSchema.sourceImageUrl;
-  delete promptSchema.sourceImageName;
-  delete promptSchema.updatedAt;
-  delete promptSchema.activeSheetId;
-  delete promptSchema.sheets;
-  const schema = JSON.stringify(promptSchema, null, 2);
+  const schema = worldSettingSchemaText();
   return `添付または入力された「世界観設定資料＋キャラクター設定資料」を読み取り、テキスト資料として再利用できるように、情報を可能な限り漏れなく整理してください。
 
 対象作品名: ${work?.name || "未設定"}
@@ -6050,18 +6120,43 @@ ${sourceSummary ? `資料構成: ${sourceSummary}` : ""}
 - キャラクター単体ではなく、そのキャラクターが生きる世界の情報として読み取ってください。
 - 複数の画像やテキスト資料がある場合は、重複を統合し、矛盾点や不明点は uncertain_points に記録してください。
 - 最後に「保持すべき要素リスト」と「再生成用要約プロンプト」を作ってください。
-
-読解ログのテンプレート:
-${WORLD_SETTING_READING_TEMPLATE}
+- このステップでは構造化JSONだけを作ります。詳細な読解ログ、Markdown本文、長い考察は書かないでください。
+- 各フィールドは後で検索・編集しやすい短文にしてください。characters / objects / architecture は1項目あたり要点中心の短いオブジェクトにしてください。
+- reading_log は空文字にしてください。詳細ログは別ステップで生成します。
 
 返答形式:
 説明文やMarkdownコードフェンスを付けず、必ず次のJSONオブジェクトだけを返してください。
 {
-  "reading_log": "テンプレートを埋めたMarkdown全文。最後に見落とし防止チェックも含める。",
   "world_setting": ${schema}
 }
 
 world_setting は上記スキーマのキーを維持し、該当情報が見えない場合は空文字・空配列ではなく、判断が必要な箇所は uncertain_points にも記録してください。characters / objects / architecture は見つかった分だけ id を CH-01, TOOL-01, BG-01 のように採番してください。`;
+}
+
+function buildWorldSettingReadingLogRequest(work, setting, sourceName, sourceSummary = "") {
+  const promptSetting = worldSettingForSheetData(setting);
+  promptSetting.reading_log = "";
+  const structuredSummary = compactRawText(JSON.stringify(promptSetting, null, 2), 22000);
+  return `次は「詳細読解ログ」だけを作成してください。構造化JSONはすでに作成済みです。
+
+対象作品名: ${work?.name || "未設定"}
+資料名: ${sourceName || "unknown"}
+${sourceSummary ? `資料構成: ${sourceSummary}` : ""}
+
+目的:
+作品情報画面で人間が確認・修正するためのMarkdown読解ログを残すこと。
+
+重要ルール:
+- 返答はMarkdown本文だけにしてください。JSON、コードフェンス、前置き、後書きは不要です。
+- 構造化済みJSONと添付/入力資料を照合し、見えている事実、推測、不明点を分けてください。
+- 長くなりすぎる場合は、キャラクターや道具の全項目を羅列しすぎず、世界観の核、保持すべき要素、矛盾・不明点を優先してください。
+- 目安は日本語で6000字以内です。途中で切れるほど長くしないでください。
+
+読解ログのテンプレート:
+${WORLD_SETTING_READING_TEMPLATE}
+
+構造化済みJSON:
+${structuredSummary}`;
 }
 
 function worldSettingSchemaText() {
@@ -6148,11 +6243,11 @@ async function repairWorldSettingJson(rawContent, imageName, parseError) {
     messages: [
       {
         role: "system",
-        content: "あなたは壊れたAI応答をJSONに整形する編集者です。内容を新規創作せず、与えられた本文から読み取れる情報だけを指定JSONに移してください。説明文、Markdown、コードフェンスは出さず、JSONオブジェクトだけを返してください。"
+        content: "あなたは壊れたAI応答をJSONに整形する編集者です。内容を新規創作せず、与えられた本文から読み取れる構造化情報だけを指定JSONに移してください。詳細ログやMarkdownは出さず、JSONオブジェクトだけを返してください。"
       },
       {
         role: "user",
-        content: `元の画像名: ${imageName || "unknown"}\n直前のJSON解析エラー: ${parseError.message}\n\n返答形式:\n{\n  "reading_log": "読解ログのMarkdown全文。元応答に読解ログがある場合はそれを保持。なければ元応答を整理して保存。",\n  "world_setting": ${worldSettingSchemaText()}\n}\n\n壊れた元応答:\n${String(rawContent || "").slice(0, 60000)}`
+        content: `元の画像名: ${imageName || "unknown"}\n直前のJSON解析エラー: ${parseError.message}\n\n返答形式:\n{\n  "world_setting": ${worldSettingSchemaText()}\n}\n\nworld_setting.reading_log は空文字にしてください。詳細な読解ログは別ステップで作成します。\n\n壊れた元応答:\n${String(rawContent || "").slice(0, 60000)}`
       }
     ],
     responseFormat: { type: "json_object" },
@@ -6188,11 +6283,11 @@ function clearWorldImportSources() {
   state.worldTextSourceName = "";
 }
 
-function buildWorldSettingContent(work, { images = [], text = "", sourceName = "" } = {}) {
+function buildWorldSettingContent(work, { images = [], text = "", sourceName = "", requestText = "" } = {}) {
   const trimmedText = String(text || "").trim();
   const truncatedText = trimmedText.slice(0, maxWorldTextChars);
   const sourceSummary = worldImportSourceSummary(images, trimmedText);
-  const blocks = [buildWorldSettingRequest(work, sourceName, sourceSummary)];
+  const blocks = [requestText || buildWorldSettingRequest(work, sourceName, sourceSummary)];
   if (truncatedText) {
     blocks.push(`入力テキスト資料（Markdown/Text）:\n${truncatedText}`);
     if (trimmedText.length > maxWorldTextChars) {
@@ -6203,6 +6298,31 @@ function buildWorldSettingContent(work, { images = [], text = "", sourceName = "
     { type: "text", text: blocks.join("\n\n") },
     ...images.map((image) => ({ type: "image_url", image_url: { url: image.preview } }))
   ];
+}
+
+async function generateWorldSettingReadingLog({ images = [], text = "", sourceName = "", work, setting } = {}) {
+  const sourceSummary = worldImportSourceSummary(images, String(text || "").trim());
+  const content = await callOpenRouter({
+    messages: [
+      {
+        role: "system",
+        content: "あなたは世界観設定資料とキャラクター設定資料を読む創作設定編集者です。今回は構造化JSONではなく、人間が確認しやすいMarkdownの読解ログだけを作ります。"
+      },
+      {
+        role: "user",
+        content: buildWorldSettingContent(work, {
+          images,
+          text,
+          sourceName,
+          requestText: buildWorldSettingReadingLogRequest(work, setting, sourceName, sourceSummary)
+        })
+      }
+    ],
+    temperature: 0.15,
+    purpose: "world",
+    maxTokens: 7000
+  });
+  return String(content || "").trim();
 }
 
 async function extractWorldSettingFromSources({ images = [], text = "", sourceName = "", work } = {}) {
@@ -6222,19 +6342,28 @@ async function extractWorldSettingFromSources({ images = [], text = "", sourceNa
     purpose: "world",
     maxTokens: 9000
   });
+  let setting;
   try {
-    return normalizeWorldSettingResult(parseAiJson(content));
+    setting = normalizeWorldSettingResult(parseAiJson(content));
   } catch (parseError) {
     try {
-      const repaired = await repairWorldSettingJson(content, sourceName, parseError);
-      repaired.uncertain_points.needs_confirmation.push("初回AI応答がJSONとして読めなかったため、JSON整形リトライで保存しました。");
-      return repaired;
+      setting = await repairWorldSettingJson(content, sourceName, parseError);
+      setting.uncertain_points.needs_confirmation.push("初回AI応答がJSONとして読めなかったため、構造化JSON整形リトライで保存しました。");
     } catch (repairError) {
       const fallback = fallbackWorldSettingFromRaw(content, sourceName, parseError);
-      fallback.uncertain_points.needs_confirmation.push(`JSON整形リトライも失敗しました: ${repairError.message}`);
+      fallback.uncertain_points.needs_confirmation.push(`構造化JSON整形リトライも失敗しました: ${repairError.message}`);
       return fallback;
     }
   }
+  try {
+    toast("構造化が完了しました。詳細読解ログを別生成しています。");
+    const readingLog = await generateWorldSettingReadingLog({ images, text, sourceName, work, setting });
+    setting.reading_log = readingLog || setting.reading_log || composeWorldSettingReadingLog(setting);
+  } catch (logError) {
+    setting.reading_log = setting.reading_log || composeWorldSettingReadingLog(setting);
+    setting.uncertain_points.needs_confirmation.push(`詳細読解ログの別生成に失敗しました: ${logError.message}`);
+  }
+  return normalizeWorldSetting(setting);
 }
 
 async function extractWorldSettingFromSheet(dataUrl, imageName, work) {
