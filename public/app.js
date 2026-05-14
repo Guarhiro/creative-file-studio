@@ -2409,6 +2409,7 @@ function renderWorldSheetRow(sheet, activeSheetId) {
       <div class="group">
         <button class="ghost" data-action="use-world-sheet" data-sheet-id="${sheet.id}" ${active ? "disabled" : ""}>表示</button>
         <button class="ghost" data-action="edit-world-sheet" data-sheet-id="${sheet.id}">編集</button>
+        <button class="ghost" data-action="restructure-world-sheet" data-sheet-id="${sheet.id}">再構造化</button>
         <button class="ghost danger-outline" data-action="delete-world-sheet" data-sheet-id="${sheet.id}">削除</button>
       </div>
     </div>
@@ -4954,6 +4955,19 @@ function bindStudio() {
       if (work) openWorldSettingModal(work, button.dataset.sheetId);
     });
   });
+  document.querySelectorAll("[data-action='restructure-world-sheet']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const work = byId(state.db.works, state.selectedWorkId);
+      if (!work) return;
+      button.disabled = true;
+      try {
+        await restructureWorldSheet(work, button.dataset.sheetId);
+      } catch (error) {
+        toast(error.message);
+        button.disabled = false;
+      }
+    });
+  });
   document.querySelectorAll("[data-action='delete-world-sheet']").forEach((button) => {
     button.addEventListener("click", async () => {
       const work = byId(state.db.works, state.selectedWorkId);
@@ -6256,6 +6270,106 @@ async function repairWorldSettingJson(rawContent, imageName, parseError) {
     maxTokens: 9000
   });
   return normalizeWorldSettingResult(parseAiJson(content));
+}
+
+function worldSheetReadingDataText(sheet) {
+  const data = worldSettingForSheetData(sheet?.data || {});
+  const readingLog = String(sheet?.reading_log || data.reading_log || "").trim();
+  data.reading_log = "";
+  data.sourceImageUrl = "";
+  data.sourceImageName = "";
+  const existingData = JSON.stringify(data, null, 2);
+  return [
+    `シート名: ${sheet?.title || sheet?.sourceImageName || "設定シート"}`,
+    `シート種別: ${sheet?.sheet_type || data.sheet_type || "未設定"}`,
+    sheet?.sourceImageName ? `元資料名: ${sheet.sourceImageName}` : "",
+    readingLog ? `読解ログまたはAI生応答:\n${compactRawText(readingLog, 60000)}` : "",
+    `既存の構造化データ:\n${compactRawText(existingData, 18000)}`
+  ].filter(Boolean).join("\n\n");
+}
+
+function buildWorldSettingRestructureRequest(work, sheet) {
+  return `保存済みの読解データを、作品情報 / 世界観設定の構造化JSONに変換してください。
+
+対象作品名: ${work?.name || "未設定"}
+
+目的:
+以前のAI読解ログ、AI生応答、途中で切れたJSON、または手動メモから、編集可能な world_setting を作り直すこと。
+
+重要ルール:
+- 与えられた読解データから読み取れる情報だけを使ってください。新規創作や穴埋めの捏造は禁止です。
+- 読解データが途中で切れている場合でも、読める範囲の情報を最大限構造化してください。
+- 見えている事実と推測は分け、不確かな内容は uncertain_points に入れてください。
+- 詳細なMarkdown読解ログは出さないでください。reading_log は空文字にしてください。
+- characters / objects / architecture は見つかった分だけ id を CH-01, TOOL-01, BG-01 のように採番してください。
+- 各フィールドは検索・編集しやすい短文にまとめてください。
+
+返答形式:
+説明文やMarkdownコードフェンスを付けず、必ず次のJSONオブジェクトだけを返してください。
+{
+  "world_setting": ${worldSettingSchemaText()}
+}
+
+読解データ:
+${worldSheetReadingDataText(sheet)}`;
+}
+
+async function restructureWorldSettingFromSheetData(work, sheet) {
+  const sourceText = worldSheetReadingDataText(sheet);
+  if (!sourceText.trim()) throw new Error("再構造化できる読解データがありません。");
+  const content = await callOpenRouter({
+    messages: [
+      {
+        role: "system",
+        content: "あなたは保存済みの創作設定読解データを、アプリの作品情報スキーマへ再構造化する編集者です。説明文やMarkdownを付けず、JSONオブジェクトだけを返してください。"
+      },
+      {
+        role: "user",
+        content: buildWorldSettingRestructureRequest(work, sheet)
+      }
+    ],
+    responseFormat: { type: "json_object" },
+    temperature: 0.05,
+    purpose: "world",
+    maxTokens: 9000
+  });
+  try {
+    return normalizeWorldSettingResult(parseAiJson(content));
+  } catch (parseError) {
+    const repaired = await repairWorldSettingJson(content, sheet?.title || sheet?.sourceImageName, parseError);
+    repaired.uncertain_points.needs_confirmation.push("再構造化AI応答がJSONとして読めなかったため、JSON整形リトライで保存しました。");
+    return repaired;
+  }
+}
+
+async function restructureWorldSheet(work, sheetId) {
+  const current = ensureWorldSetting(work);
+  const sheet = current.sheets.find((item) => item.id === sheetId);
+  if (!sheet) throw new Error("再構造化する設定シートが見つかりません。");
+  const originalLog = String(sheet.reading_log || sheet.data?.reading_log || "").trim();
+  toast("保存済みの読解データを再構造化しています。");
+  const setting = await restructureWorldSettingFromSheetData(work, sheet);
+  const now = new Date().toISOString();
+  setting.reading_log = originalLog || setting.reading_log || composeWorldSettingReadingLog(setting);
+  setting.sourceImageUrl = sheet.sourceImageUrl || setting.sourceImageUrl;
+  setting.sourceImageName = sheet.sourceImageName || setting.sourceImageName || sheet.title;
+  setting.updatedAt = now;
+  setting.uncertain_points.needs_confirmation.push("保存済みの読解データから再構造化しました。");
+  sheet.title = setting.title || sheet.title || sheet.sourceImageName || "設定シート";
+  sheet.sheet_type = setting.sheet_type || sheet.sheet_type || "";
+  sheet.sourceImageUrl = setting.sourceImageUrl;
+  sheet.sourceImageName = setting.sourceImageName;
+  sheet.reading_log = setting.reading_log;
+  sheet.data = worldSettingForSheetData(setting);
+  sheet.updatedAt = now;
+  if (current.activeSheetId === sheet.id) {
+    applyWorldSheetToWork(work, sheet.id);
+  } else {
+    work.worldSetting = normalizeWorldSetting(current);
+  }
+  await saveDb();
+  toast("読解データを再構造化しました。");
+  render();
 }
 
 function worldImportSourceName(images = state.worldSheetFiles || [], text = String(state.worldTextDraft || "").trim()) {
