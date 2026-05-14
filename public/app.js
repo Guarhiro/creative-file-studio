@@ -2031,6 +2031,10 @@ function toast(message) {
   window.setTimeout(() => node.remove(), node.textContent.length > 80 ? 8000 : 3200);
 }
 
+function toastApiSubmitted(message = "APIに送信しました。返答を待っています。") {
+  toast(message);
+}
+
 function cleanJsonCandidate(value) {
   return String(value || "")
     .trim()
@@ -2308,6 +2312,7 @@ function renderWorldInfo(work) {
   const selectedImages = state.worldSheetFiles || [];
   const selectedText = String(state.worldTextDraft || "").trim();
   const hasImportSource = selectedImages.length || selectedText;
+  const needsRestructure = shouldSuggestWorldRestructure(setting);
   return `
     <section class="panel world-panel">
       <div class="panel-header">
@@ -2343,6 +2348,7 @@ function renderWorldInfo(work) {
             <div class="meta">${setting.updatedAt ? `最終更新: ${new Date(setting.updatedAt).toLocaleString("ja-JP")}` : ""}</div>
           </div>
         </div>
+        ${needsRestructure ? `<div class="empty compact">構造化がされていません。再構造化ボタンを押下しお試しください。</div>` : ""}
         <div class="world-inputs">
           <div class="world-input-toolbar">
             <button class="ghost" data-action="choose-world-sheet">画像シート選択</button>
@@ -2369,6 +2375,15 @@ function renderWorldInfo(work) {
       </div>
     </section>
   `;
+}
+
+function shouldSuggestWorldRestructure(setting) {
+  const data = normalizeWorldSetting(setting);
+  const notices = [
+    data.sheet_type,
+    ...data.uncertain_points.needs_confirmation
+  ].join("\n");
+  return /構造化できなかった|JSONとして読み取れませんでした|構造化JSON整形リトライも失敗|JSON整形リトライも失敗/i.test(notices);
 }
 
 function renderWorldSourcePreview(setting, selectedImages) {
@@ -3142,6 +3157,7 @@ async function handleVideoAgentMessage(forceDraft = false) {
   state.videoIsThinking = true;
   render();
   try {
+    toastApiSubmitted("動画プロンプト作成APIに送信しました。返答を待っています。");
     const guide = await loadSeedanceGuide();
     const selectedItems = selectedVideoReferences();
     const content = await callOpenRouter({
@@ -3240,6 +3256,7 @@ async function startSeedanceGeneration() {
     state.videoIsGenerating = true;
     await saveDb();
     render();
+    toastApiSubmitted("動画生成APIに送信しました。返答を待っています。");
     const payload = await postJson("/api/seedance/create", {
       apiKey: seedanceKey,
       baseUrl: state.db.settings.seedanceBaseUrl,
@@ -3968,6 +3985,7 @@ async function handleAudioAgentMessage(forceDraft = false) {
   state.audioIsThinking = true;
   render();
   try {
+    toastApiSubmitted("音声テキスト案作成APIに送信しました。返答を待っています。");
     const content = await callOpenRouter({
       purpose: "audio",
       textOnly: true,
@@ -4029,6 +4047,7 @@ async function startAudioGeneration() {
   render();
   try {
     let created = [];
+    toastApiSubmitted("音声生成APIに送信しました。返答を待っています。");
     if (controls.provider === "openrouter") {
       const payload = await postJson("/api/openrouter/speech", {
         apiKey: key,
@@ -5617,6 +5636,7 @@ async function generatePrompts() {
   const work = byId(state.db.works, char.workId) || byId(state.db.works, state.selectedWorkId);
   const workContext = buildPromptLabWorldContext(work);
   try {
+    toastApiSubmitted("プロンプト生成APIに送信しました。返答を待っています。");
     const content = await callOpenRouter({
       textOnly: true,
       temperature: 0.55,
@@ -6022,6 +6042,7 @@ function openCharacterModal(char = null) {
         try {
           const source = portraitDataUrl || (char?.portraitUrl ? await imageUrlToDataUrl(char.portraitUrl) : null);
           if (!source) return toast("先に立ち絵を設定してください。");
+          toastApiSubmitted("立ち絵プロンプト抽出APIに送信しました。返答を待っています。");
           const result = await extractPromptFromImage(
             source,
             modal.querySelector("#char-name").value.trim(),
@@ -6246,7 +6267,8 @@ function fallbackWorldSettingFromRaw(content, imageName, parseError) {
   setting.world_core = "未整理";
   setting.reading_log = text || `AI応答が空、またはJSONとして読み取れませんでした。`;
   setting.uncertain_points.needs_confirmation = [
-    `AI応答をJSONとして読み取れませんでした: ${parseError.message}`
+    `AI応答をJSONとして読み取れませんでした: ${parseError.message}`,
+    "再構造化ボタンを押下しお試しください。"
   ];
   setting.regeneration_prompt = "";
   return setting;
@@ -6347,7 +6369,7 @@ async function restructureWorldSheet(work, sheetId) {
   const sheet = current.sheets.find((item) => item.id === sheetId);
   if (!sheet) throw new Error("再構造化する設定シートが見つかりません。");
   const originalLog = String(sheet.reading_log || sheet.data?.reading_log || "").trim();
-  toast("保存済みの読解データを再構造化しています。");
+  toastApiSubmitted("再構造化APIに送信しました。返答を待っています。");
   const setting = await restructureWorldSettingFromSheetData(work, sheet);
   const now = new Date().toISOString();
   setting.reading_log = originalLog || setting.reading_log || composeWorldSettingReadingLog(setting);
@@ -6508,6 +6530,7 @@ async function analyzeWorldSheet(work) {
       uploadedImages.push(uploaded);
     }
     const sourceName = worldImportSourceName(images, text);
+    toastApiSubmitted("世界観読解APIに送信しました。返答を待っています。");
     const setting = await extractWorldSettingFromSources({
       images,
       text,
@@ -6532,7 +6555,9 @@ async function analyzeWorldSheet(work) {
     });
     clearWorldImportSources();
     await saveDb();
-    toast(`設定シートを追加しました。登録シート: ${work.worldSetting.sheets.length} 枚`);
+    toast(shouldSuggestWorldRestructure(setting)
+      ? "設定シートを追加しましたが、構造化がされていません。再構造化ボタンを押下しお試しください。"
+      : `設定シートを追加しました。登録シート: ${work.worldSetting.sheets.length} 枚`);
     render();
   } catch (error) {
     toast(error.message);
