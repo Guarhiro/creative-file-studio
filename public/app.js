@@ -197,6 +197,11 @@ const seedanceApiBaseOptions = [
     label: "OpenRouter",
     value: "https://openrouter.ai/api/v1/videos",
     defaultModel: "bytedance/seedance-2.0"
+  },
+  {
+    label: "Replicate",
+    value: "https://api.replicate.com/v1",
+    defaultModel: "bytedance/seedance-2.0"
   }
 ];
 
@@ -311,6 +316,44 @@ const officialSeedanceVideoModel = {
   supported_frame_images: ["first_frame", "last_frame"]
 };
 
+const replicateSeedanceVideoModels = [
+  {
+    id: "bytedance/seedance-2.0",
+    name: "ByteDance: Seedance 2.0 on Replicate",
+    generate_audio: true,
+    supported_durations: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    supported_aspect_ratios: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"],
+    supported_resolutions: ["480p", "720p", "1080p"],
+    supported_frame_images: ["first_frame", "last_frame"]
+  },
+  {
+    id: "bytedance/seedance-2.0-fast",
+    name: "ByteDance: Seedance 2.0 Fast on Replicate",
+    generate_audio: true,
+    supported_durations: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    supported_aspect_ratios: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"],
+    supported_resolutions: ["480p", "720p"],
+    supported_frame_images: ["first_frame", "last_frame"]
+  }
+];
+
+const replicateSeedanceVideoPricing = {
+  "bytedance/seedance-2.0": {
+    modelId: "bytedance/seedance-2.0",
+    name: "ByteDance: Seedance 2.0 on Replicate",
+    usdPerSecondByResolution: { "480p": 0.08, "720p": 0.18, "1080p": 0.45 },
+    usdPerSecondVideoInByResolution: { "480p": 0.10, "720p": 0.22, "1080p": 0.55 },
+    source: "replicate"
+  },
+  "bytedance/seedance-2.0-fast": {
+    modelId: "bytedance/seedance-2.0-fast",
+    name: "ByteDance: Seedance 2.0 Fast on Replicate",
+    usdPerSecondByResolution: { "480p": 0.07, "720p": 0.15 },
+    usdPerSecondVideoInByResolution: { "480p": 0.08, "720p": 0.17 },
+    source: "replicate"
+  }
+};
+
 const libraryPageSizes = [48, 72, 120];
 const maxWorldSheetImages = 5;
 const maxWorldTextChars = 60000;
@@ -332,8 +375,11 @@ const apiKey = () => localStorage.getItem("openrouter_api_key") || "";
 const seedanceApiKey = () => localStorage.getItem("seedance_api_key") || "";
 const elevenLabsApiKey = () => localStorage.getItem("elevenlabs_api_key") || "";
 const isOpenRouterSeedanceBaseUrl = (value = state.db?.settings?.seedanceBaseUrl) => String(value || "").includes("openrouter.ai");
+const isReplicateSeedanceBaseUrl = (value = state.db?.settings?.seedanceBaseUrl) => String(value || "").includes("replicate.com");
 const activeSeedanceApiKey = (baseUrl = state.db?.settings?.seedanceBaseUrl) =>
   isOpenRouterSeedanceBaseUrl(baseUrl) ? (apiKey() || seedanceApiKey()) : seedanceApiKey();
+const seedanceProviderLabel = (baseUrl = state.db?.settings?.seedanceBaseUrl) =>
+  isOpenRouterSeedanceBaseUrl(baseUrl) ? "OpenRouter" : isReplicateSeedanceBaseUrl(baseUrl) ? "Replicate" : "Seedance";
 
 const WORLD_SETTING_READING_TEMPLATE = `# 世界観設定資料＋キャラクター設定資料 読解ログ
 
@@ -1223,7 +1269,7 @@ function seedanceApiBasePreset(value) {
 function renderSeedanceApiBaseSelect(value) {
   const current = seedanceApiBasePreset(value).value;
   return `
-    <label class="full">API Base URL
+    <label class="full">動画生成プロバイダー
       <select id="setting-seedance-base-url">
         ${seedanceApiBaseOptions.map((option) => `<option value="${escapeHtml(option.value)}" ${option.value === current ? "selected" : ""}>${escapeHtml(option.label)} (${escapeHtml(option.value)})</option>`).join("")}
       </select>
@@ -1273,7 +1319,26 @@ function openRouterVideoModelChoices(selectedId = "") {
   return models;
 }
 
+function replicateVideoModelChoices(selectedId = "") {
+  const models = replicateSeedanceVideoModels.map((model) => normalizeOpenRouterVideoModel(model));
+  if (selectedId && !models.some((model) => model.id === selectedId)) {
+    models.unshift(normalizeOpenRouterVideoModel({
+      id: selectedId,
+      name: selectedId,
+      generate_audio: true,
+      supported_durations: [5],
+      supported_aspect_ratios: ["16:9"],
+      supported_resolutions: ["720p"],
+      supported_frame_images: ["first_frame", "last_frame"]
+    }));
+  }
+  return models;
+}
+
 function videoModelConfig(modelId, baseUrl = state.db?.settings?.seedanceBaseUrl) {
+  if (isReplicateSeedanceBaseUrl(baseUrl)) {
+    return replicateVideoModelChoices(modelId).find((model) => model.id === modelId) || replicateVideoModelChoices()[0];
+  }
   if (!isOpenRouterSeedanceBaseUrl(baseUrl)) {
     return modelId && modelId !== officialSeedanceVideoModel.id
       ? { ...officialSeedanceVideoModel, id: modelId, name: modelId }
@@ -1306,6 +1371,9 @@ function displayVideoJobTitle(job) {
 function compatibleVideoModelId(modelId, baseUrl = state.db?.settings?.seedanceBaseUrl) {
   const defaultModel = seedanceApiBasePreset(baseUrl).defaultModel;
   const value = modelId || defaultModel;
+  if (isReplicateSeedanceBaseUrl(baseUrl)) {
+    return replicateSeedanceVideoModels.some((model) => model.id === value) ? value : defaultModel;
+  }
   if (isOpenRouterSeedanceBaseUrl(baseUrl)) {
     return targetOpenRouterVideoModelIds.includes(value) ? value : defaultModel;
   }
@@ -1334,6 +1402,15 @@ function videoModeOptionsForModel(model) {
 }
 
 function renderVideoModelSelect(id, value, baseUrl = state.db?.settings?.seedanceBaseUrl) {
+  if (isReplicateSeedanceBaseUrl(baseUrl)) {
+    const choices = replicateVideoModelChoices(value);
+    const current = choices.some((model) => model.id === value) ? value : seedanceApiBasePreset(baseUrl).defaultModel;
+    return `
+      <select id="${id}">
+        ${choices.map((model) => `<option value="${escapeHtml(model.id)}" ${model.id === current ? "selected" : ""}>${escapeHtml(model.name || model.id)} (${escapeHtml(model.id)})</option>`).join("")}
+      </select>
+    `;
+  }
   if (!isOpenRouterSeedanceBaseUrl(baseUrl)) {
     const current = value || officialSeedanceVideoModel.id;
     return `<select id="${id}"><option value="${escapeHtml(current)}" selected>${escapeHtml(current)}</option></select>`;
@@ -1359,6 +1436,13 @@ function updateSettingSeedanceResolutionOptions(modelId, baseUrl) {
 function updateSettingSeedanceModelOptions(baseUrl, preferredModel = "") {
   const select = document.querySelector("#setting-seedance-model");
   if (!select) return;
+  if (isReplicateSeedanceBaseUrl(baseUrl)) {
+    const choices = replicateVideoModelChoices(preferredModel);
+    const current = choices.some((model) => model.id === preferredModel) ? preferredModel : seedanceApiBasePreset(baseUrl).defaultModel;
+    select.innerHTML = choices.map((model) => `<option value="${escapeHtml(model.id)}" ${model.id === current ? "selected" : ""}>${escapeHtml(model.name || model.id)} (${escapeHtml(model.id)})</option>`).join("");
+    updateSettingSeedanceResolutionOptions(current, baseUrl);
+    return;
+  }
   if (!isOpenRouterSeedanceBaseUrl(baseUrl)) {
     const current = preferredModel || officialSeedanceVideoModel.id;
     select.innerHTML = `<option value="${escapeHtml(current)}" selected>${escapeHtml(current)}</option>`;
@@ -1369,6 +1453,20 @@ function updateSettingSeedanceModelOptions(baseUrl, preferredModel = "") {
   const current = choices.some((model) => model.id === preferredModel) ? preferredModel : seedanceApiBasePreset(baseUrl).defaultModel;
   select.innerHTML = choices.map((model) => `<option value="${escapeHtml(model.id)}" ${model.id === current ? "selected" : ""}>${escapeHtml(model.name || model.id)} (${escapeHtml(model.id)})</option>`).join("");
   updateSettingSeedanceResolutionOptions(current, baseUrl);
+}
+
+function seedanceSettingsStatusText(baseUrl = state.db?.settings?.seedanceBaseUrl) {
+  if (isReplicateSeedanceBaseUrl(baseUrl)) {
+    return "Replicate Predictions API向けのSeedance 2.0候補を表示しています。料金はReplicateの秒単価で概算します。";
+  }
+  if (isOpenRouterSeedanceBaseUrl(baseUrl)) {
+    return state.openRouterVideoModelStatus === "loaded"
+      ? "OpenRouter動画モデルの対応設定を読み込みました。"
+      : state.openRouterVideoModelStatus === "loading"
+        ? "OpenRouter動画モデルの対応設定を読み込み中です。"
+        : state.openRouterVideoModelError || "OpenRouter動画モデルはフォールバック設定で表示しています。";
+  }
+  return "公式API向けの既定設定です。";
 }
 
 async function loadOpenRouterVideoModels({ force = false } = {}) {
@@ -1423,6 +1521,7 @@ function formatPlainNumber(value, digits = 0) {
 }
 
 function videoPricingSourceLabel(source = "") {
+  if (source === "replicate") return "Replicate固定料金";
   if (source === "openrouter") return "OpenRouter取得";
   if (source === "fallback-token") return "フォールバック（トークン単価）";
   if (source === "fallback-per-second") return "フォールバック（秒単価）";
@@ -1477,13 +1576,19 @@ function collectPricingEntries(value, path = []) {
   return entries;
 }
 
-function inferVideoPricingFromModel(model = {}) {
-  const fallback = fallbackOpenRouterVideoPricing[model.id] || {};
+function fallbackVideoPricingForModel(modelId, baseUrl = state.db?.settings?.seedanceBaseUrl) {
+  if (isReplicateSeedanceBaseUrl(baseUrl)) return replicateSeedanceVideoPricing[modelId] || {};
+  return fallbackOpenRouterVideoPricing[modelId] || {};
+}
+
+function inferVideoPricingFromModel(model = {}, baseUrl = state.db?.settings?.seedanceBaseUrl) {
+  const fallback = fallbackVideoPricingForModel(model.id, baseUrl);
   const pricing = {
     modelId: model.id || "",
     name: model.name || model.id || "",
     usdPerSecond: fallback.usdPerSecond ?? null,
     usdPerSecondByResolution: { ...(fallback.usdPerSecondByResolution || {}) },
+    usdPerSecondVideoInByResolution: { ...(fallback.usdPerSecondVideoInByResolution || {}) },
     usdPerMillionVideoTokens: fallback.usdPerMillionVideoTokens ?? null,
     source: fallback.source || "fallback",
     pricingSkus: model.pricing_skus || {}
@@ -1515,11 +1620,14 @@ function inferVideoPricingFromModel(model = {}) {
   return pricing;
 }
 
-function videoPricingForModel(modelId) {
+function videoPricingForModel(modelId, baseUrl = state.db?.settings?.seedanceBaseUrl) {
+  if (isReplicateSeedanceBaseUrl(baseUrl) && replicateSeedanceVideoPricing[modelId]) {
+    return replicateSeedanceVideoPricing[modelId];
+  }
   const stored = state.db?.settings?.videoPricing?.models?.[modelId];
-  if (stored) return stored;
-  const model = videoModelConfig(modelId, state.db?.settings?.seedanceBaseUrl);
-  return inferVideoPricingFromModel(model || { id: modelId, name: modelId });
+  if (stored && !(isOpenRouterSeedanceBaseUrl(baseUrl) && stored.source === "replicate")) return stored;
+  const model = videoModelConfig(modelId, baseUrl);
+  return inferVideoPricingFromModel(model || { id: modelId, name: modelId }, baseUrl);
 }
 
 function pixelsForVideoSetting(resolution = "720p", ratio = "16:9") {
@@ -1532,10 +1640,12 @@ function pixelsForVideoSetting(resolution = "720p", ratio = "16:9") {
   return Math.round(width) * Math.round(height);
 }
 
-function estimateUsdPerSecond(modelId, resolution = "720p", ratio = "16:9") {
-  const pricing = videoPricingForModel(modelId);
+function estimateUsdPerSecond(modelId, resolution = "720p", ratio = "16:9", options = {}) {
+  const pricing = videoPricingForModel(modelId, options.baseUrl);
   const byResolution = pricing?.usdPerSecondByResolution || {};
-  const resolutionRate = numberOrNull(byResolution[resolution] ?? byResolution[String(resolution).toLowerCase()] ?? byResolution[String(resolution).toUpperCase()]);
+  const videoInByResolution = pricing?.usdPerSecondVideoInByResolution || {};
+  const rateTable = options.hasVideoInput && Object.keys(videoInByResolution).length ? videoInByResolution : byResolution;
+  const resolutionRate = numberOrNull(rateTable[resolution] ?? rateTable[String(resolution).toLowerCase()] ?? rateTable[String(resolution).toUpperCase()]);
   if (resolutionRate !== null) return resolutionRate;
   const perSecond = numberOrNull(pricing?.usdPerSecond);
   if (perSecond !== null) return perSecond;
@@ -1545,6 +1655,18 @@ function estimateUsdPerSecond(modelId, resolution = "720p", ratio = "16:9") {
     return videoTokensPerSecond * tokenRate / 1000000;
   }
   return null;
+}
+
+function hasVideoInputReferences(references = []) {
+  return Array.isArray(references) && references.some((item) => item?.kind === "video" || String(item?.role || "").includes("video"));
+}
+
+function videoJobHasVideoInput(job) {
+  if (hasVideoInputReferences(job?.references)) return true;
+  const input = job?.request?.input || {};
+  if (Array.isArray(input.reference_videos) && input.reference_videos.length) return true;
+  const content = Array.isArray(job?.request?.content) ? job.request.content : [];
+  return content.some((item) => item?.type === "video_url" || item?.video_url);
 }
 
 function durationSecondsForVideoJob(job) {
@@ -1577,7 +1699,10 @@ function videoJobCostSummary(job) {
   const modelId = job?.settings?.model || job?.request?.model || state.db?.settings?.seedanceModel || "";
   const resolution = job?.settings?.resolution || job?.request?.resolution || state.db?.settings?.seedanceResolution || "720p";
   const ratio = job?.settings?.ratio || job?.request?.ratio || "16:9";
-  const rate = estimateUsdPerSecond(modelId, resolution, ratio);
+  const rate = estimateUsdPerSecond(modelId, resolution, ratio, {
+    baseUrl: job?.settings?.baseUrl || state.db?.settings?.seedanceBaseUrl,
+    hasVideoInput: videoJobHasVideoInput(job)
+  });
   if (rate !== null && duration > 0) return { usd: rate * duration, source: "estimated" };
   return { usd: null, source: "unknown" };
 }
@@ -1623,15 +1748,17 @@ function monthlyVideoCostSummary() {
   };
 }
 
-function currentVideoRateSummary(modelId, resolution, ratio) {
-  const pricing = videoPricingForModel(modelId);
-  const usdPerSecond = estimateUsdPerSecond(modelId, resolution, ratio);
+function currentVideoRateSummary(modelId, resolution, ratio, options = {}) {
+  const baseUrl = options.baseUrl || state.db?.settings?.seedanceBaseUrl;
+  const pricing = videoPricingForModel(modelId, baseUrl);
+  const usdPerSecond = estimateUsdPerSecond(modelId, resolution, ratio, options);
   const usdJpyRate = numberOrNull(state.db.settings?.videoPricing?.usdJpyRate) || 155;
   return {
     modelId,
     usdPerSecond,
     jpyPerSecond: usdPerSecond === null ? null : usdPerSecond * usdJpyRate,
     source: pricing?.source || "fallback",
+    tier: pricing?.source === "replicate" ? (options.hasVideoInput ? "video_in" : "non_video_in") : "",
     pricing
   };
 }
@@ -1660,10 +1787,14 @@ async function refreshVideoPricing() {
       notes.push(state.openRouterVideoModelError || "OpenRouter動画モデル料金はフォールバックを使いました。");
     }
   }
-  const models = isOpenRouterSeedanceBaseUrl() ? mergedOpenRouterVideoModels() : [officialSeedanceVideoModel];
+  const models = isOpenRouterSeedanceBaseUrl()
+    ? mergedOpenRouterVideoModels()
+    : isReplicateSeedanceBaseUrl()
+      ? replicateSeedanceVideoModels
+      : [officialSeedanceVideoModel];
   const pricingModels = { ...(previous.models || {}) };
   models.forEach((model) => {
-    pricingModels[model.id] = inferVideoPricingFromModel(model);
+    pricingModels[model.id] = inferVideoPricingFromModel(model, state.db.settings.seedanceBaseUrl);
   });
   state.db.settings.videoPricing = {
     updatedAt: new Date().toISOString(),
@@ -3216,7 +3347,7 @@ async function startSeedanceGeneration() {
   const controls = videoControlsFromDom();
   const prompt = controls.prompt.trim();
   const seedanceKey = activeSeedanceApiKey();
-  if (!seedanceKey) return toast(isOpenRouterSeedanceBaseUrl() ? "設定画面で OpenRouter API キーを保存してください。" : "設定画面で Seedance API キーを保存してください。");
+  if (!seedanceKey) return toast(`設定画面で ${seedanceProviderLabel()} API キーを保存してください。`);
   if (!prompt) return toast("API送信用プロンプトを入力してください。");
   let job = null;
   try {
@@ -4307,6 +4438,7 @@ function renderVideoCostSummary(summary, currentRate) {
   const rateJpyDisplay = currentRate.jpyPerSecond !== null
     ? `${formatJpy(currentRate.jpyPerSecond)} / 秒`
     : "未取得";
+  const rateTierText = currentRate.tier ? ` / ${currentRate.tier}` : "";
   const statusText = state.videoPricingStatus === "loading"
     ? "取得中です。"
     : state.videoPricingError || `最終更新: ${updatedText} / USD-JPY ${formatPlainNumber(summary.usdJpyRate, 3)} (${summary.usdJpySource})`;
@@ -4350,7 +4482,7 @@ function renderVideoCostSummary(summary, currentRate) {
           <div>
             <div class="meta">現在モデルの1秒料金</div>
             <strong>${escapeHtml(rateDisplay)}</strong>
-            <div class="meta">${escapeHtml(rateJpyDisplay)} / ${escapeHtml(videoPricingSourceLabel(currentRate.source))}</div>
+            <div class="meta">${escapeHtml(rateJpyDisplay)} / ${escapeHtml(videoPricingSourceLabel(currentRate.source))}${escapeHtml(rateTierText)}</div>
           </div>
         </div>
         <div class="meta cost-note">${escapeHtml(unknownText)}</div>
@@ -4427,7 +4559,9 @@ function renderVideoAgent() {
   const resolutionValue = optionValue(controls.resolution || state.db.settings.seedanceResolution || "720p", resolutionOptions);
   const audioOptions = currentModel.generate_audio === false ? [["false", "生成しない"]] : [["true", "生成する"], ["false", "生成しない"]];
   const generateAudioValue = currentModel.generate_audio === false ? "false" : String(controls.generateAudio ?? true);
-  const modelStatusText = isOpenRouterSeedanceBaseUrl()
+  const modelStatusText = isReplicateSeedanceBaseUrl()
+    ? "Replicate Predictions APIでSeedance 2.0を実行します。参照動画を含む場合はvideo_in単価で概算します。"
+    : isOpenRouterSeedanceBaseUrl()
     ? state.openRouterVideoModelStatus === "loaded"
       ? "OpenRouter動画モデルの対応設定を読み込み済み。"
       : state.openRouterVideoModelStatus === "loading"
@@ -4438,7 +4572,10 @@ function renderVideoAgent() {
   const selectedItems = selectedVideoReferences();
   const counts = selectedVideoReferenceCounts(selectedItems);
   const monthlyCost = monthlyVideoCostSummary();
-  const currentRate = currentVideoRateSummary(currentModelId, resolutionValue, ratioValue);
+  const currentRate = currentVideoRateSummary(currentModelId, resolutionValue, ratioValue, {
+    baseUrl: state.db.settings.seedanceBaseUrl,
+    hasVideoInput: hasVideoInputReferences(selectedItems)
+  });
   const jobs = (state.db.videoJobs || [])
     .filter((job) => !state.videoWorkId || job.workId === state.videoWorkId)
     .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
@@ -4708,13 +4845,7 @@ function renderSettings() {
   const videoModel = videoModelConfig(settingsVideoModelId, state.db.settings.seedanceBaseUrl);
   const settingsResolutionOptions = optionList(videoModel.supported_resolutions, [state.db.settings.seedanceResolution || "720p"]);
   const settingsResolution = optionValue(state.db.settings.seedanceResolution || "720p", settingsResolutionOptions);
-	  const videoStatusText = isOpenRouterSeedanceBaseUrl()
-    ? state.openRouterVideoModelStatus === "loaded"
-      ? "OpenRouter動画モデルの対応設定を読み込みました。"
-      : state.openRouterVideoModelStatus === "loading"
-        ? "OpenRouter動画モデルの対応設定を読み込み中です。"
-        : state.openRouterVideoModelError || "OpenRouter動画モデルはフォールバック設定で表示しています。"
-	    : "公式API向けの既定設定です。";
+	  const videoStatusText = seedanceSettingsStatusText(state.db.settings.seedanceBaseUrl);
 	  const elevenLabsVoiceText = state.elevenLabsVoiceStatus === "loaded"
 	    ? `${state.elevenLabsVoices.length} 件のElevenLabs音声を読み込みました。`
 	    : state.elevenLabsVoiceStatus === "loading"
@@ -4810,7 +4941,7 @@ function renderSettings() {
       <div class="panel-header"><h2>Seedance</h2></div>
       <div class="panel-body form-grid">
         <label class="full">API キー
-          <input id="setting-seedance-api-key" type="password" placeholder="BytePlus / OpenRouter API key" value="${escapeHtml(seedanceApiKey())}">
+          <input id="setting-seedance-api-key" type="password" placeholder="BytePlus / OpenRouter / Replicate API key" value="${escapeHtml(seedanceApiKey())}">
         </label>
         ${renderSeedanceApiBaseSelect(state.db.settings.seedanceBaseUrl)}
         <label>動画モデル
@@ -4821,8 +4952,8 @@ function renderSettings() {
             ${settingsResolutionOptions.map((value) => `<option value="${escapeHtml(value)}" ${value === settingsResolution ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}
           </select>
         </label>
-        <div class="full meta">${escapeHtml(videoStatusText)}</div>
-        <div class="full meta">生成動画は完了後に data/videos に保存されます。OpenRouterを選んだ場合は、上のOpenRouter APIキー欄のキーを優先して使います。</div>
+        <div id="setting-seedance-status" class="full meta">${escapeHtml(videoStatusText)}</div>
+        <div class="full meta">生成動画は完了後に data/videos に保存されます。OpenRouterを選んだ場合は上のOpenRouter APIキー欄を優先し、Replicateを選んだ場合はこのAPIキー欄にReplicate tokenを保存してください。</div>
       </div>
     </section>
   `;
@@ -5785,8 +5916,14 @@ function bindSettings() {
       ? selected.defaultModel
       : modelInput?.value.trim() || selected.defaultModel;
     updateSettingSeedanceModelOptions(selected.value, nextModel);
+    const status = document.querySelector("#setting-seedance-status");
+    if (status) status.textContent = seedanceSettingsStatusText(selected.value);
     if (isOpenRouterSeedanceBaseUrl(selected.value)) {
-      loadOpenRouterVideoModels().then(() => updateSettingSeedanceModelOptions(selected.value, nextModel));
+      loadOpenRouterVideoModels().then(() => {
+        updateSettingSeedanceModelOptions(selected.value, nextModel);
+        const nextStatus = document.querySelector("#setting-seedance-status");
+        if (nextStatus) nextStatus.textContent = seedanceSettingsStatusText(selected.value);
+      });
     }
   });
   document.querySelector("#setting-seedance-model")?.addEventListener("change", (event) => {

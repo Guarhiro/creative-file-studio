@@ -737,6 +737,18 @@ async function handleUsdJpyRate(req, res) {
 
 function normalizeSeedanceBaseUrl(value) {
   const raw = String(value || "https://ark.ap-southeast.bytepluses.com/api/v3").trim().replace(/\/+$/g, "");
+  if (raw.includes("replicate.com")) {
+    try {
+      const parsed = new URL(raw);
+      const versionIndex = parsed.pathname.split("/").findIndex((part) => part === "v1");
+      parsed.pathname = versionIndex >= 0 ? "/v1" : "/v1";
+      parsed.search = "";
+      parsed.hash = "";
+      return parsed.href.replace(/\/+$/g, "");
+    } catch {
+      return "https://api.replicate.com/v1";
+    }
+  }
   if (raw.includes("openrouter.ai")) {
     if (raw.endsWith("/videos")) return raw;
     if (raw.endsWith("/api/v1")) return `${raw}/videos`;
@@ -748,12 +760,63 @@ function normalizeSeedanceBaseUrl(value) {
 }
 
 function seedanceProviderFromBaseUrl(value) {
-  return String(value || "").includes("openrouter.ai") ? "openrouter" : "official";
+  const text = String(value || "");
+  if (text.includes("replicate.com")) return "replicate";
+  return text.includes("openrouter.ai") ? "openrouter" : "official";
 }
 
 function normalizeSeedanceStatus(status) {
+  if (status === "starting") return "pending";
+  if (status === "processing") return "running";
   if (status === "completed") return "succeeded";
+  if (status === "canceled") return "cancelled";
   return status || "";
+}
+
+function normalizeProgressValue(value) {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value === "string") {
+    const match = value.match(/-?\d+(?:\.\d+)?/);
+    if (!match) return null;
+    value = Number(match[0]);
+  }
+  if (typeof value === "object") {
+    return normalizeProgressValue(value.progress ?? value.percent ?? value.percentage ?? value.value);
+  }
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  const percent = number > 0 && number <= 1 ? number * 100 : number;
+  return Math.max(0, Math.min(100, Math.round(percent)));
+}
+
+function extractSeedanceProgress(payload) {
+  const candidates = [
+    payload?.progress,
+    payload?.percent,
+    payload?.percentage,
+    payload?.data?.progress,
+    payload?.data?.percent,
+    payload?.data?.percentage,
+    payload?.task?.progress,
+    payload?.task?.percent,
+    payload?.output?.progress,
+    payload?.result?.progress
+  ];
+  for (const candidate of candidates) {
+    const progress = normalizeProgressValue(candidate);
+    if (progress !== null) return progress;
+  }
+  return null;
+}
+
+function extractSeedanceProgressMessage(payload) {
+  return payload?.progress_message
+    || payload?.progressMessage
+    || payload?.message
+    || payload?.data?.progress_message
+    || payload?.data?.progressMessage
+    || payload?.data?.message
+    || "";
 }
 
 async function seedanceContentItem(reference) {
@@ -816,20 +879,107 @@ async function buildOpenRouterVideoPayload(options) {
   return payload;
 }
 
-function scrubRequestMediaUrl(item) {
-  const next = { ...item };
-  if (next.image_url?.url?.startsWith("data:")) next.image_url = { url: "[local data url]" };
-  if (next.video_url?.url?.startsWith("data:")) next.video_url = { url: "[local data url]" };
-  if (next.audio_url?.url?.startsWith("data:")) next.audio_url = { url: "[local data url]" };
-  return next;
+async function resolveSeedanceReferenceUrl(reference) {
+  const url = String(reference.url || "");
+  return url.startsWith("/") ? await localUploadAsDataUrl(url) : url;
+}
+
+async function buildReplicateVideoPayload(options) {
+  const {
+    prompt,
+    ratio,
+    duration,
+    resolution,
+    generateAudio,
+    seed,
+    references = []
+  } = options;
+  const input = {
+    prompt,
+    duration: Number(duration),
+    resolution,
+    aspect_ratio: ratio,
+    generate_audio: Boolean(generateAudio)
+  };
+  if (Number(seed) >= 0) input.seed = Number(seed);
+
+  const referenceImages = [];
+  const referenceVideos = [];
+  const referenceAudios = [];
+  for (const reference of references) {
+    const resolvedUrl = await resolveSeedanceReferenceUrl(reference);
+    if (reference.role === "first_frame") {
+      input.image = resolvedUrl;
+    } else if (reference.role === "last_frame") {
+      input.last_frame_image = resolvedUrl;
+    } else if (reference.kind === "image") {
+      referenceImages.push(resolvedUrl);
+    } else if (reference.kind === "video") {
+      referenceVideos.push(resolvedUrl);
+    } else if (reference.kind === "audio") {
+      referenceAudios.push(resolvedUrl);
+    }
+  }
+  if ((input.image || input.last_frame_image) && (referenceImages.length || referenceVideos.length || referenceAudios.length)) {
+    throw new Error("Replicateでは開始/終了フレーム指定と参照素材モードを同時に送れません。モードを切り替えてください。");
+  }
+  if (referenceAudios.length && !referenceImages.length && !referenceVideos.length) {
+    throw new Error("Replicateで参照音声を使う場合は、参照画像または参照動画も一緒に選択してください。");
+  }
+  if (referenceImages.length) input.reference_images = referenceImages;
+  if (referenceVideos.length) input.reference_videos = referenceVideos;
+  if (referenceAudios.length) input.reference_audios = referenceAudios;
+  return { input };
+}
+
+function replicatePredictionEndpoint(baseUrl, model) {
+  const base = normalizeSeedanceBaseUrl(baseUrl);
+  const modelPath = String(model || "").trim().replace(/^\/?models\//, "").replace(/\/+$/g, "");
+  const parts = modelPath.split("/").filter(Boolean).map(encodeURIComponent);
+  if (parts.length < 2) throw new Error("Replicate model は owner/model 形式で指定してください。");
+  return `${base}/models/${parts.join("/")}/predictions`;
+}
+
+function replicatePredictionStatusEndpoint(baseUrl, taskId) {
+  return `${normalizeSeedanceBaseUrl(baseUrl)}/predictions/${encodeURIComponent(taskId)}`;
+}
+
+function scrubMediaValue(value) {
+  if (typeof value === "string") return value.startsWith("data:") ? "[local data url]" : value;
+  if (Array.isArray(value)) return value.map(scrubMediaValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, scrubMediaValue(child)]));
+  }
+  return value;
+}
+
+function scrubSeedanceRequestPayload(payload) {
+  return scrubMediaValue(payload);
 }
 
 function extractTaskId(payload) {
   return payload?.id || payload?.task_id || payload?.taskId || payload?.data?.id || payload?.data?.task_id || "";
 }
 
+function firstVideoOutput(value) {
+  if (!value) return "";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const url = firstVideoOutput(item);
+      if (url) return url;
+    }
+    return "";
+  }
+  if (typeof value === "object") {
+    return value.url || value.video_url || value.videoUrl || value.file || value.src || "";
+  }
+  return "";
+}
+
 function extractVideoUrl(payload) {
   const candidates = [
+    firstVideoOutput(payload?.output),
     payload?.unsigned_urls?.[0],
     payload?.content?.video_url,
     payload?.content?.videoUrl,
@@ -837,6 +987,7 @@ function extractVideoUrl(payload) {
     payload?.video_url,
     payload?.videoUrl,
     payload?.url,
+    firstVideoOutput(payload?.data?.output),
     payload?.data?.unsigned_urls?.[0],
     payload?.data?.content?.video_url,
     payload?.data?.video_url
@@ -1488,6 +1639,16 @@ async function handleSeedanceCreate(req, res) {
         seed,
         references
       });
+    } else if (provider === "replicate") {
+      requestPayload = await buildReplicateVideoPayload({
+        prompt,
+        ratio,
+        duration,
+        resolution,
+        generateAudio,
+        seed,
+        references
+      });
     } else {
       const content = [];
       if (prompt) content.push({ type: "text", text: prompt });
@@ -1507,14 +1668,10 @@ async function handleSeedanceCreate(req, res) {
       if (Number(seed) >= 0) requestPayload.seed = Number(seed);
       if (returnLastFrame) requestPayload.return_last_frame = true;
     }
-    const scrubbedRequest = {
-      ...requestPayload,
-      content: requestPayload.content?.map((item) => scrubRequestMediaUrl(item)),
-      frame_images: requestPayload.frame_images?.map((item) => scrubRequestMediaUrl(item)),
-      input_references: requestPayload.input_references?.map((item) => scrubRequestMediaUrl(item))
-    };
+    const scrubbedRequest = scrubSeedanceRequestPayload(requestPayload);
+    const endpoint = provider === "replicate" ? replicatePredictionEndpoint(baseUrl, model) : normalizeSeedanceBaseUrl(baseUrl);
 
-    const response = await fetch(normalizeSeedanceBaseUrl(baseUrl), {
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: {
         "authorization": `Bearer ${apiKey}`,
@@ -1549,6 +1706,8 @@ async function handleSeedanceCreate(req, res) {
       ...payload,
       id: taskId,
       status: normalizeSeedanceStatus(payload.status || payload?.data?.status),
+      progress: extractSeedanceProgress(payload),
+      progressMessage: extractSeedanceProgressMessage(payload),
       request: scrubbedRequest
     });
   } catch (error) {
@@ -1562,7 +1721,9 @@ async function handleSeedanceStatus(req, res) {
   if (!taskId) return sendJson(res, 400, { error: "taskId が必要です。" });
   try {
     const provider = seedanceProviderFromBaseUrl(baseUrl);
-    const endpoint = `${normalizeSeedanceBaseUrl(baseUrl)}/${encodeURIComponent(taskId)}`;
+    const endpoint = provider === "replicate"
+      ? replicatePredictionStatusEndpoint(baseUrl, taskId)
+      : `${normalizeSeedanceBaseUrl(baseUrl)}/${encodeURIComponent(taskId)}`;
     const response = await fetch(endpoint, {
       headers: { "authorization": `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(30000)
@@ -1586,6 +1747,8 @@ async function handleSeedanceStatus(req, res) {
     sendJson(res, 200, {
       ...payload,
       status,
+      progress: status === "succeeded" ? 100 : extractSeedanceProgress(payload),
+      progressMessage: extractSeedanceProgressMessage(payload),
       videoUrl: videoUrl || fallbackVideoUrl,
       localUrl: saved?.url || "",
       localPath: saved?.path || ""

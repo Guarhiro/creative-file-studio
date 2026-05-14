@@ -146,8 +146,8 @@ ZIPに含めないもの:
 ### 動画生成
 
 - 作品情報、世界観、キャラ情報、参照素材を読んだ動画生成エージェント
-- 公式Seedance APIまたはOpenRouter動画モデルを選択
-- OpenRouterではSeedance、Kling、Veo、Soraなどの動画モデルをプルダウンで選択
+- 公式Seedance API、OpenRouter動画モデル、Replicate Seedance 2.0を選択
+- OpenRouterではSeedance、Kling、Veo、Soraなど、ReplicateではSeedance 2.0 / Fastをプルダウンで選択
 - モデルごとの対応秒数、アスペクト比、解像度、開始/終了フレーム設定を画面に反映
 - 秒数、アスペクト比、解像度、音声生成、カメラ固定、透かし、Seedを指定
 - 参照素材として取り込み画像、キャラ立ち絵、その他情報の参考画像、動画、音声を選択
@@ -156,7 +156,7 @@ ZIPに含めないもの:
 - 生成待ちジョブの状態確認、完成動画の自動保存
 - 生成履歴から動画、プロンプト、保存先を確認
 - 今月の動画生成コスト、日本円換算、現在モデルの1秒料金を表示
-- OpenRouter動画モデルの現在料金とUSD/JPYレートをボタンで取得
+- OpenRouter動画モデルの現在料金、Replicateの固定秒単価、USD/JPYレートを使って概算
 
 ### 音声生成
 
@@ -170,10 +170,10 @@ ZIPに含めないもの:
 
 ### 設定とモデル管理
 
-- OpenRouter APIキー、ElevenLabs APIキー、Seedance APIキーをブラウザのlocalStorageに保存
+- OpenRouter APIキー、ElevenLabs APIキー、Seedance/Replicate APIキーをブラウザのlocalStorageに保存
 - 画像判別、テキスト生成、世界観読み込み、動画エージェント、音声エージェントのモデルを個別に設定
 - OpenRouterのモデル一覧と動画モデル対応設定を再取得
-- Seedance API Base URLを公式 / OpenRouterから選択
+- 動画生成プロバイダーを公式 / OpenRouter / Replicateから選択
 - Irodori-TTSの既存フォルダ指定、または `scripts/setup-irodori.sh` による取得
 
 ## 保存場所
@@ -262,9 +262,9 @@ Irodori-TTS選択時:
 
 設定画面の Seedance セクションで以下を設定します。
 
-- API キー: 公式APIを使う場合は公式側のキー、OpenRouterを使う場合はOpenRouterキーを使います。OpenRouterを選んだ場合は、上のOpenRouter APIキー欄のキーを優先して使います。
-- API Base URL: `公式 BytePlus / Volcengine` または `OpenRouter` をプルダウンで選択します。
-- 動画モデル: 公式APIでは `dreamina-seedance-2-0-260128`、OpenRouterでは動画モデル一覧から選択します。
+- API キー: 公式APIを使う場合は公式側のキー、OpenRouterを使う場合はOpenRouterキー、Replicateを使う場合はReplicate tokenを使います。OpenRouterを選んだ場合は、上のOpenRouter APIキー欄のキーを優先して使います。
+- 動画生成プロバイダー: `公式 BytePlus / Volcengine`、`OpenRouter`、`Replicate` をプルダウンで選択します。
+- 動画モデル: 公式APIでは `dreamina-seedance-2-0-260128`、OpenRouterでは動画モデル一覧、Replicateでは `bytedance/seedance-2.0` または `bytedance/seedance-2.0-fast` から選択します。
 - 既定解像度: 動画生成画面の初期値として使います。
 
 OpenRouter選択時は、動画モデル専用APIから対応設定を取得します。取得できない場合も、以下のモデルはフォールバック設定で選択できます。
@@ -278,15 +278,19 @@ OpenRouter選択時は、動画モデル専用APIから対応設定を取得し�
 - `google/veo-3.1`
 - `openai/sora-2-pro`
 
+Replicate選択時は、`https://api.replicate.com/v1/models/{owner}/{model}/predictions` に送信し、`predictions/{id}` をポーリングします。完成動画URLは取得後に `data/videos` へ保存します。
+
 動画生成画面では、作品、キャラ、秒数、アスペクト比、解像度、音声生成、カメラ固定、透かし、Seedを指定できます。
 
 画面上部には、今月作成した動画ジョブ全体のコスト目安を表示します。
 
-- `現在料金を取得`: OpenRouterの動画モデル料金とUSD/JPYレートを取得して保存します。
+- `現在料金を取得`: OpenRouter選択時は動画モデル料金とUSD/JPYレート、Replicate選択時は固定秒単価とUSD/JPYレートを保存します。
 - 日本円概算: 生成履歴の実コストが取得できる場合は実コストを優先し、未取得のジョブはモデル、秒数、解像度、アスペクト比から概算します。
 - 現在モデルの1秒料金: 選択中の動画モデル、解像度、アスペクト比に応じた秒単価を表示します。
 
-料金取得にはOpenRouter APIキーが必要です。取得できない場合も、保存済み料金またはフォールバック料金で概算表示します。
+OpenRouterの料金取得にはOpenRouter APIキーが必要です。Replicateはアプリ内の固定秒単価を使います。取得できない場合も、保存済み料金またはフォールバック料金で概算表示します。
+
+生成中は、プロバイダが進捗率を返す場合はパーセントを表示します。進捗率が返らない場合も、送信中・待機中・生成中などの状態、経過時間、最終更新時刻を表示します。
 
 参照素材には以下を使えます。
 
@@ -304,6 +308,6 @@ OpenRouter選択時は、動画モデル専用APIから対応設定を取得し�
 
 更新後に新しい機能が動かない、または `Not found` が出る場合は、起動中のサーバーが古いままの可能性があります。ターミナルで `Ctrl + C` を押して停止し、もう一度起動してください。ブラウザもリロードしてください。
 
-Seedance/OpenRouterの動画生成で `401` が出る場合は、設定画面のOpenRouter APIキーとSeedance APIキーを確認してください。OpenRouter経由の完成動画は、保存時にも認証が必要になることがあります。このアプリはOpenRouter選択時に認証付きダウンロードを試します。
+Seedance/OpenRouter/Replicateの動画生成で `401` が出る場合は、設定画面のOpenRouter APIキーとSeedance/Replicate APIキーを確認してください。OpenRouter経由の完成動画は、保存時にも認証が必要になることがあります。このアプリはOpenRouter選択時に認証付きダウンロードを試します。
 
 生成ジョブの「更新」を押しても古いエラーが残る場合は、アプリを完全に再起動してから再度「更新」を押してください。
