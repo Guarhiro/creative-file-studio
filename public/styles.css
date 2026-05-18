@@ -481,9 +481,38 @@ button:disabled {
   color: #83580c;
 }
 
+.status-classifying {
+  background: rgba(31, 138, 132, 0.14);
+  color: #11655f;
+}
+
 .status-failed {
   background: rgba(164, 50, 46, 0.13);
   color: #8d2926;
+}
+
+.image-progress-summary {
+  display: grid;
+  gap: 8px;
+  border: 1px solid rgba(31, 138, 132, 0.28);
+  border-radius: 8px;
+  background: rgba(31, 138, 132, 0.08);
+  padding: 12px;
+  margin: -6px 0 14px;
+}
+
+.image-progress-summary strong {
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.image-progress {
+  display: grid;
+  gap: 6px;
+  border: 1px solid rgba(31, 138, 132, 0.22);
+  border-radius: 7px;
+  background: rgba(31, 138, 132, 0.07);
+  padding: 8px;
 }
 
 .empty {

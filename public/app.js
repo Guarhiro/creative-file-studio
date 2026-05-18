@@ -10,6 +10,7 @@ const state = {
   gallerySelectedAssetIds: [],
   galleryFiltersCollapsed: false,
   importFiles: [],
+  importIsRunning: false,
   importAutoClassify: true,
   importPromptFormat: "natural",
   importCharacterId: "",
@@ -1861,6 +1862,67 @@ function promptFormatInstruction(format) {
   return "自然言語の文章で返してください。生成したい絵の内容、人物、表情、服装、構図、雰囲気を読みやすい英文または日本語文でまとめてください。";
 }
 
+function elapsedTextSince(value) {
+  const time = new Date(value || "").getTime();
+  if (!Number.isFinite(time)) return "";
+  const elapsed = Math.max(0, Math.floor((Date.now() - time) / 1000));
+  if (elapsed >= 3600) return `${Math.floor(elapsed / 3600)}時間${Math.floor((elapsed % 3600) / 60)}分`;
+  if (elapsed >= 60) return `${Math.floor(elapsed / 60)}分${String(elapsed % 60).padStart(2, "0")}秒`;
+  return `${elapsed}秒`;
+}
+
+function imageAssetStatusLabel(asset) {
+  return {
+    matched: "判別済み",
+    failed: "判別失敗",
+    classifying: "AI判別中",
+    unassigned: "未設定"
+  }[asset?.status] || "未設定";
+}
+
+function isAssetClassifying(asset) {
+  return asset?.status === "classifying";
+}
+
+function setAssetClassificationProgress(asset, stage, message) {
+  if (!asset) return;
+  const now = new Date().toISOString();
+  asset.status = "classifying";
+  asset.classifyStage = stage;
+  asset.classifyMessage = message || "AI判別の処理中です。";
+  asset.classifyStartedAt = asset.classifyStartedAt || now;
+  asset.classifyUpdatedAt = now;
+}
+
+function clearAssetClassificationProgress(asset) {
+  if (!asset) return;
+  delete asset.classifyStage;
+  delete asset.classifyMessage;
+  delete asset.classifyStartedAt;
+  delete asset.classifyUpdatedAt;
+}
+
+function markAssetClassificationFailed(asset, error) {
+  if (!asset) return;
+  asset.status = "failed";
+  asset.confidence = null;
+  asset.aiReason = readableError(error?.message || error) || "AI判別に失敗しました。";
+  clearAssetClassificationProgress(asset);
+}
+
+function markInterruptedImageClassifications() {
+  let changed = false;
+  for (const asset of state.db?.assets || []) {
+    if (!isAssetClassifying(asset)) continue;
+    asset.status = "failed";
+    asset.confidence = null;
+    asset.aiReason = "前回のAI判別はページ再読み込みまたはアプリ終了で中断されました。必要ならAIキャラ判定を再実行してください。";
+    clearAssetClassificationProgress(asset);
+    changed = true;
+  }
+  return changed;
+}
+
 function workForAsset(asset) {
   return byId(state.db.works, asset.workId);
 }
@@ -2754,7 +2816,7 @@ function renderImport() {
         `).join("")}</div>` : ""}
         <div class="toolbar" style="margin-top:18px;">
           <div class="meta">${state.importFiles.length} 件選択中</div>
-          <button class="accent" data-action="run-import" ${state.importFiles.length ? "" : "disabled"}>取り込む</button>
+          <button class="accent" data-action="run-import" ${state.importFiles.length && !state.importIsRunning ? "" : "disabled"}>${state.importIsRunning ? "取り込み中..." : "取り込む"}</button>
         </div>
       </section>
     </div>
@@ -2774,6 +2836,7 @@ function renderLibrary() {
         <select id="library-status">
           <option value="all" ${state.libraryStatus === "all" ? "selected" : ""}>全状態</option>
           <option value="matched" ${state.libraryStatus === "matched" ? "selected" : ""}>判別済み</option>
+          <option value="classifying" ${state.libraryStatus === "classifying" ? "selected" : ""}>AI判別中</option>
           <option value="unassigned" ${state.libraryStatus === "unassigned" ? "selected" : ""}>未設定</option>
           <option value="failed" ${state.libraryStatus === "failed" ? "selected" : ""}>判別失敗</option>
         </select>
@@ -2790,11 +2853,52 @@ function renderLibrary() {
         <button class="ghost danger-outline" data-action="delete-visible-history" ${assets.length ? "" : "disabled"}>このページの履歴削除</button>
       </div>
     </div>
+    ${renderImageClassificationSummary(allAssets)}
     <div class="library-resultbar">
       <div class="meta">${allAssets.length ? `${pageInfo.start + 1}-${pageInfo.end} / ${allAssets.length} 件を表示中` : "0 件"}</div>
       ${renderLibraryPager(pageInfo, allAssets.length)}
     </div>
     ${assets.length ? `<div class="grid">${assets.map(renderAssetCard).join("")}</div>` : `<div class="empty">条件に合う画像がありません。</div>`}
+  `;
+}
+
+function renderImageClassificationSummary(assets) {
+  const active = assets.filter(isAssetClassifying);
+  if (!active.length) return "";
+  const waiting = active.filter((asset) => asset.classifyStage === "waiting").length;
+  const saving = active.filter((asset) => asset.classifyStage === "saving").length;
+  const preparing = active.length - waiting - saving;
+  const parts = [
+    waiting ? `API返答待ち ${waiting} 件` : "",
+    saving ? `保存中 ${saving} 件` : "",
+    preparing ? `送信準備中 ${preparing} 件` : ""
+  ].filter(Boolean).join(" / ");
+  const started = active.map((asset) => asset.classifyStartedAt).filter(Boolean).sort()[0];
+  const elapsed = elapsedTextSince(started);
+  return `
+    <div class="image-progress-summary">
+      <div>
+        <strong>AI判別中 ${active.length} 件</strong>
+        <div class="meta">${escapeHtml(parts || "API送信の準備中です。")}${elapsed ? ` / 経過 ${escapeHtml(elapsed)}` : ""}</div>
+      </div>
+      <div class="progress-track indeterminate"><span></span></div>
+    </div>
+  `;
+}
+
+function renderImageClassificationStatus(asset) {
+  const statusClass = asset?.status || "unassigned";
+  const progress = isAssetClassifying(asset)
+    ? `
+      <div class="image-progress">
+        <div class="meta">${escapeHtml(asset.classifyMessage || "API返答待ちです。")}${asset.classifyStartedAt ? ` / 経過 ${escapeHtml(elapsedTextSince(asset.classifyStartedAt))}` : ""}</div>
+        <div class="progress-track indeterminate"><span></span></div>
+      </div>
+    `
+    : "";
+  return `
+    <div class="tag-row"><span class="tag status-${escapeHtml(statusClass)}">${escapeHtml(imageAssetStatusLabel(asset))}</span></div>
+    ${progress}
   `;
 }
 
@@ -2861,7 +2965,6 @@ function renderLibraryPager(pageInfo, total) {
 function renderAssetCard(asset) {
   const workChars = charactersForWork(asset.workId);
   const workWorldItems = worldItemsForWork(asset.workId);
-  const statusLabel = asset.status === "matched" ? "判別済み" : asset.status === "failed" ? "判別失敗" : "未設定";
   const dimensions = assetDimensionLabel(asset);
   const selectedSubject = assetSubjectKey(asset);
   return `
@@ -2873,13 +2976,13 @@ function renderAssetCard(asset) {
           <div class="meta">${escapeHtml(subjectLabelForAsset(asset))} ${asset.confidence ? `/ confidence ${Math.round(asset.confidence * 100)}%` : ""}</div>
           ${dimensions ? `<div class="meta">${escapeHtml(dimensions)}</div>` : ""}
         </div>
-        <div class="tag-row"><span class="tag status-${asset.status}">${statusLabel}</span></div>
-        <select data-action="assign-asset" data-id="${asset.id}">
+        ${renderImageClassificationStatus(asset)}
+        <select data-action="assign-asset" data-id="${asset.id}" ${isAssetClassifying(asset) ? "disabled" : ""}>
           <option value="" ${selectedSubject === "unassigned" ? "selected" : ""}>未割当</option>
           ${workChars.length ? `<optgroup label="キャラ">${workChars.map((candidate) => `<option value="char:${candidate.id}" ${selectedSubject === `char:${candidate.id}` ? "selected" : ""}>${escapeHtml(candidate.name)}</option>`).join("")}</optgroup>` : ""}
           ${workWorldItems.length ? `<optgroup label="その他情報">${workWorldItems.map((item) => `<option value="world:${item.id}" ${selectedSubject === `world:${item.id}` ? "selected" : ""}>${escapeHtml(worldItemCategoryLabel(item.category))}: ${escapeHtml(item.name)}</option>`).join("")}</optgroup>` : ""}
         </select>
-        <button class="ghost" data-action="classify-one" data-id="${asset.id}" ${asset.worldItemId ? "disabled" : ""}>AIキャラ判定</button>
+        <button class="ghost" data-action="classify-one" data-id="${asset.id}" ${asset.worldItemId || isAssetClassifying(asset) ? "disabled" : ""}>AIキャラ判定</button>
         <button class="ghost" data-action="reveal-asset" data-id="${asset.id}">Finder</button>
         <button class="ghost" data-action="view-asset" data-id="${asset.id}">詳細</button>
         <button class="ghost danger-outline" data-action="delete-asset-history" data-id="${asset.id}">履歴削除</button>
@@ -2931,6 +3034,7 @@ function renderGallery() {
           </div>
           ${state.galleryFiltersCollapsed ? `<button class="ghost" data-action="toggle-gallery-filters">表示条件</button>` : ""}
         </div>
+        ${renderImageClassificationSummary(assets)}
         ${assets.length ? grouped.map(renderGalleryGroup).join("") : `<div class="empty">表示できる画像がありません。</div>`}
       </section>
     </div>
@@ -2998,6 +3102,7 @@ function renderGalleryAsset(asset) {
           <div class="meta">${escapeHtml(work?.name || "未分類")} / ${escapeHtml(subjectLabelForAsset(asset))}</div>
           ${dimensions ? `<div class="meta">${escapeHtml(dimensions)}</div>` : ""}
         </div>
+        ${renderImageClassificationStatus(asset)}
         <div class="card-actions">
           <button class="ghost" data-action="reveal-asset" data-id="${asset.id}">Finder</button>
           <button class="ghost" data-action="view-asset" data-id="${asset.id}">詳細</button>
@@ -5322,7 +5427,42 @@ async function trashImportedSourceFiles(created) {
   }
 }
 
+function renderImageProgressView() {
+  if (state.view === "library" || state.view === "gallery") render();
+}
+
+async function classifyAndRelocateAsset(asset, knownDataUrl = null, fallbackPromptFormat = state.importPromptFormat) {
+  if (!asset) return false;
+  let completed = false;
+  try {
+    await classifyAsset(asset, knownDataUrl, fallbackPromptFormat, { onProgress: renderImageProgressView });
+    await relocateAsset(asset);
+    completed = true;
+  } catch (error) {
+    markAssetClassificationFailed(asset, error);
+  } finally {
+    clearAssetClassificationProgress(asset);
+    await saveDb();
+    renderImageProgressView();
+  }
+  return completed;
+}
+
+async function classifyImportedAssets(created, fallbackPromptFormat) {
+  let errors = 0;
+  for (const item of created) {
+    const asset = byId(state.db.assets, item.asset.id);
+    if (!asset) continue;
+    const completed = await classifyAndRelocateAsset(asset, item.dataUrl, fallbackPromptFormat);
+    if (!completed) errors += 1;
+  }
+  toast(errors ? `AI判別が完了しました。${errors} 件は処理に失敗しました。` : "AI判別が完了しました。");
+  renderImageProgressView();
+}
+
 async function runImport() {
+  if (state.importIsRunning) return;
+  if (!state.importFiles.length) return;
   const workId = document.querySelector("#import-work")?.value || "";
   const selectedCharacterId = document.querySelector("#import-character")?.value || "";
   const selectedWorldItemId = document.querySelector("#import-world-item")?.value || "";
@@ -5332,7 +5472,10 @@ async function runImport() {
   const targetWorldItem = workWorldItemById(selectedWorldItemId);
   const targetWorkId = targetCharacter?.workId || targetWorldItem?.workId || workId || null;
   const targetWork = byId(state.db.works, targetWorkId);
+  const shouldAutoClassify = !targetCharacter && !targetWorldItem && state.importAutoClassify;
   const created = [];
+  state.importIsRunning = true;
+  render();
   try {
     for (const item of state.importFiles) {
       const uploaded = await postJson("/api/upload", {
@@ -5348,7 +5491,7 @@ async function runImport() {
         worldItemId: targetWorldItem?.id || null,
         name: item.name,
         url: uploaded.url,
-        status: targetCharacter || targetWorldItem ? "matched" : "unassigned",
+        status: targetCharacter || targetWorldItem ? "matched" : shouldAutoClassify ? "classifying" : "unassigned",
         confidence: targetCharacter || targetWorldItem ? 1 : null,
         aiPrompt: "",
         aiPromptFormat: targetCharacter ? promptFormatOf(targetCharacter) : state.importPromptFormat,
@@ -5359,6 +5502,9 @@ async function runImport() {
         aspectRatioText: item.imageInfo.aspectRatioText,
         createdAt: new Date().toISOString()
       };
+      if (shouldAutoClassify) {
+        setAssetClassificationProgress(asset, "queued", "AI判別APIへの送信順を待っています。");
+      }
       state.db.assets.unshift(asset);
       created.push({
         asset,
@@ -5373,24 +5519,35 @@ async function runImport() {
     }
     await saveDb();
     await trashImportedSourceFiles(created);
-    toast(`${created.length} 件を取り込みました。`);
     if (targetCharacter) {
       toast(`${created.length} 件を ${targetCharacter.name} に取り込みました。`);
     } else if (targetWorldItem) {
       toast(`${created.length} 件を ${worldItemCategoryLabel(targetWorldItem.category)}: ${targetWorldItem.name} に取り込みました。`);
-    } else if (state.importAutoClassify && created.length) {
-      for (const item of created) {
-        await classifyAsset(item.asset, item.dataUrl, state.importPromptFormat);
-        await relocateAsset(item.asset);
-      }
-      await saveDb();
-      toast("AI判別が完了しました。");
+    } else if (shouldAutoClassify && created.length) {
+      toastApiSubmitted("API送信を開始しました。反映までお待ちください。進行状況は画像整理画面から確認できます。");
+      state.importFiles = [];
+      state.importIsRunning = false;
+      state.view = "library";
+      state.libraryStatus = "all";
+      resetLibraryPage();
+      render();
+      classifyImportedAssets(created, state.importPromptFormat).catch((error) => {
+        toast(error.message);
+        renderImageProgressView();
+      });
+      return;
+    } else {
+      toast(`${created.length} 件を取り込みました。`);
     }
     state.importFiles = [];
+    state.importIsRunning = false;
     state.view = "library";
+    resetLibraryPage();
     render();
   } catch (error) {
+    state.importIsRunning = false;
     toast(error.message);
+    render();
   }
 }
 
@@ -5467,20 +5624,28 @@ function bindLibrary() {
   document.querySelectorAll("[data-action='classify-one']").forEach((button) => {
     button.addEventListener("click", async () => {
       const asset = byId(state.db.assets, button.dataset.id);
-      await classifyAsset(asset);
-      await relocateAsset(asset);
+      if (!asset || isAssetClassifying(asset)) return;
+      setAssetClassificationProgress(asset, "queued", "AI判別APIへの送信順を待っています。");
       await saveDb();
       render();
+      toastApiSubmitted("AI判別APIに送信しました。API返答待ちの状況は画像整理画面で確認できます。");
+      await classifyAndRelocateAsset(asset);
     });
   });
   document.querySelector("[data-action='classify-visible']")?.addEventListener("click", async () => {
-    const visible = getVisibleLibraryPageAssets().filter((asset) => !asset.worldItemId);
-    for (const asset of visible) {
-      await classifyAsset(asset);
-      await relocateAsset(asset);
+    const visible = getVisibleLibraryPageAssets().filter((asset) => !asset.worldItemId && !isAssetClassifying(asset));
+    if (!visible.length) {
+      toast("キャラ判別対象の画像がありません。");
+      return;
     }
+    visible.forEach((asset) => setAssetClassificationProgress(asset, "queued", "AI判別APIへの送信順を待っています。"));
     await saveDb();
-    toast(visible.length ? "表示中の画像を判別しました。" : "キャラ判別対象の画像がありません。");
+    render();
+    toastApiSubmitted("AI判別APIに送信しました。API返答待ちの状況は画像整理画面で確認できます。");
+    for (const asset of visible) {
+      await classifyAndRelocateAsset(asset);
+    }
+    toast("表示中の画像を判別しました。");
     render();
   });
   document.querySelector("[data-action='delete-visible-history']")?.addEventListener("click", async () => {
@@ -5856,13 +6021,19 @@ function bindVideoAgent() {
   if (isOpenRouterSeedanceBaseUrl()) loadOpenRouterVideoModels();
 }
 
-async function classifyAsset(asset, knownDataUrl = null, fallbackPromptFormat = state.importPromptFormat) {
+async function classifyAsset(asset, knownDataUrl = null, fallbackPromptFormat = state.importPromptFormat, options = {}) {
+  const onProgress = typeof options.onProgress === "function" ? options.onProgress : null;
+  const reportProgress = (stage, message) => {
+    setAssetClassificationProgress(asset, stage, message);
+    onProgress?.(asset);
+  };
   const candidates = charactersForWork(asset.workId);
   if (!candidates.length) {
     asset.status = "failed";
     asset.aiReason = "判別候補のキャラが登録されていません。";
     return;
   }
+  reportProgress("preparing", knownDataUrl ? "AI判別APIへの送信準備中です。" : "画像データを読み込み中です。");
   const dataUrl = knownDataUrl || await imageUrlToDataUrl(asset.url);
   const candidateText = candidates.map((char) => ({
     id: char.id,
@@ -5872,6 +6043,7 @@ async function classifyAsset(asset, knownDataUrl = null, fallbackPromptFormat = 
     memo: char.memo
   }));
   const fallbackInstruction = promptFormatInstruction(fallbackPromptFormat);
+  reportProgress("waiting", "APIへ送信済み。返答を待っています。");
   const content = await callOpenRouter({
     messages: [
       {
@@ -5892,6 +6064,7 @@ async function classifyAsset(asset, knownDataUrl = null, fallbackPromptFormat = 
     responseFormat: { type: "json_object" },
     maxTokens: 1300
   });
+  reportProgress("saving", "API返答を受け取りました。割当先を保存中です。");
   const result = parseAiJson(content);
   const match = result.characterId ? byId(candidates, result.characterId) : null;
   asset.characterId = match && Number(result.confidence) >= 0.55 ? match.id : null;
@@ -7050,7 +7223,9 @@ async function boot() {
     state.audioWorkId = state.selectedWorkId;
     state.videoWorkId = state.selectedWorkId;
     state.galleryWorkId = state.selectedWorkId;
+    const hadInterruptedClassifications = markInterruptedImageClassifications();
     await normalizeStoredUploads();
+    if (hadInterruptedClassifications) await saveDb();
     render();
     const activeJob = (state.db.videoJobs || []).find((job) => job.providerTaskId && activeVideoJobStatuses.includes(job.status));
     if (activeJob) window.setTimeout(() => pollSeedanceJob(activeJob.id), 1200);
