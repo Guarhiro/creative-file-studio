@@ -380,6 +380,10 @@ const activeSeedanceApiKey = (baseUrl = state.db?.settings?.seedanceBaseUrl) =>
   isOpenRouterSeedanceBaseUrl(baseUrl) ? (apiKey() || seedanceApiKey()) : seedanceApiKey();
 const seedanceProviderLabel = (baseUrl = state.db?.settings?.seedanceBaseUrl) =>
   isOpenRouterSeedanceBaseUrl(baseUrl) ? "OpenRouter" : isReplicateSeedanceBaseUrl(baseUrl) ? "Replicate" : "Seedance";
+const clientSourcePathForFile = (file) => {
+  const value = typeof file?.path === "string" ? file.path.trim() : "";
+  return value && (/^\/|^[a-zA-Z]:[\\/]|^~\//.test(value)) ? value : "";
+};
 
 const WORLD_SETTING_READING_TEMPLATE = `# 世界観設定資料＋キャラクター設定資料 読解ログ
 
@@ -1181,6 +1185,8 @@ function normalizeSettings() {
     seedanceBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3",
     seedanceModel: "dreamina-seedance-2-0-260128",
     seedanceResolution: "720p",
+    moveImportedSourcesToTrash: false,
+    importSourceRoot: "",
     videoPricing: {
       updatedAt: "",
       usdJpyRate: 155,
@@ -1208,6 +1214,8 @@ function normalizeSettings() {
   state.db.settings.elevenLabsLanguageCode = String(state.db.settings.elevenLabsLanguageCode || "ja").trim();
   state.db.settings.irodoriAppDir = String(state.db.settings.irodoriAppDir || "vendor/Irodori-TTS").trim() || "vendor/Irodori-TTS";
   state.db.settings.irodoriDefaults = normalizedIrodoriSettings(state.db.settings.irodoriDefaults);
+  state.db.settings.moveImportedSourcesToTrash = state.db.settings.moveImportedSourcesToTrash === true;
+  state.db.settings.importSourceRoot = String(state.db.settings.importSourceRoot || "").trim();
   state.db.settings.videoPricing = {
     updatedAt: "",
     usdJpyRate: 155,
@@ -2634,6 +2642,7 @@ function renderImport() {
   const importWorldItems = worldItemsForWork(importWorkId);
   const selectedImportCharacter = byId(state.db.characters, state.importCharacterId);
   const selectedImportWorldItem = workWorldItemById(state.importWorldItemId);
+  const trashSources = state.db.settings.moveImportedSourcesToTrash === true;
   return `
     <div class="split">
       <section class="panel">
@@ -2669,6 +2678,16 @@ function renderImport() {
               <option value="tags" ${state.importPromptFormat === "tags" ? "selected" : ""}>タグ</option>
             </select>
           </label>
+          <label class="full">取り込み元ファイル
+            <select id="move-imported-sources">
+              <option value="off" ${trashSources ? "" : "selected"}>元ファイルを残す</option>
+              <option value="on" ${trashSources ? "selected" : ""}>取り込み後にゴミ箱へ移動</option>
+            </select>
+          </label>
+          <label class="full">取り込み元フォルダ
+            <input id="import-source-root" value="${escapeHtml(state.db.settings.importSourceRoot || "")}" placeholder="/Users/guarhiro/Downloads">
+          </label>
+          <div class="full meta">ゴミ箱移動ON時は、元パスが取得できる環境ではそのファイルを、通常ブラウザでは取り込み元フォルダ内の同名・同サイズ・同内容のファイルだけ移動します。</div>
           <div class="full meta">${
             selectedImportCharacter
               ? `手動指定中: ${escapeHtml(selectedImportCharacter.name)} に直接保存します。`
@@ -5181,6 +5200,14 @@ function bindImport() {
   document.querySelector("#import-prompt-format")?.addEventListener("change", (event) => {
     state.importPromptFormat = event.target.value;
   });
+  document.querySelector("#move-imported-sources")?.addEventListener("change", async (event) => {
+    state.db.settings.moveImportedSourcesToTrash = event.target.value === "on";
+    await saveDb();
+  });
+  document.querySelector("#import-source-root")?.addEventListener("change", async (event) => {
+    state.db.settings.importSourceRoot = event.target.value.trim();
+    await saveDb();
+  });
   document.querySelector("[data-action='run-import']")?.addEventListener("click", runImport);
 }
 
@@ -5191,6 +5218,9 @@ async function loadImportFiles(files) {
     return {
       name: file.name,
       file,
+      sourcePath: clientSourcePathForFile(file),
+      relativePath: file.webkitRelativePath || "",
+      size: file.size,
       preview,
       imageInfo: await getImageInfo(preview)
     };
@@ -5198,10 +5228,37 @@ async function loadImportFiles(files) {
   render();
 }
 
+async function trashImportedSourceFiles(created) {
+  if (state.db.settings.moveImportedSourcesToTrash !== true || !created.length) return;
+  const results = [];
+  for (const item of created) {
+    const source = item.source || {};
+    const result = await postJson("/api/trash-import-source", {
+      uploadedUrl: item.asset.url,
+      sourcePath: source.sourcePath || "",
+      relativePath: source.relativePath || "",
+      sourceRoot: state.db.settings.importSourceRoot || "",
+      name: source.name || item.asset.name,
+      size: source.size || 0
+    });
+    results.push(result);
+  }
+  const movedCount = results.filter((item) => item.trashed).length;
+  const skippedCount = results.length - movedCount;
+  if (movedCount) {
+    toast(`元ファイル ${movedCount} 件をゴミ箱に移動しました。${skippedCount ? ` ${skippedCount} 件はスキップしました。` : ""}`);
+  } else if (skippedCount) {
+    const reason = results.find((item) => item.reason)?.reason || "元ファイルを特定できませんでした。";
+    toast(`元ファイルのゴミ箱移動はスキップされました。${reason}`);
+  }
+}
+
 async function runImport() {
   const workId = document.querySelector("#import-work")?.value || "";
   const selectedCharacterId = document.querySelector("#import-character")?.value || "";
   const selectedWorldItemId = document.querySelector("#import-world-item")?.value || "";
+  state.db.settings.moveImportedSourcesToTrash = document.querySelector("#move-imported-sources")?.value === "on";
+  state.db.settings.importSourceRoot = document.querySelector("#import-source-root")?.value.trim() || "";
   const targetCharacter = byId(state.db.characters, selectedCharacterId);
   const targetWorldItem = workWorldItemById(selectedWorldItemId);
   const targetWorkId = targetCharacter?.workId || targetWorldItem?.workId || workId || null;
@@ -5234,9 +5291,19 @@ async function runImport() {
         createdAt: new Date().toISOString()
       };
       state.db.assets.unshift(asset);
-      created.push({ asset, dataUrl: item.preview });
+      created.push({
+        asset,
+        dataUrl: item.preview,
+        source: {
+          name: item.name,
+          sourcePath: item.sourcePath || "",
+          relativePath: item.relativePath || "",
+          size: item.size || 0
+        }
+      });
     }
     await saveDb();
+    await trashImportedSourceFiles(created);
     toast(`${created.length} 件を取り込みました。`);
     if (targetCharacter) {
       toast(`${created.length} 件を ${targetCharacter.name} に取り込みました。`);

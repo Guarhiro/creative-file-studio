@@ -80,7 +80,9 @@ const emptyDb = {
     },
     seedanceBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3",
     seedanceModel: "dreamina-seedance-2-0-260128",
-    seedanceResolution: "720p"
+    seedanceResolution: "720p",
+    moveImportedSourcesToTrash: false,
+    importSourceRoot: ""
   },
   works: [],
   worldItems: [],
@@ -432,6 +434,132 @@ async function uniqueFilePath(dir, fileName) {
   }
 }
 
+function isInsideDir(filePath, dir) {
+  const relative = path.relative(path.resolve(dir), path.resolve(filePath));
+  return relative === "" || (relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function safeRelativePath(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const relative = path.normalize(raw);
+  if (!relative || path.isAbsolute(relative) || relative.startsWith("..")) return "";
+  return relative;
+}
+
+async function sha256File(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash("sha256");
+    const stream = createReadStream(filePath);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", reject);
+    stream.on("end", () => resolve(hash.digest("hex")));
+  });
+}
+
+async function moveFileToUserTrash(filePath) {
+  const home = process.env.HOME || "";
+  if (!home) throw new Error("ユーザーのホームフォルダが見つかりません。");
+  const trashDir = path.join(home, ".Trash");
+  await fs.mkdir(trashDir, { recursive: true });
+  const target = await uniqueFilePath(trashDir, path.basename(filePath));
+  await fs.rename(filePath, target);
+  return { method: "home-trash", trashPath: target };
+}
+
+async function moveFileToSystemTrash(filePath) {
+  const resolved = path.resolve(filePath);
+  if (process.platform === "darwin") {
+    const result = await runProcess([
+      "osascript",
+      "-e",
+      "on run argv",
+      "-e",
+      "tell application \"Finder\" to delete POSIX file (item 1 of argv)",
+      "-e",
+      "end run",
+      resolved
+    ], { timeoutMs: 30000 });
+    if (result.ok) return { method: "finder-trash" };
+    try {
+      return await moveFileToUserTrash(resolved);
+    } catch (fallbackError) {
+      throw new Error(`ゴミ箱への移動に失敗しました: ${result.stderr || result.stdout || result.error || fallbackError.message}`);
+    }
+  }
+  if (process.platform === "win32") {
+    const result = await runProcess([
+      "powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($args[0], 'OnlyErrorDialogs', 'SendToRecycleBin')",
+      resolved
+    ], { timeoutMs: 30000 });
+    if (result.ok) return { method: "recycle-bin" };
+    throw new Error(`ごみ箱への移動に失敗しました: ${result.stderr || result.stdout || result.error}`);
+  }
+  const result = await runProcess(["gio", "trash", resolved], { timeoutMs: 30000 });
+  if (result.ok) return { method: "gio-trash" };
+  throw new Error("この環境では元ファイルをゴミ箱へ移動できません。");
+}
+
+async function resolveImportSourceCandidate({ sourcePath, sourceRoot, relativePath, name }) {
+  const candidates = [];
+  const directPath = expandLocalPath(sourcePath);
+  if (directPath && path.isAbsolute(directPath)) {
+    candidates.push(path.resolve(directPath));
+  }
+  const rootPath = expandLocalPath(sourceRoot);
+  if (rootPath && path.isAbsolute(rootPath)) {
+    const safeRelative = safeRelativePath(relativePath);
+    if (safeRelative) candidates.push(path.resolve(rootPath, safeRelative));
+    if (name) candidates.push(path.resolve(rootPath, path.basename(String(name))));
+  }
+  const seen = new Set();
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    if (await isFile(candidate)) return candidate;
+  }
+  return "";
+}
+
+async function trashImportedSource(payload) {
+  const uploadedUrl = String(payload.uploadedUrl || "");
+  const uploadedPath = localMediaPathFromUrl(uploadedUrl);
+  if (!isInsideDir(uploadedPath, uploadDir)) {
+    return { ok: true, trashed: false, skipped: true, reason: "取り込み画像URLではありません。" };
+  }
+  const source = await resolveImportSourceCandidate(payload);
+  if (!source) {
+    return { ok: true, trashed: false, skipped: true, reason: "元ファイルの場所を特定できませんでした。" };
+  }
+  const sourcePath = path.resolve(source);
+  if (isInsideDir(sourcePath, dataDir)) {
+    return { ok: true, trashed: false, skipped: true, reason: "アプリのdataフォルダ内のファイルはゴミ箱へ移動しません。", path: sourcePath };
+  }
+  if (path.resolve(uploadedPath) === sourcePath) {
+    return { ok: true, trashed: false, skipped: true, reason: "取り込み後の保存先と同じファイルです。", path: sourcePath };
+  }
+  const [uploadedStat, sourceStat] = await Promise.all([fs.stat(uploadedPath), fs.stat(sourcePath)]);
+  if (!uploadedStat.isFile() || !sourceStat.isFile()) {
+    return { ok: true, trashed: false, skipped: true, reason: "対象がファイルではありません。", path: sourcePath };
+  }
+  const expectedSize = Number(payload.size);
+  if (Number.isFinite(expectedSize) && expectedSize > 0 && sourceStat.size !== expectedSize) {
+    return { ok: true, trashed: false, skipped: true, reason: "元ファイルのサイズが選択時と一致しません。", path: sourcePath };
+  }
+  if (sourceStat.size !== uploadedStat.size) {
+    return { ok: true, trashed: false, skipped: true, reason: "元ファイルと保存済み画像のサイズが一致しません。", path: sourcePath };
+  }
+  const [uploadedHash, sourceHash] = await Promise.all([sha256File(uploadedPath), sha256File(sourcePath)]);
+  if (uploadedHash !== sourceHash) {
+    return { ok: true, trashed: false, skipped: true, reason: "元ファイルと保存済み画像の内容が一致しません。", path: sourcePath };
+  }
+  const trashed = await moveFileToSystemTrash(sourcePath);
+  return { ok: true, trashed: true, skipped: false, path: sourcePath, ...trashed };
+}
+
 async function moveUploadToFolders(uploadUrl, workName, characterName) {
   const source = uploadPathFromUrl(uploadUrl);
   await fs.access(source);
@@ -524,6 +652,15 @@ async function handleMediaUpload(req, res) {
     kind: parsed.kind,
     mimeType: `${parsed.kind}/${parsed.subtype}`
   });
+}
+
+async function handleTrashImportSource(req, res) {
+  const payload = await readJson(req, 1024 * 1024);
+  try {
+    sendJson(res, 200, await trashImportedSource(payload));
+  } catch (error) {
+    sendJson(res, 200, { ok: false, trashed: false, skipped: true, reason: error.message });
+  }
 }
 
 async function handleMoveUpload(req, res) {
@@ -1778,6 +1915,10 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/media-upload") {
       return await handleMediaUpload(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/trash-import-source") {
+      return await handleTrashImportSource(req, res);
     }
 
     if (req.method === "POST" && url.pathname === "/api/move-upload") {
