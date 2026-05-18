@@ -7,6 +7,7 @@ const state = {
   selectedWorkId: null,
   galleryWorkId: null,
   galleryCharacterId: "",
+  gallerySelectedAssetIds: [],
   galleryFiltersCollapsed: false,
   importFiles: [],
   importAutoClassify: true,
@@ -2056,8 +2057,20 @@ async function revealUpload(asset) {
 }
 
 function isUploadUrlReferenced(url, excludingAssetId = null) {
+  return isUploadUrlReferencedOutsideAssetIds(url, excludingAssetId ? new Set([excludingAssetId]) : new Set());
+}
+
+function isUploadUrlReferencedOutsideAssetIds(url, excludingAssetIds = new Set()) {
+  if (!url) return false;
   return state.db.characters.some((char) => char.portraitUrl === url)
-    || state.db.assets.some((asset) => asset.id !== excludingAssetId && asset.url === url);
+    || state.db.works.some((work) => {
+      const setting = work.worldSetting;
+      if (!setting) return false;
+      return setting.sourceImageUrl === url
+        || (setting.sheets || []).some((sheet) => sheet.sourceImageUrl === url);
+    })
+    || (state.db.worldItems || []).some((item) => item.referenceUrl === url)
+    || state.db.assets.some((asset) => !excludingAssetIds.has(asset.id) && asset.url === url);
 }
 
 async function deleteAssetCompletely(asset) {
@@ -2065,7 +2078,7 @@ async function deleteAssetCompletely(asset) {
   const shared = isUploadUrlReferenced(asset.url, asset.id);
   const ok = window.confirm(
     shared
-      ? `「${asset.name}」の登録を削除します。この画像ファイルは他の登録またはキャラ立ち絵で使われているため、ファイル本体は残します。`
+      ? `「${asset.name}」の登録を削除します。この画像ファイルは他の登録、キャラ立ち絵、作品情報、その他情報で使われているため、ファイル本体は残します。`
       : `「${asset.name}」の登録と画像ファイル本体を削除します。この操作は元に戻せません。`
   );
   if (!ok) return;
@@ -2076,6 +2089,33 @@ async function deleteAssetCompletely(asset) {
   state.db.assets = state.db.assets.filter((item) => item.id !== asset.id);
   await saveDb();
   toast(shared ? "登録を削除しました。画像ファイル本体は残しました。" : "登録と画像ファイル本体を削除しました。");
+  render();
+}
+
+async function deleteGalleryAssetsCompletely(assets) {
+  if (!assets.length) return;
+  const deletingIds = new Set(assets.map((asset) => asset.id));
+  const deletingUrls = new Set();
+  for (const asset of assets) {
+    if (!asset.url || isUploadUrlReferencedOutsideAssetIds(asset.url, deletingIds)) continue;
+    deletingUrls.add(asset.url);
+  }
+  const sharedCount = assets.filter((asset) => !deletingUrls.has(asset.url)).length;
+  const ok = window.confirm(
+    `選択中の ${assets.length} 件の登録を完全削除します。`
+    + (deletingUrls.size ? `参照が残らない画像ファイル本体 ${deletingUrls.size} 件も削除します。` : "画像ファイル本体は他の登録、キャラ立ち絵、作品情報、その他情報で使われているため残します。")
+    + (sharedCount && deletingUrls.size ? ` ${sharedCount} 件分の共有ファイルは残します。` : "")
+    + "この操作は元に戻せません。"
+  );
+  if (!ok) return;
+
+  for (const url of deletingUrls) {
+    await postJson("/api/delete-upload", { url });
+  }
+  state.db.assets = state.db.assets.filter((asset) => !deletingIds.has(asset.id));
+  state.gallerySelectedAssetIds = (state.gallerySelectedAssetIds || []).filter((id) => !deletingIds.has(id));
+  await saveDb();
+  toast(`${assets.length} 件の登録を削除しました。${deletingUrls.size ? `画像ファイル本体 ${deletingUrls.size} 件も削除しました。` : "画像ファイル本体は残しました。"}`);
   render();
 }
 
@@ -2849,10 +2889,10 @@ function renderAssetCard(asset) {
 }
 
 function renderGallery() {
-  const galleryWorkId = state.galleryWorkId ?? state.selectedWorkId ?? "";
-  const assets = state.db.assets
-    .filter((asset) => !galleryWorkId || asset.workId === galleryWorkId)
-    .filter((asset) => !state.galleryCharacterId || (state.galleryCharacterId === "unassigned" ? !asset.characterId && !asset.worldItemId : assetSubjectKey(asset) === state.galleryCharacterId || asset.characterId === state.galleryCharacterId));
+  const galleryWorkId = currentGalleryWorkId();
+  const assets = getVisibleGalleryAssets();
+  const selectedAssets = selectedVisibleGalleryAssets(assets);
+  const allVisibleSelected = assets.length > 0 && selectedAssets.length === assets.length;
   const grouped = groupAssetsBySubject(assets);
   return `
     <div class="gallery-layout ${state.galleryFiltersCollapsed ? "filters-collapsed" : ""}">
@@ -2883,12 +2923,36 @@ function renderGallery() {
             <h2 class="section-title">${assets.length} 画像</h2>
             <div class="meta">${galleryWorkId ? escapeHtml(byId(state.db.works, galleryWorkId)?.name || "") : "全作品"}</div>
           </div>
+          <div class="group gallery-selection-actions">
+            <span class="meta">${selectedAssets.length ? `${selectedAssets.length} 件選択中` : "未選択"}</span>
+            <button class="ghost" data-action="gallery-select-all" ${assets.length && !allVisibleSelected ? "" : "disabled"}>画面内を全選択</button>
+            <button class="ghost" data-action="gallery-clear-selection" ${selectedAssets.length ? "" : "disabled"}>選択解除</button>
+            <button class="ghost danger-outline" data-action="delete-selected-gallery-assets" ${selectedAssets.length ? "" : "disabled"}>選択を完全削除</button>
+          </div>
           ${state.galleryFiltersCollapsed ? `<button class="ghost" data-action="toggle-gallery-filters">表示条件</button>` : ""}
         </div>
         ${assets.length ? grouped.map(renderGalleryGroup).join("") : `<div class="empty">表示できる画像がありません。</div>`}
       </section>
     </div>
   `;
+}
+
+function currentGalleryWorkId() {
+  return state.galleryWorkId ?? state.selectedWorkId ?? "";
+}
+
+function getVisibleGalleryAssets() {
+  const galleryWorkId = currentGalleryWorkId();
+  return state.db.assets
+    .filter((asset) => !galleryWorkId || asset.workId === galleryWorkId)
+    .filter((asset) => !state.galleryCharacterId || (state.galleryCharacterId === "unassigned" ? !asset.characterId && !asset.worldItemId : assetSubjectKey(asset) === state.galleryCharacterId || asset.characterId === state.galleryCharacterId));
+}
+
+function selectedVisibleGalleryAssets(assets = getVisibleGalleryAssets()) {
+  const visibleIds = new Set(assets.map((asset) => asset.id));
+  state.gallerySelectedAssetIds = (state.gallerySelectedAssetIds || []).filter((id) => visibleIds.has(id));
+  const selectedIds = new Set(state.gallerySelectedAssetIds);
+  return assets.filter((asset) => selectedIds.has(asset.id));
 }
 
 function groupAssetsBySubject(assets) {
@@ -2920,10 +2984,15 @@ function renderGalleryGroup(group) {
 function renderGalleryAsset(asset) {
   const work = workForAsset(asset);
   const dimensions = assetDimensionLabel(asset);
+  const selected = (state.gallerySelectedAssetIds || []).includes(asset.id);
   return `
-    <article class="asset-card">
+    <article class="asset-card ${selected ? "asset-selected" : ""}">
       <img class="asset-thumb" src="${escapeHtml(asset.url)}" alt="" loading="lazy" decoding="async">
       <div class="body">
+        <label class="asset-select">
+          <input type="checkbox" data-action="select-gallery-asset" data-id="${asset.id}" ${selected ? "checked" : ""}>
+          <span>選択</span>
+        </label>
         <div>
           <div class="asset-name">${escapeHtml(asset.name)}</div>
           <div class="meta">${escapeHtml(work?.name || "未分類")} / ${escapeHtml(subjectLabelForAsset(asset))}</div>
@@ -5462,11 +5531,46 @@ function bindGallery() {
     state.galleryWorkId = event.target.value || null;
     state.selectedWorkId = state.galleryWorkId;
     state.galleryCharacterId = "";
+    state.gallerySelectedAssetIds = [];
     render();
   });
   document.querySelector("#gallery-character")?.addEventListener("change", (event) => {
     state.galleryCharacterId = event.target.value;
+    state.gallerySelectedAssetIds = [];
     render();
+  });
+  document.querySelector("[data-action='gallery-select-all']")?.addEventListener("click", () => {
+    const ids = getVisibleGalleryAssets().map((asset) => asset.id);
+    state.gallerySelectedAssetIds = [...new Set([...(state.gallerySelectedAssetIds || []), ...ids])];
+    render();
+  });
+  document.querySelector("[data-action='gallery-clear-selection']")?.addEventListener("click", () => {
+    const visibleIds = new Set(getVisibleGalleryAssets().map((asset) => asset.id));
+    state.gallerySelectedAssetIds = (state.gallerySelectedAssetIds || []).filter((id) => !visibleIds.has(id));
+    render();
+  });
+  document.querySelector("[data-action='delete-selected-gallery-assets']")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    try {
+      button.disabled = true;
+      await deleteGalleryAssetsCompletely(selectedVisibleGalleryAssets());
+    } catch (error) {
+      toast(error.message);
+    } finally {
+      if (button.isConnected) button.disabled = false;
+    }
+  });
+  document.querySelectorAll("[data-action='select-gallery-asset']").forEach((input) => {
+    input.addEventListener("change", () => {
+      const ids = new Set(state.gallerySelectedAssetIds || []);
+      if (input.checked) {
+        ids.add(input.dataset.id);
+      } else {
+        ids.delete(input.dataset.id);
+      }
+      state.gallerySelectedAssetIds = [...ids];
+      render();
+    });
   });
   document.querySelectorAll("[data-action='view-asset']").forEach((button) => {
     button.addEventListener("click", () => openAssetModal(byId(state.db.assets, button.dataset.id)));

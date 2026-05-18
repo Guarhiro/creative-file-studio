@@ -355,6 +355,11 @@ button:disabled {
   contain-intrinsic-size: 420px;
 }
 
+.asset-card.asset-selected {
+  border-color: rgba(31, 138, 132, 0.55);
+  box-shadow: 0 0 0 2px rgba(31, 138, 132, 0.12);
+}
+
 .portrait,
 .asset-thumb {
   width: 100%;
@@ -385,6 +390,28 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.asset-select {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+  min-height: 28px;
+  color: var(--ink);
+}
+
+.asset-select input {
+  width: 16px;
+  min-width: 16px;
+  min-height: 16px;
+  height: 16px;
+  padding: 0;
+  accent-color: var(--teal);
+}
+
+.gallery-selection-actions {
+  justify-content: flex-end;
 }
 
 .card-actions {
