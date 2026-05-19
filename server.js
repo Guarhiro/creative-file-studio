@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import os from "node:os";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
@@ -17,7 +18,11 @@ const audioDir = path.join(dataDir, "audios");
 const dbPath = path.join(dataDir, "db.json");
 const seedanceGuidePath = path.join(__dirname, "Seedance2.0_Prompt_Guide_v2.md");
 const irodoriSetupScriptPath = path.join(__dirname, "scripts", "setup-irodori.sh");
+const rembgSetupScriptPath = path.join(__dirname, "scripts", "setup-rembg.sh");
+const rembgRemoveScriptPath = path.join(__dirname, "scripts", "rembg-remove.py");
 const irodoriVendorDir = path.join(__dirname, "vendor", "Irodori-TTS");
+const rembgVenvDir = path.join(__dirname, "vendor", "rembg-venv");
+const rembgModelsDir = path.join(dataDir, "rembg-models");
 const localIrodoriAppDir = "/Users/guarhiro/Documents/irodori TTSアプリ";
 const port = Number(process.env.PORT || 4173);
 
@@ -130,6 +135,7 @@ const emptyDb = {
 await fs.mkdir(uploadDir, { recursive: true });
 await fs.mkdir(videoDir, { recursive: true });
 await fs.mkdir(audioDir, { recursive: true });
+await fs.mkdir(rembgModelsDir, { recursive: true });
 
 async function readDb() {
   try {
@@ -450,6 +456,83 @@ async function resolveIrodoriWorkspace(configuredPath = "") {
   };
 }
 
+function rembgVenvPythonPath() {
+  return process.platform === "win32"
+    ? path.join(rembgVenvDir, "Scripts", "python.exe")
+    : path.join(rembgVenvDir, "bin", "python");
+}
+
+function rembgPythonCandidates(configuredPath = "") {
+  const candidates = [
+    configuredPath,
+    process.env.REMBG_PYTHON,
+    rembgVenvPythonPath(),
+    "python3",
+    "python"
+  ]
+    .map((candidate) => String(candidate || "").trim())
+    .filter(Boolean);
+  const seen = new Set();
+  return candidates.filter((candidate) => {
+    if (seen.has(candidate)) return false;
+    seen.add(candidate);
+    return true;
+  });
+}
+
+async function checkRembgPython(candidate) {
+  const result = await runProcess([
+    candidate,
+    "-c",
+    "import sys, rembg, PIL; print(sys.version.split()[0])"
+  ], {
+    timeoutMs: 20000,
+    env: { U2NET_HOME: rembgModelsDir }
+  });
+  if (!result.ok) {
+    return {
+      ok: false,
+      pythonPath: candidate,
+      error: result.stderr || result.stdout || result.error || "rembg を読み込めませんでした。",
+      result
+    };
+  }
+  return {
+    ok: true,
+    pythonPath: candidate,
+    pythonVersion: result.stdout.trim(),
+    result
+  };
+}
+
+async function resolveRembgPython(configuredPath = "") {
+  const attempts = [];
+  for (const candidate of rembgPythonCandidates(configuredPath)) {
+    const checked = await checkRembgPython(candidate);
+    attempts.push(checked);
+    if (checked.ok) {
+      return {
+        found: true,
+        pythonPath: checked.pythonPath,
+        pythonVersion: checked.pythonVersion,
+        attempts,
+        setupScript: rembgSetupScriptPath,
+        venvDir: rembgVenvDir,
+        modelsDir: rembgModelsDir
+      };
+    }
+  }
+  return {
+    found: false,
+    pythonPath: "",
+    attempts,
+    setupScript: rembgSetupScriptPath,
+    venvDir: rembgVenvDir,
+    modelsDir: rembgModelsDir,
+    installHint: "画像編集画面の「rembgをセットアップ」を押すか、ターミナルで scripts/setup-rembg.sh を実行してください。"
+  };
+}
+
 function boundedNumber(value, fallback, min, max, integer = false) {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
@@ -745,6 +828,109 @@ async function handleRemoveBackground(req, res) {
     });
   } catch (error) {
     sendJson(res, 502, { error: `remove.bg への接続に失敗しました: ${error.message}` });
+  }
+}
+
+async function handleRembgStatus(req, res) {
+  const { pythonPath = "" } = await readJson(req, 256 * 1024).catch(() => ({}));
+  sendJson(res, 200, await resolveRembgPython(pythonPath));
+}
+
+async function handleRembgSetup(req, res) {
+  const before = await resolveRembgPython(rembgVenvPythonPath());
+  if (before.found) {
+    return sendJson(res, 200, {
+      ok: true,
+      skipped: true,
+      status: before,
+      result: null,
+      message: "rembg はすでにセットアップ済みです。"
+    });
+  }
+  const exists = await isFile(rembgSetupScriptPath);
+  if (!exists) return sendJson(res, 404, { error: "rembg セットアップスクリプトが見つかりません。" });
+  const result = await runProcess(["bash", rembgSetupScriptPath], {
+    cwd: __dirname,
+    timeoutMs: 45 * 60 * 1000,
+    env: { U2NET_HOME: rembgModelsDir }
+  });
+  const status = await resolveRembgPython(rembgVenvPythonPath());
+  const detail = result.stderr || result.stdout || result.error || status.attempts?.[0]?.error || "unknown error";
+  sendJson(res, result.ok && status.found ? 200 : 500, {
+    ok: result.ok && status.found,
+    error: result.ok && status.found ? "" : `rembg セットアップに失敗しました: ${detail}`,
+    status,
+    result
+  });
+}
+
+async function handleRembgRemove(req, res) {
+  const body = await readJson(req, 64 * 1024 * 1024);
+  let parsed;
+  try {
+    parsed = parseDataUrl(body.dataUrl, ["image"]);
+  } catch {
+    return sendJson(res, 400, { error: "背景除去する画像の data URL が必要です。" });
+  }
+  const status = await resolveRembgPython(body.pythonPath || "");
+  if (!status.found) {
+    return sendJson(res, 400, {
+      error: "rembg が見つかりません。先に「rembgをセットアップ」を実行してください。",
+      status
+    });
+  }
+
+  const model = String(body.model || "isnet-general-use").trim() || "isnet-general-use";
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "creative-file-studio-rembg-"));
+  const inputPath = path.join(tempDir, safeOriginalFileName(body.name, parsed.ext, "input"));
+  const outputPath = path.join(tempDir, "output.png");
+  try {
+    await fs.writeFile(inputPath, Buffer.from(parsed.base64, "base64"));
+    const args = [
+      status.pythonPath,
+      rembgRemoveScriptPath,
+      inputPath,
+      outputPath,
+      "--model",
+      model
+    ];
+    if (body.alphaMatting) args.push("--alpha-matting");
+    if (body.postProcessMask) args.push("--post-process-mask");
+    const result = await runProcess(args, {
+      cwd: __dirname,
+      timeoutMs: 20 * 60 * 1000,
+      env: {
+        U2NET_HOME: rembgModelsDir,
+        PYTHONUNBUFFERED: "1"
+      }
+    });
+    if (!result.ok) {
+      return sendJson(res, 500, {
+        error: `rembg 背景除去に失敗しました: ${result.stderr || result.stdout || result.error}`,
+        result,
+        status
+      });
+    }
+    if (!await isFile(outputPath)) {
+      return sendJson(res, 500, { error: "rembg の出力PNGが見つかりません。", result, status });
+    }
+    const outputBuffer = await fs.readFile(outputPath);
+    sendJson(res, 200, {
+      dataUrl: `data:image/png;base64,${outputBuffer.toString("base64")}`,
+      mimeType: "image/png",
+      provider: "rembg",
+      model,
+      size: outputBuffer.length,
+      result: {
+        stdout: result.stdout,
+        stderr: result.stderr,
+        command: result.command
+      }
+    });
+  } catch (error) {
+    sendJson(res, 502, { error: `rembg 背景除去に失敗しました: ${error.message}` });
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -2954,6 +3140,18 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/remove-bg") {
       return await handleRemoveBackground(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/rembg/status") {
+      return await handleRembgStatus(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/rembg/setup") {
+      return await handleRembgSetup(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/rembg/remove") {
+      return await handleRembgRemove(req, res);
     }
 
     if (req.method === "POST" && url.pathname === "/api/trash-import-source") {

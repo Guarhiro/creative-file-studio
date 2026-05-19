@@ -42,9 +42,15 @@ const state = {
   imageEditTolerance: 42,
   imageEditFeather: 18,
   imageEditChromaColor: "#ffffff",
+  imageEditRembgModel: "isnet-general-use",
+  imageEditRembgAlphaMatting: false,
+  imageEditRembgPostProcess: true,
   imageEditInputFile: null,
   imageEditResult: null,
   imageEditIsRunning: false,
+  rembgStatus: "idle",
+  rembgInfo: null,
+  rembgError: "",
   videoWorkId: null,
   videoCharacterId: "",
   videoReferenceKind: "all",
@@ -129,8 +135,20 @@ const audioProviders = [
 ];
 
 const imageEditProviders = [
-  ["local", "ローカル"],
+  ["local", "簡易ローカル"],
+  ["rembg", "ローカルAI rembg"],
   ["removebg", "クラウド remove.bg"]
+];
+
+const rembgModelOptions = [
+  ["isnet-general-use", "IS-Net General（高精度）"],
+  ["isnet-anime", "IS-Net Anime（イラスト向け）"],
+  ["birefnet-general", "BiRefNet General（高精度）"],
+  ["birefnet-general-lite", "BiRefNet Lite（軽量）"],
+  ["u2net", "U2-Net"],
+  ["u2netp", "U2-Net P（軽量）"],
+  ["u2net_human_seg", "U2-Net Human（人物向け）"],
+  ["silueta", "Silueta（軽量）"]
 ];
 
 const imageEditBackgroundModes = [
@@ -2475,6 +2493,9 @@ async function postJson(url, body, method = "POST") {
 	    if (url.startsWith("/api/remove-bg") && /Method not allowed|Not found/i.test(text)) {
 	      throw new Error("画像編集クラウドAPIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
 	    }
+	    if (url.startsWith("/api/rembg/") && /Method not allowed|Not found/i.test(text)) {
+	      throw new Error("rembg APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
+	    }
 	    const error = new Error(readableError(payload.error) || readableError(payload) || text || `${response.status} ${response.statusText}`);
 	    error.payload = payload;
 	    error.responseText = text;
@@ -3577,6 +3598,11 @@ function normalizedImageEditProvider(value) {
   return imageEditProviders.some(([provider]) => provider === value) ? value : "local";
 }
 
+function normalizedRembgModel(value) {
+  const text = String(value || "").trim();
+  return rembgModelOptions.some(([model]) => model === text) ? text : "isnet-general-use";
+}
+
 function normalizedImageEditBackgroundMode(value) {
   return imageEditBackgroundModes.some(([mode]) => mode === value) ? value : "auto";
 }
@@ -3681,6 +3707,22 @@ function renderImageEditSourceOptions(sources, selectedKey) {
   return options.length ? options.join("") : `<option value="">画像がありません</option>`;
 }
 
+function rembgStatusText() {
+  if (state.rembgStatus === "loading") return "rembgの状態を確認中です。";
+  if (state.rembgStatus === "installing") return "rembgをセットアップ中です。初回は数分かかることがあります。";
+  if (state.rembgInfo?.found) {
+    return `rembg使用可能: Python ${state.rembgInfo.pythonVersion || ""} / ${state.rembgInfo.pythonPath || ""}`;
+  }
+  return state.rembgError || "rembgは未確認です。初回は状態確認またはセットアップを実行してください。モデルは初回処理時にダウンロードされます。";
+}
+
+function renderRembgModelOptions(selectedValue) {
+  const selected = normalizedRembgModel(selectedValue);
+  return rembgModelOptions
+    .map(([value, label]) => `<option value="${escapeHtml(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(label)}</option>`)
+    .join("");
+}
+
 function renderImageEditor() {
   const work = byId(state.db.works, state.imageEditWorkId) || byId(state.db.works, state.selectedWorkId) || state.db.works[0] || null;
   if (!state.imageEditWorkId && work) state.imageEditWorkId = work.id;
@@ -3695,6 +3737,7 @@ function renderImageEditor() {
   const provider = normalizedImageEditProvider(state.imageEditProvider);
   const mode = normalizedImageEditBackgroundMode(state.imageEditBackgroundMode);
   const result = state.imageEditResult;
+  const isRembgBusy = state.rembgStatus === "loading" || state.rembgStatus === "installing";
   return `
     <div class="video-layout image-edit-layout">
       <section class="panel">
@@ -3725,6 +3768,23 @@ function renderImageEditor() {
             <label>remove.bg APIキー
               <input id="image-edit-removebg-key" type="password" value="${escapeHtml(removeBgApiKey())}" placeholder="remove.bg API key">
             </label>
+          ` : provider === "rembg" ? `
+            <label class="full">rembgモデル
+              <select id="image-edit-rembg-model">${renderRembgModelOptions(state.imageEditRembgModel)}</select>
+            </label>
+            <label class="check-row">
+              <input id="image-edit-rembg-post-process" type="checkbox" ${state.imageEditRembgPostProcess ? "checked" : ""}>
+              <span>マスク後処理</span>
+            </label>
+            <label class="check-row">
+              <input id="image-edit-rembg-alpha-matting" type="checkbox" ${state.imageEditRembgAlphaMatting ? "checked" : ""}>
+              <span>Alpha matting</span>
+            </label>
+            <div class="full toolbar">
+              <button class="ghost" data-action="check-rembg" ${isRembgBusy ? "disabled" : ""}>rembg確認</button>
+              <button class="ghost" data-action="setup-rembg" ${isRembgBusy ? "disabled" : ""}>rembgをセットアップ</button>
+            </div>
+            <div class="full meta">${escapeHtml(rembgStatusText())}</div>
           ` : `
             <label>背景
               <select id="image-edit-background-mode">
@@ -3778,6 +3838,9 @@ function imageEditControlsFromDom() {
     tolerance: imageEditToleranceValue(document.querySelector("#image-edit-tolerance")?.value || state.imageEditTolerance),
     feather: imageEditFeatherValue(document.querySelector("#image-edit-feather")?.value || state.imageEditFeather),
     chromaColor: document.querySelector("#image-edit-chroma-color")?.value || state.imageEditChromaColor || "#ffffff",
+    rembgModel: normalizedRembgModel(document.querySelector("#image-edit-rembg-model")?.value || state.imageEditRembgModel),
+    rembgAlphaMatting: document.querySelector("#image-edit-rembg-alpha-matting")?.checked ?? state.imageEditRembgAlphaMatting,
+    rembgPostProcess: document.querySelector("#image-edit-rembg-post-process")?.checked ?? state.imageEditRembgPostProcess,
     removeBgKey: document.querySelector("#image-edit-removebg-key")?.value.trim() || removeBgApiKey()
   };
 }
@@ -3791,6 +3854,9 @@ function rememberImageEditControls(controls = imageEditControlsFromDom()) {
   state.imageEditTolerance = imageEditToleranceValue(controls.tolerance);
   state.imageEditFeather = imageEditFeatherValue(controls.feather);
   state.imageEditChromaColor = controls.chromaColor || "#ffffff";
+  state.imageEditRembgModel = normalizedRembgModel(controls.rembgModel);
+  state.imageEditRembgAlphaMatting = Boolean(controls.rembgAlphaMatting);
+  state.imageEditRembgPostProcess = Boolean(controls.rembgPostProcess);
   if (controls.removeBgKey) localStorage.setItem("removebg_api_key", controls.removeBgKey);
 }
 
@@ -3945,7 +4011,7 @@ async function runImageEdit() {
   try {
     const dataUrl = await sourceDataUrlForImageEdit(source);
     let output;
-    let providerLabel = "ローカル";
+    let providerLabel = "簡易ローカル";
     if (controls.provider === "removebg") {
       if (!controls.removeBgKey) throw new Error("remove.bg API キーを入力してください。");
       localStorage.setItem("removebg_api_key", controls.removeBgKey);
@@ -3956,13 +4022,23 @@ async function runImageEdit() {
         name: source.name || "image.png"
       });
       providerLabel = "remove.bg";
+    } else if (controls.provider === "rembg") {
+      toastApiSubmitted("rembgでローカルAI背景除去を開始しました。初回モデル読み込み時は時間がかかります。");
+      output = await postJson("/api/rembg/remove", {
+        dataUrl,
+        name: source.name || "image.png",
+        model: controls.rembgModel,
+        alphaMatting: controls.rembgAlphaMatting,
+        postProcessMask: controls.rembgPostProcess
+      });
+      providerLabel = `rembg / ${output.model || controls.rembgModel}`;
     } else {
       output = await removeBackgroundLocally(dataUrl, controls);
     }
     const info = await getImageInfo(output.dataUrl);
     state.imageEditResult = {
       dataUrl: output.dataUrl,
-      name: transparentPngName(source.name, controls.provider === "removebg" ? "removebg" : "transparent"),
+      name: transparentPngName(source.name, controls.provider === "removebg" ? "removebg" : controls.provider === "rembg" ? "rembg" : "transparent"),
       sourceName: source.name || "",
       provider: controls.provider,
       providerLabel,
@@ -4023,6 +4099,52 @@ async function saveImageEditResult() {
   }
 }
 
+async function checkRembgStatus({ silent = false } = {}) {
+  state.rembgStatus = "loading";
+  state.rembgError = "";
+  if (!silent) render();
+  try {
+    const result = await postJson("/api/rembg/status", {});
+    state.rembgInfo = result;
+    state.rembgStatus = result.found ? "ready" : "missing";
+    state.rembgError = result.found ? "" : (result.installHint || "rembgが見つかりません。");
+    if (!silent) {
+      render();
+      toast(result.found ? "rembgを利用できます。" : "rembgはまだセットアップされていません。");
+    }
+    return result;
+  } catch (error) {
+    state.rembgStatus = "failed";
+    state.rembgError = error.message;
+    if (!silent) {
+      render();
+      toast(error.message);
+    }
+    return null;
+  }
+}
+
+async function setupRembg() {
+  const ok = window.confirm("rembgを vendor/rembg-venv にセットアップします。Pythonパッケージとモデル実行環境をダウンロードするため、初回は時間がかかります。");
+  if (!ok) return;
+  state.rembgStatus = "installing";
+  state.rembgError = "";
+  render();
+  try {
+    const result = await postJson("/api/rembg/setup", {});
+    state.rembgInfo = result.status || result;
+    state.rembgStatus = state.rembgInfo?.found ? "ready" : "missing";
+    state.rembgError = result.error || "";
+    render();
+    toast(state.rembgInfo?.found ? "rembgセットアップが完了しました。" : (result.error || "rembgセットアップを確認できませんでした。"));
+  } catch (error) {
+    state.rembgStatus = "failed";
+    state.rembgError = error.message;
+    render();
+    toast(error.message);
+  }
+}
+
 function bindImageEditor() {
   const persist = () => rememberImageEditControls();
   document.querySelector("#image-edit-work")?.addEventListener("change", (event) => {
@@ -4052,7 +4174,15 @@ function bindImageEditor() {
   });
   document.querySelector("#image-edit-provider")?.addEventListener("change", () => {
     persist();
+    if (state.imageEditProvider === "rembg" && state.rembgStatus === "idle") {
+      checkRembgStatus({ silent: true }).then(() => {
+        if (state.view === "edit") render();
+      });
+    }
     render();
+  });
+  ["#image-edit-rembg-model", "#image-edit-rembg-alpha-matting", "#image-edit-rembg-post-process"].forEach((selector) => {
+    document.querySelector(selector)?.addEventListener("change", persist);
   });
   ["#image-edit-background-mode", "#image-edit-tolerance", "#image-edit-feather", "#image-edit-chroma-color"].forEach((selector) => {
     document.querySelector(selector)?.addEventListener("input", persist);
@@ -4091,6 +4221,8 @@ function bindImageEditor() {
   });
   document.querySelector("[data-action='run-image-edit']")?.addEventListener("click", runImageEdit);
   document.querySelector("[data-action='save-image-edit-result']")?.addEventListener("click", saveImageEditResult);
+  document.querySelector("[data-action='check-rembg']")?.addEventListener("click", () => checkRembgStatus());
+  document.querySelector("[data-action='setup-rembg']")?.addEventListener("click", setupRembg);
 }
 
 function mediaKindFromFile(file) {

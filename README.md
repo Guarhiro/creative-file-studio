@@ -1,7 +1,7 @@
 # Creative File Studio
 
 ローカル環境で動く、創作支援向けのファイル管理アプリです。作品、キャラ設定、取り込み画像、世界観資料、生成プロンプト、画像生成、画像編集、音声、動画をまとめて扱えます。
-画像生成はComfyUI互換APIでローカルGPUとクラウドGPUを切り替え、画像編集はローカル処理またはremove.bgクラウドAPI、動画生成は公式Seedance APIまたはOpenRouterの動画モデル、音声生成はOpenRouter TTS、ElevenLabs、Voicebox、ローカル Irodori-TTS を切り替えて使えます。
+画像生成はComfyUI互換APIでローカルGPUとクラウドGPUを切り替え、画像編集は簡易ローカル処理、ローカルAI rembg、remove.bgクラウドAPIを切り替え、動画生成は公式Seedance APIまたはOpenRouterの動画モデル、音声生成はOpenRouter TTS、ElevenLabs、Voicebox、ローカル Irodori-TTS を切り替えて使えます。
 
 ## 起動
 
@@ -92,6 +92,8 @@ ZIPに含めるもの:
 - `update-mac.command`
 - `update-windows.bat`
 - `scripts/setup-irodori.sh`
+- `scripts/setup-rembg.sh`
+- `scripts/rembg-remove.py`
 - `public/`
 - `data/.gitkeep`
 
@@ -101,6 +103,7 @@ ZIPに含めないもの:
 - `data/uploads/`
 - `data/audios/`
 - `data/videos/`
+- `data/rembg-models/`
 - `vendor/`
 - `.env`
 - `node_modules/`
@@ -167,7 +170,9 @@ ZIPに含めないもの:
 
 - 画像一覧、キャラ立ち絵、その他情報、生成画像、追加アップロード画像から編集元を選択
 - 背景除去と透過PNG変換に対応
-- ローカル処理では端末内のCanvasで背景色を推定し、許容値と境界ぼかしを調整
+- 簡易ローカル処理では端末内のCanvasで背景色を推定し、許容値と境界ぼかしを調整
+- ローカルAI rembgでは `isnet-general-use`、`isnet-anime`、`birefnet-general`、`u2net_human_seg` などのモデルを選択
+- rembg未導入環境では画像編集画面から `vendor/rembg-venv` にセットアップ可能
 - クラウド処理ではremove.bg APIを選択し、透過PNGを取得
 - 編集結果を `data/uploads/<作品名>/_画像編集/` に保存し、画像一覧と画像整理に自動登録
 - 保存時にキャラを指定すると、そのキャラの画像として登録
@@ -204,6 +209,7 @@ ZIPに含めないもの:
 - 画像判別、テキスト生成、世界観読み込み、画像生成エージェント、動画エージェント、音声エージェントのモデルを個別に設定
 - OpenRouterのモデル一覧と動画モデル対応設定を再取得
 - ComfyUIのローカルURL、クラウドURL、workflow、Node ID、既定生成値、LoRA、workflow表示モード、モデル候補取得、事前チェック、プリセットを設定
+- 画像編集画面からローカルAI rembgの状態確認とセットアップ
 - 動画生成プロバイダーを公式 / OpenRouter / Replicateから選択
 - VoiceboxのAPI URL、既定プロファイル、言語、Model sizeを設定
 - Irodori-TTSの既存フォルダ指定、または `scripts/setup-irodori.sh` による取得
@@ -218,6 +224,7 @@ ZIPに含めないもの:
 - 生成完了後に保存された音声: `data/audios/`
 - 動画生成用に追加した素材: `data/uploads/作品名/_動画生成_画像/`、`_動画生成_動画/`、`_動画生成_音声/`
 - 生成完了後に保存された動画: `data/videos/`
+- rembgモデルキャッシュ: `data/rembg-models/`
 - OpenRouter API キー: ブラウザの localStorage
 - ElevenLabs API キー: ブラウザの localStorage
 - Seedance API キー: ブラウザの localStorage
