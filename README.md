@@ -1,7 +1,7 @@
 # Creative File Studio
 
-ローカル環境で動く、創作支援向けのファイル管理アプリです。作品、キャラ設定、取り込み画像、世界観資料、生成プロンプト、音声、動画をまとめて扱えます。
-動画生成は公式Seedance APIまたはOpenRouterの動画モデル、音声生成はOpenRouter TTS、ElevenLabs、ローカル Irodori-TTS を切り替えて使えます。
+ローカル環境で動く、創作支援向けのファイル管理アプリです。作品、キャラ設定、取り込み画像、世界観資料、生成プロンプト、画像生成、音声、動画をまとめて扱えます。
+画像生成はComfyUI互換APIでローカルGPUとクラウドGPUを切り替え、動画生成は公式Seedance APIまたはOpenRouterの動画モデル、音声生成はOpenRouter TTS、ElevenLabs、Voicebox、ローカル Irodori-TTS を切り替えて使えます。
 
 ## 起動
 
@@ -145,6 +145,20 @@ ZIPに含めないもの:
 - キャラ設定に合わせて自然言語またはタグ形式で出力
 - キャラメモを加味するかどうかを切り替え
 
+### 画像生成
+
+- 作品情報、世界観、キャラ情報を読んだ画像生成エージェント
+- ComfyUI互換APIに送信し、ローカルGPUまたはクラウドGPUを生成ごとに選択
+- API Format workflow JSONを設定し、Positive、Negative、Seed、Size、Steps、CFG、Sampler、CheckpointのNode IDを指定
+- workflow JSONはJSON編集とビジュアル確認を切り替え、Node IDの差し替え対象や接続を確認
+- 幅、高さ、Steps、CFG、Sampler、Scheduler、Batch、Seed、Checkpointを画面から指定
+- LoRA名、Model強度、CLIP強度を指定し、生成時にComfyUIのLoraLoaderとして読み込み
+- ComfyUIのCheckpoint / LoRA一覧を取得し、入力候補として表示
+- 生成前にworkflowのNode ID、LoRA接続、Checkpoint / LoRA名を事前チェック
+- 生成待ちジョブの状態確認、完成画像の自動保存
+- 完成画像を `data/uploads/<作品名>/_画像生成/` に保存し、画像一覧と画像整理に自動登録
+- キャラ指定ありで生成した画像は、そのキャラの画像として保存
+
 ### 動画生成
 
 - 作品情報、世界観、キャラ情報、参照素材を読んだ動画生成エージェント
@@ -163,31 +177,36 @@ ZIPに含めないもの:
 ### 音声生成
 
 - 作品情報、世界観、キャラ情報を読んだ音声生成エージェント
-- OpenRouter TTS、ElevenLabs、ローカル Irodori-TTS を切り替え
+- OpenRouter TTS、ElevenLabs、Voicebox、ローカル Irodori-TTS を切り替え
 - OpenRouterでは `google/gemini-3.1-flash-tts-preview` によるTTS生成
 - ElevenLabsではVoice ID、モデル、出力形式、Stability、Similarity、Style、Speed、Speaker Boost、言語コード、Seedを指定
+- VoiceboxではローカルAPI URL、プロファイル、言語、Model size、Seed、演技指示を指定
 - Irodori-TTSではVoiceDesign/Reference、Steps、候補数、Seed、CFG、デバイス、精度、参照音声を指定
 - 生成音声をキャラ情報に紐づけ、作品ページのキャラカードから確認
 - キャラに紐づいた生成音声を、動画生成の参照素材「音声」として選択
 
 ### 設定とモデル管理
 
-- OpenRouter APIキー、ElevenLabs APIキー、Seedance/Replicate APIキーをブラウザのlocalStorageに保存
-- 画像判別、テキスト生成、世界観読み込み、動画エージェント、音声エージェントのモデルを個別に設定
+- OpenRouter APIキー、ElevenLabs APIキー、Seedance/Replicate APIキー、ComfyUIクラウドAPIキーをブラウザのlocalStorageに保存
+- 画像判別、テキスト生成、世界観読み込み、画像生成エージェント、動画エージェント、音声エージェントのモデルを個別に設定
 - OpenRouterのモデル一覧と動画モデル対応設定を再取得
+- ComfyUIのローカルURL、クラウドURL、workflow、Node ID、既定生成値、LoRA、workflow表示モード、モデル候補取得、事前チェックを設定
 - 動画生成プロバイダーを公式 / OpenRouter / Replicateから選択
+- VoiceboxのAPI URL、既定プロファイル、言語、Model sizeを設定
 - Irodori-TTSの既存フォルダ指定、または `scripts/setup-irodori.sh` による取得
 
 ## 保存場所
 
 - 作品、キャラ、画像メタデータ: `data/db.json`
 - 取り込み画像、立ち絵: `data/uploads/作品名/キャラ名/`
+- 生成完了後に保存された画像: `data/uploads/作品名/_画像生成/`
 - 生成完了後に保存された音声: `data/audios/`
 - 動画生成用に追加した素材: `data/uploads/作品名/_動画生成_画像/`、`_動画生成_動画/`、`_動画生成_音声/`
 - 生成完了後に保存された動画: `data/videos/`
 - OpenRouter API キー: ブラウザの localStorage
 - ElevenLabs API キー: ブラウザの localStorage
 - Seedance API キー: ブラウザの localStorage
+- ComfyUI クラウドAPI キー: ブラウザの localStorage
 
 既存の `data/uploads/` 直下にある画像は、アプリ読み込み時に現在の作品・キャラ割当に合わせて自動で移動されます。未割当画像は `作品名/_未割当/` に入ります。
 
@@ -216,10 +235,26 @@ ZIPに含めないもの:
 - 画像判別モデル: 取り込み画像のキャラ判定に使います。vision 対応モデルを指定します。
 - テキスト生成モデル: 通常のテキスト生成に使います。
 - 世界観読み込みモデル: 設定シート画像、Markdown/Textファイル、直接入力テキストの読解に使います。vision と長文JSONに強いモデルが向いています。
+- 画像生成エージェントモデル: 画像生成画面のチャットエージェントに使います。
 - 動画エージェントモデル: 動画生成画面のチャットエージェントに使います。参照画像を読むため、vision 対応モデルが向いています。
-- 音声エージェントモデル: 音声生成画面のチャットエージェントに使います。実際の音声生成は、音声生成画面で選んだ OpenRouter TTS、ElevenLabs、または Irodori-TTS で行います。
+- 音声エージェントモデル: 音声生成画面のチャットエージェントに使います。実際の音声生成は、音声生成画面で選んだ OpenRouter TTS、ElevenLabs、Voicebox、または Irodori-TTS で行います。
 
 モデル一覧は設定画面の「モデル一覧を再取得」で OpenRouter から読み込みます。
+
+## 画像生成
+
+設定画面の ComfyUI セクションで以下を設定します。
+
+- 既定GPU: ローカルGPUまたはクラウドGPUを選びます。画像生成画面でも生成ごとに切り替えできます。
+- ローカルComfyUI URL: 例 `http://127.0.0.1:8188`
+- クラウドComfyUI URL: ComfyUI互換の `/prompt`、`/history/{prompt_id}`、`/view`、`/system_stats` を公開しているURLを指定します。
+- クラウドAPIキー: 必要な場合だけ保存します。送信時は `Authorization: Bearer` と `x-api-key` の両方に入ります。
+- Workflow JSON: ComfyUIの `Save (API Format)` で保存したJSONを貼り付けます。
+- Node ID: Positive、Negative、Seed、Size、Steps、CFG、Sampler、Checkpointの入力を書き換えるノード番号を指定します。
+
+画像生成画面では、作品、キャラ、GPU、幅、高さ、Steps、CFG、Sampler、Scheduler、Batch、Seed、Checkpointを指定できます。エージェントに相談してプロンプト案を作ることも、プロンプト欄へ直接入力することもできます。
+
+生成が完了すると、画像は `data/uploads/<作品名>/_画像生成/` に保存され、画像一覧と画像整理に自動登録されます。キャラ指定ありで生成した場合は、そのキャラの画像として登録されます。
 
 ## 音声生成
 
@@ -229,6 +264,7 @@ ZIPに含めないもの:
 
 - OpenRouter / Gemini TTS: `google/gemini-3.1-flash-tts-preview` を使います。
 - ElevenLabs: 指定した Voice ID とモデルでElevenLabs APIを呼び出し、音声ファイルを保存します。
+- Voicebox: この端末またはリモートで起動したVoicebox APIへ接続し、保存済みプロファイルの声で音声ファイルを保存します。
 - Irodori-TTS: この端末上の Irodori-TTS を `uv run python infer.py` で実行し、WAVを保存します。
 
 OpenRouter選択時:
@@ -248,6 +284,14 @@ ElevenLabs選択時:
 - 出力形式: MP3、WAV、PCMを選べます。PCMはアプリ内で再生しやすいようWAVに変換して保存します。
 - 演技指示: 音声生成画面で声質、感情、速度、間、距離感をメモとして指定でき、生成履歴にも保存されます。
 - Voice settings: Stability、Similarity、Style、Speed、Speaker Boost、言語コード、Seedを指定できます。
+
+Voicebox選択時:
+
+- API URL: 既定では `http://127.0.0.1:17493` に接続します。Voiceboxアプリを起動してから「プロファイル取得」を押します。
+- プロファイル: Voicebox側で作成済みの音声プロファイルを一覧から選びます。
+- 言語、Model size、Seed: 生成ごとに指定できます。
+- 演技指示: Voiceboxの `instruct` に送信し、生成履歴にも保存します。対応しないエンジンでは無視される場合があります。
+- 生成結果はVoiceboxの `/generate` と `/audio/{generation_id}` から取得し、このアプリの `data/audios/` に保存します。
 
 Irodori-TTS選択時:
 

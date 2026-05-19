@@ -20,6 +20,17 @@ const state = {
   librarySort: "newest",
   libraryPage: 1,
   libraryPageSize: 48,
+  imageWorkId: null,
+  imageCharacterId: "",
+  imageGpuMode: "local",
+  imageChatMessages: [
+    { role: "assistant", content: "画像生成エージェントです。作りたい絵の構図、雰囲気、衣装、背景、避けたい要素を教えてください。" }
+  ],
+  imagePromptDraft: null,
+  imageChatDraft: "",
+  imageIsThinking: false,
+  imageIsGenerating: false,
+  imagePollingJobId: "",
   videoWorkId: null,
   videoCharacterId: "",
   videoReferenceKind: "all",
@@ -68,6 +79,13 @@ const state = {
   elevenLabsModels: [],
   elevenLabsModelStatus: "idle",
   elevenLabsModelError: "",
+  voiceboxProfiles: [],
+  voiceboxProfileStatus: "idle",
+  voiceboxProfileError: "",
+  comfyModels: { checkpoints: [], loras: [], updatedAt: "" },
+  comfyModelStatus: "idle",
+  comfyModelError: "",
+  comfyValidation: null,
   videoPricingStatus: "idle",
   videoPricingError: "",
   videoCostCollapsed: false
@@ -77,6 +95,7 @@ const navItems = [
   ["studio", "作品とキャラ"],
   ["import", "画像取込"],
   ["gallery", "画像一覧"],
+  ["image", "画像生成"],
   ["audio", "音声生成"],
   ["video", "動画生成"],
   ["library", "画像整理"],
@@ -89,8 +108,21 @@ const openRouterTtsModel = "google/gemini-3.1-flash-tts-preview";
 const audioProviders = [
   ["openrouter", "OpenRouter / Gemini TTS"],
   ["elevenlabs", "ElevenLabs"],
+  ["voicebox", "Voicebox"],
   ["irodori", "Irodori-TTS"]
 ];
+
+const voiceboxDefaultSettings = {
+  baseUrl: "http://127.0.0.1:17493",
+  profileId: "",
+  language: "ja",
+  modelSize: "1.7B",
+  seed: ""
+};
+
+const voiceboxLanguageOptions = ["ja", "en", "zh", "ko", "de", "fr", "ru", "pt", "es", "it", "ar", "hi", "sv", "tr"];
+
+const voiceboxModelSizeOptions = ["1.7B", "0.6B", "default"];
 
 const irodoriDefaultSettings = {
   mode: "VoiceDesign",
@@ -108,9 +140,86 @@ const irodoriDefaultSettings = {
   customCheckpoint: ""
 };
 
+const defaultComfyWorkflow = {
+  "3": {
+    class_type: "KSampler",
+    _meta: { title: "KSampler" },
+    inputs: {
+      seed: 0,
+      steps: 28,
+      cfg: 7,
+      sampler_name: "euler",
+      scheduler: "normal",
+      denoise: 1,
+      model: ["4", 0],
+      positive: ["6", 0],
+      negative: ["7", 0],
+      latent_image: ["5", 0]
+    }
+  },
+  "4": {
+    class_type: "CheckpointLoaderSimple",
+    _meta: { title: "Load Checkpoint" },
+    inputs: { ckpt_name: "model.safetensors" }
+  },
+  "5": {
+    class_type: "EmptyLatentImage",
+    _meta: { title: "Empty Latent Image" },
+    inputs: { width: 1024, height: 1024, batch_size: 1 }
+  },
+  "6": {
+    class_type: "CLIPTextEncode",
+    _meta: { title: "Positive Prompt" },
+    inputs: { text: "", clip: ["4", 1] }
+  },
+  "7": {
+    class_type: "CLIPTextEncode",
+    _meta: { title: "Negative Prompt" },
+    inputs: { text: "low quality, blurry, distorted anatomy, extra fingers, watermark, text", clip: ["4", 1] }
+  },
+  "8": {
+    class_type: "VAEDecode",
+    _meta: { title: "VAE Decode" },
+    inputs: { samples: ["3", 0], vae: ["4", 2] }
+  },
+  "9": {
+    class_type: "SaveImage",
+    _meta: { title: "Save Image" },
+    inputs: { filename_prefix: "creative_file_studio", images: ["8", 0] }
+  }
+};
+
+const comfyDefaultSettings = {
+  gpuMode: "local",
+  localBaseUrl: "http://127.0.0.1:8188",
+  cloudBaseUrl: "",
+  workflowJson: JSON.stringify(defaultComfyWorkflow, null, 2),
+  workflowViewMode: "json",
+  positiveNodeId: "6",
+  negativeNodeId: "7",
+  seedNodeId: "3",
+  sizeNodeId: "5",
+  stepsNodeId: "3",
+  cfgNodeId: "3",
+  samplerNodeId: "3",
+  checkpointNodeId: "4",
+  width: 1024,
+  height: 1024,
+  steps: 28,
+  cfg: 7,
+  samplerName: "euler",
+  scheduler: "normal",
+  batchSize: 1,
+  checkpoint: "",
+  seed: "",
+  loras: []
+};
+
 const defaultAudioActingPrompt = "自然な日本語で、感情と間を大切にして読み上げてください。音声案の本文には [laughs] [whispers] [sighs] [excited] などの感情タグを必ず1つ以上入れてください。";
 
 const audioEmotionTags = ["[laughs]", "[whispers]", "[sighs]", "[excited]"];
+
+const activeImageJobStatuses = ["submitting", "submitted", "pending", "queued", "running", "processing"];
 
 const activeVideoJobStatuses = ["submitting", "submitted", "pending", "queued", "running", "processing"];
 
@@ -376,12 +485,19 @@ const assetsForWork = (workId) => state.db.assets.filter((asset) => !workId || a
 const apiKey = () => localStorage.getItem("openrouter_api_key") || "";
 const seedanceApiKey = () => localStorage.getItem("seedance_api_key") || "";
 const elevenLabsApiKey = () => localStorage.getItem("elevenlabs_api_key") || "";
+const comfyCloudApiKey = () => localStorage.getItem("comfy_cloud_api_key") || "";
 const isOpenRouterSeedanceBaseUrl = (value = state.db?.settings?.seedanceBaseUrl) => String(value || "").includes("openrouter.ai");
 const isReplicateSeedanceBaseUrl = (value = state.db?.settings?.seedanceBaseUrl) => String(value || "").includes("replicate.com");
 const activeSeedanceApiKey = (baseUrl = state.db?.settings?.seedanceBaseUrl) =>
   isOpenRouterSeedanceBaseUrl(baseUrl) ? (apiKey() || seedanceApiKey()) : seedanceApiKey();
 const seedanceProviderLabel = (baseUrl = state.db?.settings?.seedanceBaseUrl) =>
   isOpenRouterSeedanceBaseUrl(baseUrl) ? "OpenRouter" : isReplicateSeedanceBaseUrl(baseUrl) ? "Replicate" : "Seedance";
+const activeComfySettings = () => normalizedComfySettings(state.db?.settings?.comfy || {});
+const activeComfyBaseUrl = (gpuMode = activeComfySettings().gpuMode) => {
+  const settings = activeComfySettings();
+  return gpuMode === "cloud" ? settings.cloudBaseUrl : settings.localBaseUrl;
+};
+const activeComfyApiKey = (gpuMode = activeComfySettings().gpuMode) => gpuMode === "cloud" ? comfyCloudApiKey() : "";
 const clientSourcePathForFile = (file) => {
   const value = typeof file?.path === "string" ? file.path.trim() : "";
   return value && (/^\/|^[a-zA-Z]:[\\/]|^~\//.test(value)) ? value : "";
@@ -903,6 +1019,7 @@ function workWorldItemById(id) {
 function normalizeAudioItem(item = {}) {
   const provider = normalizedAudioProvider(item.provider || (item.model === "Irodori-TTS" ? "irodori" : "openrouter"));
   const irodori = provider === "irodori" ? normalizedIrodoriSettings(item.irodori || item.parameters || item.request || {}) : null;
+  const voicebox = provider === "voicebox" ? voiceboxSettingsFromControls(item.voicebox || item.parameters || item.request || {}) : null;
   return {
     id: item.id || uid(),
     workId: item.workId || null,
@@ -910,12 +1027,12 @@ function normalizeAudioItem(item = {}) {
     title: item.title || item.name || "生成音声",
     input: item.input || item.text || "",
     provider,
-    voice: item.voice || (provider === "irodori" ? irodori?.mode || "VoiceDesign" : "Kore"),
-    model: item.model || (provider === "irodori" ? "Irodori-TTS" : openRouterTtsModel),
-    format: item.format || (provider === "irodori" ? "wav" : "mp3"),
+    voice: item.voice || (provider === "irodori" ? irodori?.mode || "VoiceDesign" : provider === "voicebox" ? voicebox?.profileId || "Voicebox" : "Kore"),
+    model: item.model || (provider === "irodori" ? "Irodori-TTS" : provider === "voicebox" ? "Voicebox" : openRouterTtsModel),
+    format: item.format || (provider === "irodori" || provider === "voicebox" ? "wav" : "mp3"),
     url: item.url || "",
     localPath: item.localPath || item.path || "",
-    mimeType: item.mimeType || (provider === "irodori" ? "audio/wav" : "audio/mpeg"),
+    mimeType: item.mimeType || (provider === "irodori" || provider === "voicebox" ? "audio/wav" : "audio/mpeg"),
     generationId: item.generationId || "",
     size: Number(item.size) || null,
     agentNote: item.agentNote || "",
@@ -923,8 +1040,39 @@ function normalizeAudioItem(item = {}) {
     actingPrompt: item.actingPrompt || item.caption || "",
     irodori,
     elevenLabs: item.elevenLabs || null,
+    voicebox,
     referenceAudio: item.referenceAudio || null,
     createdAt: item.createdAt || new Date().toISOString()
+  };
+}
+
+function normalizeImageJob(job = {}) {
+  const images = Array.isArray(job.images) ? job.images : [];
+  return {
+    id: job.id || uid(),
+    workId: job.workId || null,
+    characterId: job.characterId || null,
+    title: job.title || "生成画像",
+    prompt: job.prompt || "",
+    negativePrompt: job.negativePrompt || "",
+    provider: "comfy",
+    gpuMode: job.gpuMode === "cloud" ? "cloud" : "local",
+    status: job.status || "pending",
+    providerTaskId: job.providerTaskId || job.promptId || "",
+    providerPayload: job.providerPayload || null,
+    request: job.request || null,
+    settings: job.settings || {},
+    images: images.map((image) => ({
+      url: image.url || image.localUrl || "",
+      localPath: image.localPath || image.path || "",
+      nodeId: image.nodeId || "",
+      filename: image.filename || ""
+    })).filter((image) => image.url),
+    progress: job.progress ?? null,
+    progressMessage: job.progressMessage || "",
+    error: job.error || "",
+    createdAt: job.createdAt || new Date().toISOString(),
+    updatedAt: job.updatedAt || job.createdAt || new Date().toISOString()
   };
 }
 
@@ -937,6 +1085,12 @@ function audioItemsForCharacter(characterId) {
 function audioItemsForWork(workId) {
   return (state.db.audioItems || [])
     .filter((item) => !workId || item.workId === workId)
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+}
+
+function imageJobsForWork(workId) {
+  return (state.db.imageJobs || [])
+    .filter((job) => !workId || job.workId === workId)
     .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
 }
 
@@ -1141,6 +1295,25 @@ function boundedSettingNumber(value, fallback, min, max, integer = false) {
   return integer ? Math.round(bounded) : Number(bounded.toFixed(2));
 }
 
+function emptyComfyLora() {
+  return { name: "", strengthModel: 1, strengthClip: 1 };
+}
+
+function normalizedComfyLoras(value = [], minSlots = 3) {
+  const source = Array.isArray(value) ? value : [];
+  const items = source.slice(0, 3).map((item) => ({
+    name: String(item?.name || item?.loraName || "").trim(),
+    strengthModel: boundedSettingNumber(item?.strengthModel ?? item?.strength_model ?? 1, 1, -2, 2),
+    strengthClip: boundedSettingNumber(item?.strengthClip ?? item?.strength_clip ?? 1, 1, -2, 2)
+  }));
+  while (items.length < minSlots) items.push(emptyComfyLora());
+  return items;
+}
+
+function activeComfyLoras(value = []) {
+  return normalizedComfyLoras(value, 0).filter((item) => item.name);
+}
+
 function normalizedIrodoriSettings(value = {}) {
   const source = { ...irodoriDefaultSettings, ...(value || {}) };
   const modelDevice = ["auto", "cpu", "mps", "cuda"].includes(source.modelDevice) ? source.modelDevice : "auto";
@@ -1162,11 +1335,64 @@ function normalizedIrodoriSettings(value = {}) {
   };
 }
 
+function voiceboxSettingsFromControls(source = {}) {
+  const defaults = {
+    ...voiceboxDefaultSettings,
+    baseUrl: state.db?.settings?.voiceboxBaseUrl || voiceboxDefaultSettings.baseUrl,
+    profileId: state.db?.settings?.voiceboxProfileId || voiceboxDefaultSettings.profileId,
+    language: state.db?.settings?.voiceboxLanguage || voiceboxDefaultSettings.language,
+    modelSize: state.db?.settings?.voiceboxModelSize || voiceboxDefaultSettings.modelSize
+  };
+  const merged = { ...defaults, ...(source || {}) };
+  const language = String(merged.language || voiceboxDefaultSettings.language).trim() || voiceboxDefaultSettings.language;
+  const modelSize = String(merged.modelSize || merged.model_size || voiceboxDefaultSettings.modelSize).trim() || voiceboxDefaultSettings.modelSize;
+  return {
+    baseUrl: String(merged.baseUrl || merged.base_url || voiceboxDefaultSettings.baseUrl).trim() || voiceboxDefaultSettings.baseUrl,
+    profileId: String(merged.profileId || merged.profile_id || defaults.profileId || "").trim(),
+    profileName: String(merged.profileName || merged.profile_name || "").trim(),
+    defaultEngine: String(merged.defaultEngine || merged.default_engine || merged.presetEngine || merged.preset_engine || "").trim(),
+    language,
+    modelSize,
+    seed: String(merged.seed || "").trim()
+  };
+}
+
+function normalizedComfySettings(value = {}) {
+  const source = { ...comfyDefaultSettings, ...(value || {}) };
+  const gpuMode = source.gpuMode === "cloud" ? "cloud" : "local";
+  return {
+    gpuMode,
+    localBaseUrl: String(source.localBaseUrl || comfyDefaultSettings.localBaseUrl).trim() || comfyDefaultSettings.localBaseUrl,
+    cloudBaseUrl: String(source.cloudBaseUrl || "").trim(),
+    workflowJson: String(source.workflowJson || comfyDefaultSettings.workflowJson).trim() || comfyDefaultSettings.workflowJson,
+    workflowViewMode: source.workflowViewMode === "visual" ? "visual" : "json",
+    positiveNodeId: String(source.positiveNodeId || "6").trim(),
+    negativeNodeId: String(source.negativeNodeId || "7").trim(),
+    seedNodeId: String(source.seedNodeId || "3").trim(),
+    sizeNodeId: String(source.sizeNodeId || "5").trim(),
+    stepsNodeId: String(source.stepsNodeId || source.seedNodeId || "3").trim(),
+    cfgNodeId: String(source.cfgNodeId || source.seedNodeId || "3").trim(),
+    samplerNodeId: String(source.samplerNodeId || source.seedNodeId || "3").trim(),
+    checkpointNodeId: String(source.checkpointNodeId || "4").trim(),
+    width: boundedSettingNumber(source.width, 1024, 64, 4096, true),
+    height: boundedSettingNumber(source.height, 1024, 64, 4096, true),
+    steps: boundedSettingNumber(source.steps, 28, 1, 150, true),
+    cfg: boundedSettingNumber(source.cfg, 7, 0, 30),
+    samplerName: String(source.samplerName || "euler").trim() || "euler",
+    scheduler: String(source.scheduler || "normal").trim() || "normal",
+    batchSize: boundedSettingNumber(source.batchSize, 1, 1, 8, true),
+    checkpoint: String(source.checkpoint || "").trim(),
+    seed: String(source.seed ?? "").trim(),
+    loras: normalizedComfyLoras(source.loras)
+  };
+}
+
 function normalizeSettings() {
   state.db.settings = {
     defaultModel: "google/gemini-2.5-flash",
     textModel: "google/gemini-2.5-flash",
     worldModel: state.db.settings?.defaultModel || "google/gemini-2.5-flash",
+    imageAgentModel: state.db.settings?.textModel || state.db.settings?.defaultModel || "google/gemini-2.5-flash",
     videoAgentModel: state.db.settings?.textModel || state.db.settings?.defaultModel || "google/gemini-2.5-flash",
     audioAgentModel: state.db.settings?.textModel || state.db.settings?.defaultModel || "google/gemini-2.5-flash",
     audioProvider: "openrouter",
@@ -1182,11 +1408,16 @@ function normalizeSettings() {
     elevenLabsSpeed: 1,
     elevenLabsSpeakerBoost: true,
     elevenLabsLanguageCode: "ja",
+    voiceboxBaseUrl: voiceboxDefaultSettings.baseUrl,
+    voiceboxProfileId: "",
+    voiceboxLanguage: voiceboxDefaultSettings.language,
+    voiceboxModelSize: voiceboxDefaultSettings.modelSize,
     irodoriAppDir: "vendor/Irodori-TTS",
     irodoriDefaults: { ...irodoriDefaultSettings },
     seedanceBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3",
     seedanceModel: "dreamina-seedance-2-0-260128",
     seedanceResolution: "720p",
+    comfy: { ...comfyDefaultSettings },
     moveImportedSourcesToTrash: false,
     importSourceRoot: "",
     videoPricing: {
@@ -1198,6 +1429,7 @@ function normalizeSettings() {
     ...(state.db.settings || {})
   };
   if (!state.db.settings.worldModel) state.db.settings.worldModel = state.db.settings.defaultModel || state.db.settings.textModel;
+  if (!state.db.settings.imageAgentModel) state.db.settings.imageAgentModel = state.db.settings.textModel || state.db.settings.defaultModel;
   if (!state.db.settings.videoAgentModel) state.db.settings.videoAgentModel = state.db.settings.textModel || state.db.settings.defaultModel;
   if (!state.db.settings.audioAgentModel) state.db.settings.audioAgentModel = state.db.settings.textModel || state.db.settings.defaultModel;
   state.db.settings.audioProvider = normalizedAudioProvider(state.db.settings.audioProvider);
@@ -1214,8 +1446,14 @@ function normalizeSettings() {
   state.db.settings.elevenLabsSpeed = boundedSettingNumber(state.db.settings.elevenLabsSpeed, 1, 0.7, 1.2);
   state.db.settings.elevenLabsSpeakerBoost = state.db.settings.elevenLabsSpeakerBoost !== false;
   state.db.settings.elevenLabsLanguageCode = String(state.db.settings.elevenLabsLanguageCode || "ja").trim();
+  state.db.settings.voiceboxBaseUrl = String(state.db.settings.voiceboxBaseUrl || voiceboxDefaultSettings.baseUrl).trim() || voiceboxDefaultSettings.baseUrl;
+  state.db.settings.voiceboxProfileId = String(state.db.settings.voiceboxProfileId || "").trim();
+  state.db.settings.voiceboxLanguage = String(state.db.settings.voiceboxLanguage || voiceboxDefaultSettings.language).trim() || voiceboxDefaultSettings.language;
+  state.db.settings.voiceboxModelSize = String(state.db.settings.voiceboxModelSize || voiceboxDefaultSettings.modelSize).trim() || voiceboxDefaultSettings.modelSize;
   state.db.settings.irodoriAppDir = String(state.db.settings.irodoriAppDir || "vendor/Irodori-TTS").trim() || "vendor/Irodori-TTS";
   state.db.settings.irodoriDefaults = normalizedIrodoriSettings(state.db.settings.irodoriDefaults);
+  state.db.settings.comfy = normalizedComfySettings(state.db.settings.comfy);
+  state.imageGpuMode = state.db.settings.comfy.gpuMode || state.imageGpuMode;
   state.db.settings.moveImportedSourcesToTrash = state.db.settings.moveImportedSourcesToTrash === true;
   state.db.settings.importSourceRoot = String(state.db.settings.importSourceRoot || "").trim();
   state.db.settings.videoPricing = {
@@ -2043,6 +2281,9 @@ async function postJson(url, body, method = "POST") {
 	    if (url.startsWith("/api/elevenlabs/") && /Method not allowed|Not found/i.test(text)) {
 	      throw new Error("ElevenLabs APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
 	    }
+	    if (url.startsWith("/api/voicebox/") && /Method not allowed|Not found/i.test(text)) {
+	      throw new Error("Voicebox APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
+	    }
 	    const error = new Error(readableError(payload.error) || readableError(payload) || text || `${response.status} ${response.statusText}`);
 	    error.payload = payload;
 	    error.responseText = text;
@@ -2198,6 +2439,10 @@ async function normalizeStoredUploads() {
     state.db.videoJobs = [];
     changed = true;
   }
+  if (!Array.isArray(state.db.imageJobs)) {
+    state.db.imageJobs = [];
+    changed = true;
+  }
   if (!Array.isArray(state.db.audioItems)) {
     state.db.audioItems = [];
     changed = true;
@@ -2208,6 +2453,9 @@ async function normalizeStoredUploads() {
   const oldAudioItems = JSON.stringify(state.db.audioItems);
   state.db.audioItems = state.db.audioItems.map(normalizeAudioItem).filter((item) => item.url);
   if (JSON.stringify(state.db.audioItems) !== oldAudioItems) changed = true;
+  const oldImageJobs = JSON.stringify(state.db.imageJobs);
+  state.db.imageJobs = state.db.imageJobs.map(normalizeImageJob);
+  if (JSON.stringify(state.db.imageJobs) !== oldImageJobs) changed = true;
   for (const work of state.db.works) {
     if (ensureDefaultWorldItemsForWork(work)) changed = true;
   }
@@ -2335,6 +2583,7 @@ function parseAiJson(content) {
 
 function selectedOpenRouterModel({ textOnly = false, purpose = "" } = {}) {
   if (purpose === "world") return state.db.settings.worldModel || state.db.settings.defaultModel || state.db.settings.textModel;
+  if (purpose === "image") return state.db.settings.imageAgentModel || state.db.settings.textModel || state.db.settings.defaultModel;
   if (purpose === "video") return state.db.settings.videoAgentModel || state.db.settings.textModel || state.db.settings.defaultModel;
   if (purpose === "audio") return state.db.settings.audioAgentModel || state.db.settings.textModel || state.db.settings.defaultModel;
   if (textOnly || purpose === "text") return state.db.settings.textModel || state.db.settings.defaultModel;
@@ -2414,6 +2663,22 @@ function preserveLiveTextDrafts() {
   }
   const videoChatInput = document.querySelector("#video-chat-input");
   if (videoChatInput) state.videoChatDraft = videoChatInput.value;
+  const imagePrompt = document.querySelector("#image-prompt-text");
+  if (imagePrompt) {
+    state.imagePromptDraft = {
+      ...(state.imagePromptDraft || {}),
+      prompt: imagePrompt.value
+    };
+  }
+  const imageNegativePrompt = document.querySelector("#image-negative-prompt");
+  if (imageNegativePrompt) {
+    state.imagePromptDraft = {
+      ...(state.imagePromptDraft || {}),
+      negativePrompt: imageNegativePrompt.value
+    };
+  }
+  const imageChatInput = document.querySelector("#image-chat-input");
+  if (imageChatInput) state.imageChatDraft = imageChatInput.value;
 }
 
 function render(options = {}) {
@@ -2430,7 +2695,7 @@ function render(options = {}) {
           ${navItems.map(([id, label]) => `<button class="${state.view === id ? "active" : ""}" data-view="${id}">${label}</button>`).join("")}
         </nav>
         <div class="sidebar-meta">
-          ${state.db.works.length} 作品 / ${state.db.characters.length} キャラ / ${state.db.worldItems?.length || 0} その他 / ${state.db.assets.length} 画像 / ${state.db.audioItems?.length || 0} 音声 / ${state.db.videoJobs?.length || 0} 動画
+          ${state.db.works.length} 作品 / ${state.db.characters.length} キャラ / ${state.db.worldItems?.length || 0} その他 / ${state.db.assets.length} 画像 / ${state.db.imageJobs?.length || 0} 画像生成 / ${state.db.audioItems?.length || 0} 音声 / ${state.db.videoJobs?.length || 0} 動画
         </div>
       </aside>
       <main class="main">
@@ -2453,7 +2718,8 @@ function currentTitle() {
   if (state.view === "studio") return ["作品とキャラ", "作品単位でキャラ設定と立ち絵を管理します。"];
   if (state.view === "import") return ["画像取込", "複数画像を取り込み、AIでキャラ別に振り分けます。"];
   if (state.view === "gallery") return ["画像一覧", "作品ごと、キャラごとに保存済み画像を閲覧します。"];
-  if (state.view === "audio") return ["音声生成", "OpenRouter TTSでキャラ音声やナレーションを作ります。"];
+  if (state.view === "image") return ["画像生成", "ComfyUIでローカルGPUまたはクラウドGPUに生成を投げます。"];
+  if (state.view === "audio") return ["音声生成", "OpenRouter、ElevenLabs、Voicebox、Irodori-TTSでキャラ音声やナレーションを作ります。"];
   if (state.view === "video") return ["動画生成", "選択した動画モデル向けの指示書作成と生成を行います。"];
   if (state.view === "library") return ["画像整理", "取り込んだ画像を作品・キャラ・状態で確認します。"];
   if (state.view === "prompt") return ["Prompt Lab", "差分やシーン案から生成プロンプトをまとめて作ります。"];
@@ -2464,6 +2730,7 @@ function renderView() {
   if (state.view === "studio") return renderStudio();
   if (state.view === "import") return renderImport();
   if (state.view === "gallery") return renderGallery();
+  if (state.view === "image") return renderImageAgent();
   if (state.view === "audio") return renderAudioAgent();
   if (state.view === "video") return renderVideoAgent();
   if (state.view === "library") return renderLibrary();
@@ -3858,6 +4125,695 @@ async function discardVideoWaitingJobs() {
   toast(`${activeJobs.length} 件の待機中ジョブを破棄しました。`);
 }
 
+function imageCharacterOptions() {
+  return state.db.characters.filter((char) => !state.imageWorkId || char.workId === state.imageWorkId);
+}
+
+function imageGpuLabel(gpuMode) {
+  return gpuMode === "cloud" ? "クラウドGPU" : "ローカルGPU";
+}
+
+function imageStatusLabel(status) {
+  return {
+    submitting: "送信中",
+    submitted: "送信済み",
+    pending: "待機中",
+    queued: "待機中",
+    running: "生成中",
+    processing: "生成中",
+    succeeded: "完了",
+    failed: "失敗",
+    cancelled: "破棄済み"
+  }[status] || status || "確認中";
+}
+
+function imageJobProgress(job) {
+  const value = job?.progress ?? job?.providerPayload?.progress;
+  if (value === null || value === undefined || value === "") {
+    if (job?.status === "succeeded") return 100;
+    return null;
+  }
+  const number = Number(String(value).replace("%", ""));
+  if (!Number.isFinite(number)) return null;
+  const progress = number > 0 && number <= 1 ? number * 100 : number;
+  return Math.max(0, Math.min(100, Math.round(progress)));
+}
+
+function activeImageJob() {
+  return byId(state.db.imageJobs || [], state.imagePollingJobId)
+    || (state.db.imageJobs || []).find((job) => activeImageJobStatuses.includes(job.status))
+    || null;
+}
+
+function imageControlValue(id, fallback = "") {
+  return document.querySelector(`#${id}`)?.value ?? fallback;
+}
+
+function imageControlsFromDom() {
+  const settings = activeComfySettings();
+  const promptInput = document.querySelector("#image-prompt-text");
+  const negativeInput = document.querySelector("#image-negative-prompt");
+  const gpuMode = imageControlValue("image-gpu-mode", state.imageGpuMode || settings.gpuMode) === "cloud" ? "cloud" : "local";
+  const loraFallback = state.imagePromptDraft?.loras || settings.loras;
+  return {
+    workId: imageControlValue("image-work", state.imageWorkId || state.selectedWorkId || ""),
+    characterId: imageControlValue("image-character", state.imageCharacterId || ""),
+    gpuMode,
+    title: imageControlValue("image-title", state.imagePromptDraft?.title || "生成画像").trim() || "生成画像",
+    prompt: promptInput ? promptInput.value : state.imagePromptDraft?.prompt || "",
+    negativePrompt: negativeInput ? negativeInput.value : state.imagePromptDraft?.negativePrompt || "",
+    width: Number(imageControlValue("image-width", state.imagePromptDraft?.width || settings.width)) || settings.width,
+    height: Number(imageControlValue("image-height", state.imagePromptDraft?.height || settings.height)) || settings.height,
+    steps: Number(imageControlValue("image-steps", state.imagePromptDraft?.steps || settings.steps)) || settings.steps,
+    cfg: Number(imageControlValue("image-cfg", state.imagePromptDraft?.cfg || settings.cfg)) || settings.cfg,
+    samplerName: imageControlValue("image-sampler", state.imagePromptDraft?.samplerName || settings.samplerName),
+    scheduler: imageControlValue("image-scheduler", state.imagePromptDraft?.scheduler || settings.scheduler),
+    batchSize: Number(imageControlValue("image-batch-size", state.imagePromptDraft?.batchSize || settings.batchSize)) || settings.batchSize,
+    seed: imageControlValue("image-seed", state.imagePromptDraft?.seed ?? settings.seed),
+    checkpoint: imageControlValue("image-checkpoint", state.imagePromptDraft?.checkpoint || settings.checkpoint),
+    loras: lorasFromDom("image", loraFallback),
+    baseUrl: activeComfyBaseUrl(gpuMode),
+    apiKey: activeComfyApiKey(gpuMode),
+    workflowJson: settings.workflowJson,
+    positiveNodeId: settings.positiveNodeId,
+    negativeNodeId: settings.negativeNodeId,
+    seedNodeId: settings.seedNodeId,
+    sizeNodeId: settings.sizeNodeId,
+    stepsNodeId: settings.stepsNodeId,
+    cfgNodeId: settings.cfgNodeId,
+    samplerNodeId: settings.samplerNodeId,
+    checkpointNodeId: settings.checkpointNodeId
+  };
+}
+
+function rememberImageControls(controls, { clearValidation = true } = {}) {
+  const selectedChar = byId(state.db.characters, controls.characterId);
+  const work = byId(state.db.works, selectedChar?.workId || controls.workId);
+  state.imageWorkId = work?.id || controls.workId || null;
+  state.imageCharacterId = selectedChar?.id || "";
+  state.imageGpuMode = controls.gpuMode;
+  state.imagePromptDraft = {
+    ...(state.imagePromptDraft || {}),
+    title: controls.title,
+    prompt: controls.prompt,
+    negativePrompt: controls.negativePrompt,
+    width: controls.width,
+    height: controls.height,
+    steps: controls.steps,
+    cfg: controls.cfg,
+    samplerName: controls.samplerName,
+    scheduler: controls.scheduler,
+    batchSize: controls.batchSize,
+    seed: controls.seed,
+    checkpoint: controls.checkpoint,
+    loras: controls.loras
+  };
+  state.db.settings.comfy = {
+    ...activeComfySettings(),
+    gpuMode: controls.gpuMode,
+    width: controls.width,
+    height: controls.height,
+    steps: controls.steps,
+    cfg: controls.cfg,
+    samplerName: controls.samplerName,
+    scheduler: controls.scheduler,
+    batchSize: controls.batchSize,
+    seed: controls.seed,
+    checkpoint: controls.checkpoint,
+    loras: controls.loras
+  };
+  if (clearValidation) state.comfyValidation = null;
+  return { selectedChar, work };
+}
+
+function renderImageAgent() {
+  const work = byId(state.db.works, state.imageWorkId) || byId(state.db.works, state.selectedWorkId) || state.db.works[0] || null;
+  if (!state.imageWorkId && work) state.imageWorkId = work.id;
+  const chars = imageCharacterOptions();
+  if (state.imageCharacterId && !chars.some((char) => char.id === state.imageCharacterId)) {
+    state.imageCharacterId = "";
+  }
+  const settings = activeComfySettings();
+  const controls = { ...settings, ...(state.imagePromptDraft || {}) };
+  const gpuMode = state.imageGpuMode || settings.gpuMode;
+  const endpoint = activeComfyBaseUrl(gpuMode);
+  const jobs = imageJobsForWork(state.imageWorkId).slice(0, 16);
+  const activeJobs = (state.db.imageJobs || []).filter((job) => activeImageJobStatuses.includes(job.status));
+  return `
+    <div class="video-layout image-layout">
+      <section class="panel">
+        <div class="panel-header"><h2>生成設定</h2></div>
+        <div class="panel-body form-grid">
+          <label class="full">作品
+            <select id="image-work">
+              <option value="">全作品</option>
+              ${state.db.works.map((item) => `<option value="${item.id}" ${state.imageWorkId === item.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="full">キャラ指定
+            <select id="image-character">
+              <option value="">指定なし</option>
+              ${chars.map((char) => `<option value="${char.id}" ${state.imageCharacterId === char.id ? "selected" : ""}>${escapeHtml(char.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="full">GPU
+            <select id="image-gpu-mode">
+              <option value="local" ${gpuMode === "local" ? "selected" : ""}>ローカルGPU</option>
+              <option value="cloud" ${gpuMode === "cloud" ? "selected" : ""}>クラウドGPU</option>
+            </select>
+          </label>
+          <label class="full">タイトル<input id="image-title" value="${escapeHtml(controls.title || "生成画像")}"></label>
+          <label>幅<input id="image-width" type="number" min="64" max="4096" step="64" value="${escapeHtml(controls.width || settings.width)}"></label>
+          <label>高さ<input id="image-height" type="number" min="64" max="4096" step="64" value="${escapeHtml(controls.height || settings.height)}"></label>
+          <label>Steps<input id="image-steps" type="number" min="1" max="150" value="${escapeHtml(controls.steps || settings.steps)}"></label>
+          <label>CFG<input id="image-cfg" type="number" min="0" max="30" step="0.5" value="${escapeHtml(controls.cfg || settings.cfg)}"></label>
+          <label>Sampler<input id="image-sampler" value="${escapeHtml(controls.samplerName || settings.samplerName)}"></label>
+          <label>Scheduler<input id="image-scheduler" value="${escapeHtml(controls.scheduler || settings.scheduler)}"></label>
+          <label>Batch<input id="image-batch-size" type="number" min="1" max="8" value="${escapeHtml(controls.batchSize || settings.batchSize)}"></label>
+          <label>Seed<input id="image-seed" type="number" placeholder="空欄でランダム" value="${escapeHtml(controls.seed ?? settings.seed)}"></label>
+          <label class="full">Checkpoint<input id="image-checkpoint" list="comfy-checkpoint-options" placeholder="workflow側の既定値を使う場合は空欄" value="${escapeHtml(controls.checkpoint || settings.checkpoint)}"></label>
+          <div class="full comfy-lora-list">
+            <div class="field-label">LoRA</div>
+            ${renderComfyLoraRows("image", controls.loras || settings.loras)}
+          </div>
+          ${renderComfyModelDatalists()}
+          ${renderComfyModelStatus()}
+          ${renderComfyValidationResult()}
+          <div class="full toolbar slim-toolbar">
+            <button class="ghost" data-action="load-comfy-models" ${state.comfyModelStatus === "loading" ? "disabled" : ""}>モデル一覧取得</button>
+            <button class="ghost" data-action="validate-comfy-workflow">事前チェック</button>
+          </div>
+          <div class="full meta">${escapeHtml(imageGpuLabel(gpuMode))}: ${escapeHtml(endpoint || "設定画面でURLを指定してください。")}</div>
+        </div>
+      </section>
+      <section class="video-main">
+        <section class="panel video-chat-panel">
+          <div class="panel-header">
+            <h2>エージェント</h2>
+            <button class="ghost" data-action="image-make-draft" ${state.imageIsThinking ? "disabled" : ""}>画像案</button>
+          </div>
+          <div class="panel-body">
+            <div class="chat-log">
+              ${state.imageChatMessages.map((message) => `<div class="chat-message ${message.role}"><div>${escapeHtml(message.content)}</div></div>`).join("")}
+              ${state.imageIsThinking ? `<div class="chat-message assistant"><div>考えています...</div></div>` : ""}
+            </div>
+            <div class="chat-input-row">
+              <textarea id="image-chat-input" placeholder="例：雨の夜、黒い制服の少女が古い駅のホームで振り返る。冷たい青い光、透明感のあるアニメ塗り。">${escapeHtml(state.imageChatDraft || "")}</textarea>
+              <button data-action="image-send-message" ${state.imageIsThinking ? "disabled" : ""}>送信</button>
+            </div>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Comfy送信用プロンプト</h2>
+              <div class="meta">${escapeHtml(state.imagePromptDraft?.agentNote || "手動入力できます。")}</div>
+            </div>
+            <div class="group">
+              <button class="ghost" data-action="image-copy-prompt">コピー</button>
+              ${(state.imageIsGenerating || state.imagePollingJobId || activeJobs.length) ? `<button class="ghost danger" data-action="discard-image-waiting">待機を破棄</button>` : ""}
+              <button class="accent" data-action="image-start-generation" ${state.imageIsGenerating ? "disabled" : ""}>生成開始</button>
+            </div>
+          </div>
+          <div class="panel-body">
+            <textarea id="image-prompt-text" class="seedance-prompt-text" placeholder="masterpiece, best quality, cinematic lighting...">${escapeHtml(controls.prompt || "")}</textarea>
+            <label class="full negative-prompt-field">Negative
+              <textarea id="image-negative-prompt" placeholder="low quality, blurry, bad anatomy...">${escapeHtml(controls.negativePrompt || "")}</textarea>
+            </label>
+            ${state.imageIsGenerating || state.imagePollingJobId ? renderComfyAnimation() : ""}
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-header"><h2>生成履歴</h2></div>
+          <div class="panel-body image-job-list">
+            ${jobs.length ? jobs.map(renderImageJob).join("") : `<div class="empty compact">生成画像はまだありません。</div>`}
+          </div>
+        </section>
+      </section>
+    </div>
+  `;
+}
+
+function renderComfyAnimation() {
+  const job = activeImageJob();
+  const status = job?.status || (state.imageIsGenerating ? "submitting" : "pending");
+  const progress = imageJobProgress(job);
+  const elapsed = elapsedVideoText(job);
+  const updatedAt = job?.updatedAt ? new Date(job.updatedAt).toLocaleTimeString("ja-JP") : "";
+  const detail = [
+    imageStatusLabel(status),
+    progress !== null ? `${progress}%` : "",
+    elapsed ? `経過 ${elapsed}` : "",
+    updatedAt ? `最終更新 ${updatedAt}` : ""
+  ].filter(Boolean).join(" / ");
+  return `
+    <div class="seedance-animation image-generating">
+      <div class="image-loader"><span></span><span></span><span></span><span></span></div>
+      <div class="generation-status">
+        <strong>画像生成中</strong>
+        <div class="progress-track ${progress === null ? "indeterminate" : ""}">
+          <span style="width:${progress === null ? 38 : progress}%"></span>
+        </div>
+        <div class="meta">${escapeHtml(detail || "完了後に画像一覧へ保存します。")}</div>
+        ${job?.progressMessage ? `<div class="meta">${escapeHtml(job.progressMessage)}</div>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function renderImageJob(job) {
+  const work = byId(state.db.works, job.workId);
+  const char = byId(state.db.characters, job.characterId);
+  const progress = imageJobProgress(job);
+  const status = job.status;
+  const loraText = activeComfyLoras(job.settings?.loras).map((item) => item.name).join(", ");
+  return `
+    <article class="image-job ${status}">
+      <div>
+        <div class="char-name">${escapeHtml(job.title || "生成画像")}</div>
+        <div class="meta">${escapeHtml(work?.name || "全作品")} / ${char ? `${escapeHtml(char.name)} / ` : ""}${escapeHtml(imageGpuLabel(job.gpuMode))} / ${escapeHtml(imageStatusLabel(status))}${progress !== null ? ` ${escapeHtml(`${progress}%`)}` : ""}${loraText ? ` / LoRA: ${escapeHtml(loraText)}` : ""} / ${job.updatedAt ? escapeHtml(new Date(job.updatedAt).toLocaleString("ja-JP")) : ""}</div>
+      </div>
+      ${activeImageJobStatuses.includes(status) ? `
+        <div class="progress-track ${progress === null ? "indeterminate" : ""}">
+          <span style="width:${progress === null ? 38 : progress}%"></span>
+        </div>
+      ` : ""}
+      ${job.images?.length ? `<div class="generated-image-grid">${job.images.map((image) => `<img class="generated-image" src="${escapeHtml(image.url)}" alt="">`).join("")}</div>` : ""}
+      <div class="result-text">${escapeHtml(compactPromptText(job.prompt, 900))}</div>
+      ${job.negativePrompt ? `<div class="meta">Negative</div><div class="result-text">${escapeHtml(compactPromptText(job.negativePrompt, 600))}</div>` : ""}
+      <div class="card-actions">
+        <button class="ghost" data-action="refresh-image-job" data-id="${job.id}" ${!job.providerTaskId || ["succeeded", "cancelled"].includes(status) ? "disabled" : ""}>更新</button>
+        <button class="ghost" data-action="copy-image-job-prompt" data-id="${job.id}">プロンプト</button>
+      </div>
+      ${job.images?.map((image) => image.localPath ? `<div class="meta">保存先: ${escapeHtml(image.localPath)}</div>` : "").join("") || ""}
+      ${job.error ? `<div class="meta danger-text">${escapeHtml(job.error)}</div>` : ""}
+    </article>
+  `;
+}
+
+function buildImageAgentSystemPrompt() {
+  return `あなたは画像生成モデル向けのプロンプト編集者です。ユーザーのチャット、作品情報、世界観、キャラ情報を読み、ComfyUIに送るプロンプト案を作ります。
+
+必ず次のJSONだけを返してください。
+{
+  "message": "ユーザーに見せる日本語の返答。",
+  "ready": true または false,
+  "questions": ["必要な確認事項"],
+  "draft": {
+    "title": "短いタイトル",
+    "prompt": "英語のポジティブプロンプト",
+    "negativePrompt": "英語のネガティブプロンプト",
+    "width": 512から2048の整数,
+    "height": 512から2048の整数,
+    "steps": 1から150の整数,
+    "cfg": 0から30の数値,
+    "seed": ""
+  }
+}
+
+画像生成プロンプトの優先ルール:
+- キャラの固定要素、作品情報、世界観設定を優先し、未設定の固有名詞や設定を捏造しない。
+- PromptはSubject -> Appearance -> Clothing -> Pose -> Environment -> Lighting -> Style -> Qualityの順にまとめる。
+- Negativeには低品質、崩れ、文字、透かし、余分な指などを入れる。
+- 画面設定やGPU設定は現在のUI値を尊重し、必要なときだけ調整案に含める。`;
+}
+
+function buildImageAgentText(inputText, controls) {
+  const selectedChar = byId(state.db.characters, controls.characterId || state.imageCharacterId);
+  const work = byId(state.db.works, selectedChar?.workId) || byId(state.db.works, controls.workId) || byId(state.db.works, state.selectedWorkId);
+  const chars = selectedChar ? [selectedChar] : work ? charactersForWork(work.id).slice(0, 12) : [];
+  const loraText = activeComfyLoras(controls.loras).map((item) => `${item.name}(model=${item.strengthModel}, clip=${item.strengthClip})`).join(", ") || "なし";
+  const charText = chars.map((char) => [
+    `名前=${char.name}`,
+    `メモ=${compactPromptText(char.memo, 460)}`,
+    `生成プロンプト=${compactPromptText(char.basePrompt, 620)}`,
+    `NG=${compactPromptText(char.negativePrompt, 260)}`
+  ].join(" / ")).join("\n");
+  const history = state.imageChatMessages.slice(-10).map((message) => `${message.role}: ${message.content}`).join("\n");
+  return `ユーザー入力:
+${inputText}
+
+現在の設定:
+gpu=${controls.gpuMode}, width=${controls.width}, height=${controls.height}, steps=${controls.steps}, cfg=${controls.cfg}, sampler=${controls.samplerName}, scheduler=${controls.scheduler}, batch=${controls.batchSize}, checkpoint=${controls.checkpoint || "workflow既定"}, lora=${loraText}
+
+作品情報 / 世界観:
+${buildPromptLabWorldContext(work)}
+
+参照キャラ:
+${charText || "未指定"}
+
+直近チャット:
+${history}
+
+返答では、足りない情報がある場合も、今ある情報で暫定案が作れるなら draft を入れてください。`;
+}
+
+function mergeImageDraft(result, fallbackControls) {
+  const source = result?.draft || result?.proposal || result?.image || {};
+  if (!source.prompt && result?.prompt) source.prompt = result.prompt;
+  if (!source.prompt) return null;
+  return {
+    title: source.title || fallbackControls.title || "生成画像",
+    prompt: source.prompt || "",
+    negativePrompt: source.negativePrompt || source.negative_prompt || fallbackControls.negativePrompt || "",
+    width: Number(source.width || fallbackControls.width || 1024),
+    height: Number(source.height || fallbackControls.height || 1024),
+    steps: Number(source.steps || fallbackControls.steps || 28),
+    cfg: Number(source.cfg || fallbackControls.cfg || 7),
+    samplerName: source.samplerName || source.sampler_name || fallbackControls.samplerName,
+    scheduler: source.scheduler || fallbackControls.scheduler,
+    batchSize: Number(source.batchSize || source.batch_size || fallbackControls.batchSize || 1),
+    seed: source.seed ?? fallbackControls.seed ?? "",
+    checkpoint: source.checkpoint || source.ckpt_name || fallbackControls.checkpoint || "",
+    loras: normalizedComfyLoras(source.loras || fallbackControls.loras || []),
+    agentNote: source.agentNote || source.note || result?.message || ""
+  };
+}
+
+async function handleImageAgentMessage(forceDraft = false) {
+  const chatInput = document.querySelector("#image-chat-input");
+  const input = chatInput?.value.trim();
+  const message = input || (forceDraft ? "ここまでの会話と選択中の作品・キャラ設定から、画像生成用のプロンプト案を作ってください。" : "");
+  if (!message) return toast("メッセージを入力してください。");
+  const controls = imageControlsFromDom();
+  state.imageWorkId = controls.workId || null;
+  state.imageCharacterId = controls.characterId || "";
+  state.imageGpuMode = controls.gpuMode;
+  state.imageChatDraft = "";
+  if (chatInput) chatInput.value = "";
+  state.imageChatMessages.push({ role: "user", content: message });
+  state.imageIsThinking = true;
+  render();
+  try {
+    toastApiSubmitted("画像プロンプト作成APIに送信しました。返答を待っています。");
+    const content = await callOpenRouter({
+      purpose: "image",
+      temperature: 0.45,
+      maxTokens: 2600,
+      responseFormat: { type: "json_object" },
+      messages: [
+        { role: "system", content: buildImageAgentSystemPrompt() },
+        { role: "user", content: buildImageAgentText(message, controls) }
+      ]
+    });
+    const result = parseAiJson(content);
+    state.imageChatMessages.push({ role: "assistant", content: result.message || result.answer || "画像案を更新しました。" });
+    const draft = mergeImageDraft(result, controls);
+    if (draft) state.imagePromptDraft = { ...(state.imagePromptDraft || {}), ...draft };
+    state.imageIsThinking = false;
+    render({ preserveLiveTextDrafts: !draft });
+  } catch (error) {
+    state.imageIsThinking = false;
+    state.imageChatMessages.push({ role: "assistant", content: `エラー: ${error.message}${debugChatText(error)}` });
+    render();
+  }
+}
+
+async function registerComfyImagesAsAssets(job, images = []) {
+  const work = byId(state.db.works, job.workId);
+  const char = byId(state.db.characters, job.characterId);
+  const existing = new Set((state.db.assets || []).filter((asset) => asset.sourceJobId === job.id).map((asset) => asset.url));
+  for (let index = 0; index < images.length; index += 1) {
+    const image = images[index];
+    if (!image.url || existing.has(image.url)) continue;
+    const info = await getImageInfo(image.url);
+    state.db.assets.unshift({
+      id: uid(),
+      workId: work?.id || char?.workId || null,
+      characterId: char?.id || null,
+      worldItemId: null,
+      name: images.length > 1 ? `${job.title || "生成画像"} ${index + 1}` : job.title || "生成画像",
+      url: image.url,
+      localPath: image.localPath || image.path || "",
+      width: info.width || null,
+      height: info.height || null,
+      aspectRatio: info.aspectRatio || null,
+      aspectRatioText: info.aspectRatioText || "",
+      status: char ? "matched" : "unassigned",
+      confidence: char ? 1 : null,
+      aiPromptFormat: "natural",
+      aiPrompt: job.prompt || "",
+      aiNegativePrompt: job.negativePrompt || "",
+      aiReason: "ComfyUIで生成した画像です。",
+      source: "comfy",
+      sourceJobId: job.id,
+      createdAt: new Date().toISOString()
+    });
+    existing.add(image.url);
+  }
+}
+
+async function validateComfyControls(controls, { renderResult = true } = {}) {
+  if (!controls.workflowJson) {
+    const result = { ok: false, errors: ["設定画面で ComfyUI workflow JSON を保存してください。"], warnings: [], summary: {} };
+    state.comfyValidation = result;
+    if (renderResult) render({ preserveLiveTextDrafts: true });
+    return result;
+  }
+  if (renderResult) {
+    state.comfyValidation = { status: "loading" };
+    render({ preserveLiveTextDrafts: true });
+  }
+  try {
+    const result = await postJson("/api/comfy/validate", controls);
+    state.comfyValidation = result;
+    if (renderResult) render({ preserveLiveTextDrafts: true });
+    return result;
+  } catch (error) {
+    const result = error.payload || { ok: false, errors: [error.message], warnings: [], summary: {} };
+    if (!Array.isArray(result.errors) || !result.errors.length) result.errors = [error.message];
+    state.comfyValidation = result;
+    if (renderResult) render({ preserveLiveTextDrafts: true });
+    return result;
+  }
+}
+
+async function validateCurrentComfyWorkflow() {
+  if (state.view === "settings") saveComfySettingsFromDom();
+  const settings = activeComfySettings();
+  const controls = state.view === "image"
+    ? imageControlsFromDom()
+    : {
+        ...settings,
+        prompt: "__validation_prompt__",
+        negativePrompt: "",
+        baseUrl: activeComfyBaseUrl(settings.gpuMode),
+        apiKey: activeComfyApiKey(settings.gpuMode)
+      };
+  if (state.view === "image") rememberImageControls(controls);
+  const result = await validateComfyControls(controls);
+  if (result.ok) {
+    toast((result.warnings || []).length ? "事前チェックは通りました。注意があります。" : "ComfyUI workflowの事前チェックはOKです。");
+  } else {
+    toast((result.errors || [])[0] || "ComfyUI workflowの事前チェックで問題が見つかりました。");
+  }
+  return result;
+}
+
+async function startComfyGeneration() {
+  const controls = imageControlsFromDom();
+  const prompt = controls.prompt.trim();
+  if (!controls.baseUrl) return toast(`${imageGpuLabel(controls.gpuMode)}のComfyUI URLを設定してください。`);
+  if (!controls.workflowJson) return toast("設定画面で ComfyUI workflow JSON を保存してください。");
+  if (!prompt) return toast("Comfy送信用プロンプトを入力してください。");
+  rememberImageControls(controls);
+  const validation = await validateComfyControls(controls);
+  if (!validation.ok) {
+    return toast((validation.errors || [])[0] || "ComfyUI workflowの事前チェックで問題が見つかりました。");
+  }
+  const selectedChar = byId(state.db.characters, controls.characterId);
+  const work = byId(state.db.works, selectedChar?.workId || controls.workId);
+  let job = null;
+  try {
+    state.db.settings.comfy = {
+      ...activeComfySettings(),
+      gpuMode: controls.gpuMode,
+      width: controls.width,
+      height: controls.height,
+      steps: controls.steps,
+      cfg: controls.cfg,
+      samplerName: controls.samplerName,
+      scheduler: controls.scheduler,
+      batchSize: controls.batchSize,
+      seed: controls.seed,
+      checkpoint: controls.checkpoint,
+      loras: controls.loras
+    };
+    state.imageGpuMode = controls.gpuMode;
+    state.imageWorkId = work?.id || controls.workId || null;
+    state.imageCharacterId = selectedChar?.id || "";
+    state.imagePromptDraft = {
+      ...(state.imagePromptDraft || {}),
+      title: controls.title,
+      prompt,
+      negativePrompt: controls.negativePrompt,
+      width: controls.width,
+      height: controls.height,
+      steps: controls.steps,
+      cfg: controls.cfg,
+      samplerName: controls.samplerName,
+      scheduler: controls.scheduler,
+      batchSize: controls.batchSize,
+      seed: controls.seed,
+      checkpoint: controls.checkpoint,
+      loras: controls.loras
+    };
+    job = normalizeImageJob({
+      id: uid(),
+      workId: work?.id || controls.workId || null,
+      characterId: selectedChar?.id || null,
+      title: controls.title,
+      prompt,
+      negativePrompt: controls.negativePrompt,
+      gpuMode: controls.gpuMode,
+      status: "submitting",
+      settings: {
+        width: controls.width,
+        height: controls.height,
+        steps: controls.steps,
+        cfg: controls.cfg,
+        samplerName: controls.samplerName,
+        scheduler: controls.scheduler,
+        batchSize: controls.batchSize,
+        seed: controls.seed,
+        checkpoint: controls.checkpoint,
+        loras: controls.loras,
+        baseUrl: controls.baseUrl
+      },
+      progress: 0,
+      progressMessage: "送信中",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+    state.db.imageJobs.unshift(job);
+    state.imageIsGenerating = true;
+    await saveDb();
+    render();
+    toastApiSubmitted("ComfyUIに画像生成を送信しました。返答を待っています。");
+    const payload = await postJson("/api/comfy/create", controls);
+    job.providerPayload = payload.providerPayload || payload;
+    job.request = payload.request || null;
+    const providerError = readableError(payload.error) || readableError(payload.providerPayload?.error);
+    if (providerError) {
+      job.status = "failed";
+      job.error = providerError;
+      job.updatedAt = new Date().toISOString();
+      await saveDb();
+      render();
+      throw new Error(providerError);
+    }
+    job.providerTaskId = payload.id || payload.prompt_id || "";
+    if (!job.providerTaskId) {
+      job.status = "failed";
+      job.error = "ComfyUIのprompt_idを取得できませんでした。";
+      job.updatedAt = new Date().toISOString();
+      await saveDb();
+      render();
+      throw new Error(job.error);
+    }
+    job.status = payload.status || "submitted";
+    job.progress = payload.progress ?? job.progress ?? 0;
+    job.progressMessage = "ComfyUIで生成待機中です。";
+    job.updatedAt = new Date().toISOString();
+    await saveDb();
+    render();
+    toast("画像生成タスクを開始しました。");
+    await pollComfyJob(job.id);
+  } catch (error) {
+    state.imageIsGenerating = false;
+    toast(error.message);
+    const target = job || state.db.imageJobs?.[0];
+    if (target && ["submitting", "submitted"].includes(target.status) && !target.providerTaskId) {
+      target.status = "failed";
+      target.error = target.error || error.message;
+      target.updatedAt = new Date().toISOString();
+      await saveDb();
+      render();
+    }
+  }
+}
+
+async function pollComfyJob(jobId) {
+  const job = byId(state.db.imageJobs || [], jobId);
+  if (job && !activeImageJobStatuses.includes(job.status) && job.status !== "failed") {
+    state.imageIsGenerating = false;
+    if (state.imagePollingJobId === job.id) state.imagePollingJobId = "";
+    render();
+    return;
+  }
+  if (!job?.providerTaskId) {
+    state.imageIsGenerating = false;
+    if (state.imagePollingJobId === job?.id) state.imagePollingJobId = "";
+    return;
+  }
+  const baseUrl = job.settings?.baseUrl || activeComfyBaseUrl(job.gpuMode);
+  const apiKey = activeComfyApiKey(job.gpuMode);
+  const work = byId(state.db.works, job.workId);
+  state.imagePollingJobId = job.id;
+  render();
+  try {
+    const payload = await postJson("/api/comfy/status", {
+      baseUrl,
+      apiKey,
+      promptId: job.providerTaskId,
+      workName: work?.name || "",
+      title: job.title || "生成画像"
+    });
+    job.status = payload.status || job.status;
+    job.progress = payload.progress ?? (job.status === "succeeded" ? 100 : job.progress ?? null);
+    job.progressMessage = payload.progressMessage || job.progressMessage || "";
+    job.providerPayload = payload.providerPayload || payload;
+    if (Array.isArray(payload.images) && payload.images.length) {
+      job.images = payload.images.map((image) => ({
+        url: image.url,
+        localPath: image.path || image.localPath || "",
+        nodeId: image.nodeId || "",
+        filename: image.filename || ""
+      }));
+      await registerComfyImagesAsAssets(job, job.images);
+    }
+    if (payload.error) job.error = readableError(payload.error);
+    job.updatedAt = new Date().toISOString();
+    await saveDb();
+    const done = ["succeeded", "failed", "cancelled"].includes(job.status);
+    if (done) {
+      state.imageIsGenerating = false;
+      state.imagePollingJobId = "";
+      toast(job.status === "succeeded" ? "生成画像を画像一覧へ保存しました。" : `画像生成タスクが ${imageStatusLabel(job.status)} で終了しました。`);
+      render();
+      return;
+    }
+    window.setTimeout(() => pollComfyJob(job.id), 8000);
+  } catch (error) {
+    state.imageIsGenerating = false;
+    state.imagePollingJobId = "";
+    job.error = error.message;
+    job.updatedAt = new Date().toISOString();
+    await saveDb();
+    toast(error.message);
+    render();
+  }
+}
+
+async function discardImageWaitingJobs() {
+  const activeJobs = (state.db.imageJobs || []).filter((job) => activeImageJobStatuses.includes(job.status));
+  state.imageIsGenerating = false;
+  state.imagePollingJobId = "";
+  if (!activeJobs.length) {
+    render();
+    return toast("待機中の画像生成はありません。");
+  }
+  activeJobs.forEach((job) => {
+    job.status = "cancelled";
+    if (job.providerTaskId) job.cancelledProviderTaskId = job.providerTaskId;
+    job.error = "ユーザー操作で待機状態を破棄しました。ComfyUI側の生成自体は停止できない場合があります。";
+    job.updatedAt = new Date().toISOString();
+  });
+  await saveDb();
+  render();
+  toast(`${activeJobs.length} 件の待機中ジョブを破棄しました。`);
+}
+
 async function uploadIrodoriReferenceFile(file) {
   if (!file || !file.type.startsWith("audio/")) return toast("音声ファイルを選択してください。");
   const selectedChar = byId(state.db.characters, state.audioCharacterId);
@@ -3954,6 +4910,40 @@ function renderElevenLabsModelOptions(selectedModelId) {
   return elevenLabsModelItems(current)
     .map((model) => `<option value="${escapeHtml(model.modelId)}" ${model.modelId === current ? "selected" : ""}>${escapeHtml(elevenLabsModelLabel(model))}</option>`)
     .join("");
+}
+
+function voiceboxProfileLabel(profile) {
+  const bits = [
+    profile.name || profile.id,
+    profile.language,
+    profile.defaultEngine || profile.presetEngine || profile.voiceType,
+    profile.id
+  ].filter(Boolean);
+  return bits.join(" / ");
+}
+
+function renderVoiceboxProfileOptions(selectedProfileId) {
+  const current = String(selectedProfileId || state.db.settings.voiceboxProfileId || "").trim();
+  const options = [];
+  const seen = new Set();
+  if (current) {
+    const savedProfile = state.voiceboxProfiles.find((profile) => profile.id === current);
+    options.push({
+      value: current,
+      label: savedProfile ? voiceboxProfileLabel(savedProfile) : `${current} / 保存中`
+    });
+    seen.add(current);
+  }
+  state.voiceboxProfiles.forEach((profile) => {
+    if (!profile.id || seen.has(profile.id)) return;
+    options.push({
+      value: profile.id,
+      label: voiceboxProfileLabel(profile)
+    });
+    seen.add(profile.id);
+  });
+  if (!options.length) options.push({ value: "", label: "プロファイル取得後に選択" });
+  return options.map((option) => `<option value="${escapeHtml(option.value)}" ${option.value === current ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("");
 }
 
 function renderAudioProviderOptions(selectedProvider = "openrouter") {
@@ -4098,6 +5088,40 @@ function renderElevenLabsParameters(params = {}) {
   `;
 }
 
+function renderVoiceboxParameters(params = {}) {
+  const settings = voiceboxSettingsFromControls(params);
+  const statusText = state.voiceboxProfileStatus === "loaded"
+    ? `${state.voiceboxProfiles.length} 件のVoiceboxプロファイルを読み込みました。`
+    : state.voiceboxProfileStatus === "loading"
+      ? "Voiceboxプロファイルを読み込み中です。"
+      : state.voiceboxProfileError || "Voiceboxアプリを起動して、プロファイル取得で声を選べます。";
+  const languageOptions = Array.from(new Set([settings.language, ...voiceboxLanguageOptions].filter(Boolean)));
+  const modelOptions = Array.from(new Set([settings.modelSize, ...voiceboxModelSizeOptions].filter(Boolean)));
+  return `
+    <div class="voicebox-settings full">
+      <label class="full">Voicebox API URL
+        <input id="audio-voicebox-base-url" value="${escapeHtml(settings.baseUrl)}" placeholder="http://127.0.0.1:17493">
+      </label>
+      <label class="full">プロファイル
+        <select id="audio-voicebox-profile-id">${renderVoiceboxProfileOptions(settings.profileId)}</select>
+      </label>
+      <label>言語
+        <select id="audio-voicebox-language">${languageOptions.map((language) => `<option value="${escapeHtml(language)}" ${language === settings.language ? "selected" : ""}>${escapeHtml(language)}</option>`).join("")}</select>
+      </label>
+      <label>Model size
+        <select id="audio-voicebox-model-size">${modelOptions.map((modelSize) => `<option value="${escapeHtml(modelSize)}" ${modelSize === settings.modelSize ? "selected" : ""}>${escapeHtml(modelSize)}</option>`).join("")}</select>
+      </label>
+      <label>Seed
+        <input id="audio-voicebox-seed" placeholder="空欄でランダム" value="${escapeHtml(settings.seed)}">
+      </label>
+      <div class="full toolbar">
+        <button class="ghost" data-action="load-voicebox-profiles" ${state.voiceboxProfileStatus === "loading" ? "disabled" : ""}>プロファイル取得</button>
+      </div>
+      <div class="full meta">${escapeHtml(statusText)}</div>
+    </div>
+  `;
+}
+
 function audioCharacterOptions() {
   return state.db.characters.filter((char) => !state.audioWorkId || char.workId === state.audioWorkId);
 }
@@ -4149,13 +5173,25 @@ function audioControlsFromDom() {
     seed: document.querySelector("#audio-elevenlabs-seed")?.value || state.audioPromptDraft?.elevenLabs?.seed,
     useSpeakerBoost: document.querySelector("#audio-elevenlabs-speaker-boost")?.checked ?? state.audioPromptDraft?.elevenLabs?.useSpeakerBoost
   });
+  const voicebox = voiceboxSettingsFromControls({
+    baseUrl: document.querySelector("#audio-voicebox-base-url")?.value || state.audioPromptDraft?.voicebox?.baseUrl,
+    profileId: document.querySelector("#audio-voicebox-profile-id")?.value || state.audioPromptDraft?.voicebox?.profileId,
+    language: document.querySelector("#audio-voicebox-language")?.value || state.audioPromptDraft?.voicebox?.language,
+    modelSize: document.querySelector("#audio-voicebox-model-size")?.value || state.audioPromptDraft?.voicebox?.modelSize,
+    seed: document.querySelector("#audio-voicebox-seed")?.value || state.audioPromptDraft?.voicebox?.seed
+  });
   return {
     provider,
     workId: selectedChar?.workId || document.querySelector("#audio-work")?.value || state.audioWorkId || state.selectedWorkId || "",
     characterId: selectedCharId,
-    voice: provider === "elevenlabs" ? elevenLabs.voiceId : document.querySelector("#audio-voice")?.value || state.audioVoice || state.db.settings.audioVoice || "Kore",
+    voice: provider === "elevenlabs"
+      ? elevenLabs.voiceId
+      : provider === "voicebox"
+        ? voicebox.profileId
+        : document.querySelector("#audio-voice")?.value || state.audioVoice || state.db.settings.audioVoice || "Kore",
     irodori,
     elevenLabs,
+    voicebox,
     actingPrompt,
     caption: provider === "irodori" ? irodori.caption : actingPrompt,
     title: document.querySelector("#audio-title")?.value.trim() || state.audioPromptDraft?.title || "生成音声",
@@ -4204,6 +5240,7 @@ function buildAudioAgentSystemPrompt() {
 - Gemini TTSの場合は actingPrompt に「低い声、怒りを抑える、少し速め、近い距離、語尾を弱める」などを具体的に書く。
 - Gemini TTSでは input に [whispers] [laughs] [sighs] [excited] [short pause] などのインライン音声タグを少量だけ使える。感情タグは必須、間のタグは必要時だけ使う。
 - ElevenLabsの場合は voice ID と voice_settings が主な制御なので、input は読み上げ本文に集中し、actingPrompt は画面で確認・保存できる演技指示として短くまとめる。
+- Voiceboxの場合は選択プロファイルで声が決まる。Qwen CustomVoice系では actingPrompt を自然言語の演技指示として使える。Chatterbox Turbo以外では角括弧タグがそのまま読まれる場合があるため、タグは必要最小限にする。
 - 過剰な演技タグは避け、重要な間や感情だけに使う。1案につき1〜3個程度を目安にする。
 - 日本語の台詞は日本語のまま自然に整える。英語に翻訳しない。
 - Irodori-TTSの場合は caption に「低め、囁き、距離感、テンポ、感情」などの音声演出を書き、input には読み上げ本文だけを書く。
@@ -4227,7 +5264,7 @@ function buildAudioAgentText(inputText, controls) {
 ${inputText}
 
 現在の設定:
-provider=${controls.provider}, voice=${controls.voice}, actingPrompt=${controls.actingPrompt || ""}, elevenLabsVoiceId=${controls.elevenLabs?.voiceId || ""}, elevenLabsModel=${controls.elevenLabs?.modelId || ""}, irodoriMode=${controls.irodori?.mode || "VoiceDesign"}, caption=${controls.irodori?.caption || ""}, title=${controls.title}, characterId=${controls.characterId || "未指定"}
+provider=${controls.provider}, voice=${controls.voice}, actingPrompt=${controls.actingPrompt || ""}, elevenLabsVoiceId=${controls.elevenLabs?.voiceId || ""}, elevenLabsModel=${controls.elevenLabs?.modelId || ""}, voiceboxProfileId=${controls.voicebox?.profileId || ""}, voiceboxLanguage=${controls.voicebox?.language || ""}, irodoriMode=${controls.irodori?.mode || "VoiceDesign"}, caption=${controls.irodori?.caption || ""}, title=${controls.title}, characterId=${controls.characterId || "未指定"}
 
 作品情報 / 世界観:
 ${buildPromptLabWorldContext(work)}
@@ -4264,6 +5301,7 @@ function mergeAudioDraft(result, fallbackControls) {
     voice: ttsVoices.some(([item]) => item === voice) ? voice : fallbackControls.voice || "Kore",
     provider: fallbackControls.provider || "openrouter",
     elevenLabs: fallbackControls.elevenLabs,
+    voicebox: fallbackControls.voicebox,
     ...irodori,
     actingPrompt,
     caption: fallbackControls.provider === "irodori" ? irodori.caption : actingPrompt,
@@ -4346,6 +5384,7 @@ async function startAudioGeneration() {
   if (controls.provider === "openrouter" && !key) return toast("設定画面で OpenRouter API キーを保存してください。");
   if (controls.provider === "elevenlabs" && !elevenKey) return toast("設定画面で ElevenLabs API キーを保存してください。");
   if (controls.provider === "elevenlabs" && !controls.elevenLabs.voiceId) return toast("ElevenLabs voice ID を指定してください。");
+  if (controls.provider === "voicebox" && !controls.voicebox.profileId) return toast("Voiceboxプロファイルを指定してください。");
   const selectedChar = byId(state.db.characters, controls.characterId);
   const work = byId(state.db.works, selectedChar?.workId || controls.workId);
   state.audioIsGenerating = true;
@@ -4366,6 +5405,10 @@ async function startAudioGeneration() {
   state.db.settings.elevenLabsSpeed = controls.elevenLabs.speed;
   state.db.settings.elevenLabsSpeakerBoost = controls.elevenLabs.useSpeakerBoost;
   state.db.settings.elevenLabsLanguageCode = controls.elevenLabs.languageCode;
+  state.db.settings.voiceboxBaseUrl = controls.voicebox.baseUrl;
+  state.db.settings.voiceboxProfileId = controls.voicebox.profileId;
+  state.db.settings.voiceboxLanguage = controls.voicebox.language;
+  state.db.settings.voiceboxModelSize = controls.voicebox.modelSize;
   state.db.settings.irodoriDefaults = controls.irodori;
   startAudioGenerationClock();
   render();
@@ -4441,6 +5484,43 @@ async function startAudioGeneration() {
         agentNote: state.audioPromptDraft?.agentNote || "",
         createdAt: new Date().toISOString()
       })];
+    } else if (controls.provider === "voicebox") {
+      const payload = await postJson("/api/voicebox/speech", {
+        baseUrl: controls.voicebox.baseUrl,
+        profileId: controls.voicebox.profileId,
+        language: controls.voicebox.language,
+        modelSize: controls.voicebox.modelSize,
+        seed: controls.voicebox.seed,
+        instruct: controls.actingPrompt,
+        input: controls.input,
+        title: controls.title
+      });
+      const profile = state.voiceboxProfiles.find((item) => item.id === controls.voicebox.profileId);
+      created = [normalizeAudioItem({
+        id: uid(),
+        workId: work?.id || null,
+        characterId: selectedChar?.id || null,
+        provider: "voicebox",
+        title: controls.title,
+        input: controls.input,
+        voice: profile?.name || controls.voicebox.profileId,
+        model: "Voicebox",
+        format: payload.format || "wav",
+        url: payload.url,
+        localPath: payload.path,
+        mimeType: payload.mimeType,
+        generationId: payload.generationId,
+        size: payload.size,
+        caption: controls.actingPrompt,
+        actingPrompt: controls.actingPrompt,
+        voicebox: {
+          ...controls.voicebox,
+          profileName: profile?.name || "",
+          defaultEngine: profile?.defaultEngine || profile?.presetEngine || ""
+        },
+        agentNote: state.audioPromptDraft?.agentNote || "",
+        createdAt: new Date().toISOString()
+      })];
     } else {
       const payload = await postJson("/api/irodori/speech", {
         appDir: state.db.settings.irodoriAppDir,
@@ -4487,12 +5567,14 @@ async function startAudioGeneration() {
 }
 
 function renderAudioItem(audio) {
-  const providerLabel = audio.provider === "irodori" ? "Irodori-TTS" : audio.provider === "elevenlabs" ? "ElevenLabs" : "OpenRouter TTS";
+  const providerLabel = audio.provider === "irodori" ? "Irodori-TTS" : audio.provider === "elevenlabs" ? "ElevenLabs" : audio.provider === "voicebox" ? "Voicebox" : "OpenRouter TTS";
   const voiceLabel = audio.provider === "irodori"
     ? `${audio.irodori?.mode || audio.voice || "VoiceDesign"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`
     : audio.provider === "elevenlabs"
       ? `${audio.voice || "voice ID未設定"} / ${audio.model || "eleven_multilingual_v2"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`
-    : `${audio.voice || "Kore"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`;
+      : audio.provider === "voicebox"
+        ? `${audio.voicebox?.profileName || audio.voicebox?.profileId || audio.voice || "profile未設定"} / ${audio.voicebox?.language || "ja"}${audio.voicebox?.defaultEngine ? ` / ${audio.voicebox.defaultEngine}` : ""}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`
+        : `${audio.voice || "Kore"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`;
   return `
     <article class="audio-job">
       <div>
@@ -4519,6 +5601,7 @@ function renderAudioAgent() {
   const voiceValue = controls.voice || state.audioVoice || state.db.settings.audioVoice || "Kore";
   const actingPromptValue = controls.actingPrompt || (providerValue === "openrouter" ? controls.caption : "") || state.db.settings.audioActingPrompt || defaultAudioActingPrompt;
   const elevenLabsValue = elevenLabsSettingsFromControls(controls.elevenLabs || {});
+  const voiceboxValue = voiceboxSettingsFromControls(controls.voicebox || {});
   const irodoriValue = normalizedIrodoriSettings({ ...state.db.settings.irodoriDefaults, ...controls });
   const history = audioItemsForWork(state.audioWorkId)
     .filter((item) => !state.audioCharacterId || item.characterId === state.audioCharacterId)
@@ -4557,6 +5640,12 @@ function renderAudioAgent() {
               <textarea id="audio-acting-prompt" rows="4" placeholder="例：穏やかで少し低め。親しい距離感で、語尾はやわらかく。大事な一文の前に短い間を置く。">${escapeHtml(actingPromptValue)}</textarea>
             </label>
             ${renderElevenLabsParameters(elevenLabsValue)}
+          ` : providerValue === "voicebox" ? `
+            <div class="full meta">VoiceboxのローカルAPIを使って、保存済みプロファイルの声で音声を生成します。</div>
+            <label class="full">演技指示
+              <textarea id="audio-acting-prompt" rows="4" placeholder="例：低く静かな声。近い距離で、言葉の最後を少し弱める。">${escapeHtml(actingPromptValue)}</textarea>
+            </label>
+            ${renderVoiceboxParameters(voiceboxValue)}
           ` : `
             <div class="full meta">Irodori-TTSをローカル実行します。連携先は設定画面の「Irodori-TTS連携」で変更できます。</div>
             ${renderIrodoriParameters(irodoriValue, state.audioIrodoriReference)}
@@ -4616,7 +5705,7 @@ function renderAudioGenerating() {
       <div class="wave-loader"><span></span><span></span><span></span><span></span></div>
       <div>
         <strong>音声生成中</strong>
-        <div class="meta">経過 ${escapeHtml(elapsedText)}。Irodori-TTSは数分かかることがあります。完了後にキャラ情報と参照素材へ保存します。</div>
+        <div class="meta">経過 ${escapeHtml(elapsedText)}。Irodori-TTSやVoiceboxの初回生成は数分かかることがあります。完了後にキャラ情報と参照素材へ保存します。</div>
       </div>
     </div>
   `;
@@ -5027,6 +6116,259 @@ function renderPromptCard(item, index) {
   `;
 }
 
+function renderComfyLoraRows(prefix, loras = []) {
+  return normalizedComfyLoras(loras).map((lora, index) => `
+    <div class="comfy-lora-row">
+      <label>LoRA ${index + 1}
+        <input id="${prefix}-lora-name-${index}" list="comfy-lora-options" placeholder="例: character_style.safetensors" value="${escapeHtml(lora.name)}">
+      </label>
+      <label>Model強度
+        <input id="${prefix}-lora-model-${index}" type="number" min="-2" max="2" step="0.05" value="${escapeHtml(lora.strengthModel)}">
+      </label>
+      <label>CLIP強度
+        <input id="${prefix}-lora-clip-${index}" type="number" min="-2" max="2" step="0.05" value="${escapeHtml(lora.strengthClip)}">
+      </label>
+    </div>
+  `).join("");
+}
+
+function lorasFromDom(prefix, fallback = []) {
+  const fallbackItems = normalizedComfyLoras(fallback);
+  return fallbackItems.map((item, index) => ({
+    name: document.querySelector(`#${prefix}-lora-name-${index}`)?.value.trim() ?? item.name,
+    strengthModel: document.querySelector(`#${prefix}-lora-model-${index}`)?.value ?? item.strengthModel,
+    strengthClip: document.querySelector(`#${prefix}-lora-clip-${index}`)?.value ?? item.strengthClip
+  }));
+}
+
+function renderComfyModelDatalists() {
+  const checkpoints = Array.isArray(state.comfyModels?.checkpoints) ? state.comfyModels.checkpoints : [];
+  const loras = Array.isArray(state.comfyModels?.loras) ? state.comfyModels.loras : [];
+  return `
+    <datalist id="comfy-checkpoint-options">
+      ${checkpoints.map((name) => `<option value="${escapeHtml(name)}"></option>`).join("")}
+    </datalist>
+    <datalist id="comfy-lora-options">
+      ${loras.map((name) => `<option value="${escapeHtml(name)}"></option>`).join("")}
+    </datalist>
+  `;
+}
+
+function renderComfyModelStatus() {
+  const checkpoints = Array.isArray(state.comfyModels?.checkpoints) ? state.comfyModels.checkpoints : [];
+  const loras = Array.isArray(state.comfyModels?.loras) ? state.comfyModels.loras : [];
+  if (state.comfyModelStatus === "loading") return `<div class="full meta">ComfyUIのモデル一覧を取得中です。</div>`;
+  if (state.comfyModelStatus === "failed") return `<div class="full meta danger-text">${escapeHtml(state.comfyModelError || "ComfyUIのモデル一覧を取得できませんでした。")}</div>`;
+  if (!checkpoints.length && !loras.length) return `<div class="full meta">モデル一覧を取得すると、CheckpointとLoRA名を候補から選べます。</div>`;
+  const updated = state.comfyModels?.updatedAt ? ` / ${new Date(state.comfyModels.updatedAt).toLocaleString("ja-JP")}` : "";
+  return `<div class="full meta">ComfyUIモデル一覧: Checkpoint ${checkpoints.length}件 / LoRA ${loras.length}件${escapeHtml(updated)}</div>`;
+}
+
+function renderComfyValidationResult() {
+  const result = state.comfyValidation;
+  if (!result) return "";
+  if (result.status === "loading") return `<div class="full comfy-validation">workflow事前チェック中です。</div>`;
+  const errors = Array.isArray(result.errors) ? result.errors : [];
+  const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+  const summary = result.summary || {};
+  const className = errors.length ? "failed" : warnings.length ? "warning" : "ok";
+  const title = errors.length ? "事前チェック: 要修正" : warnings.length ? "事前チェック: 注意あり" : "事前チェック: OK";
+  return `
+    <div class="full comfy-validation ${className}">
+      <strong>${escapeHtml(title)}</strong>
+      <div class="meta">${escapeHtml(`${summary.nodeCount ?? "-"} nodes / ${summary.edgeCount ?? "-"} connections / LoRA ${summary.loraCount ?? 0}件 / Checkpoint ${summary.checkpoint || "workflow既定"}`)}</div>
+      ${errors.length ? `<ul>${errors.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
+      ${warnings.length ? `<ul>${warnings.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
+    </div>
+  `;
+}
+
+function parseComfyWorkflowForUi(workflowJson) {
+  try {
+    const parsed = JSON.parse(String(workflowJson || "{}"));
+    const prompt = parsed?.prompt && typeof parsed.prompt === "object" ? parsed.prompt : parsed;
+    if (!prompt || typeof prompt !== "object" || Array.isArray(prompt)) {
+      return { prompt: null, error: "workflow JSONはComfyUIのAPI Formatオブジェクトである必要があります。" };
+    }
+    return { prompt, error: "" };
+  } catch (error) {
+    return { prompt: null, error: `workflow JSONを解析できません: ${error.message}` };
+  }
+}
+
+function isComfyWorkflowLink(value) {
+  return Array.isArray(value) && value.length >= 2 && (typeof value[0] === "string" || typeof value[0] === "number");
+}
+
+function comfyWorkflowNodeTitle(node, id) {
+  return node?._meta?.title || node?.class_type || `Node ${id}`;
+}
+
+function comfyWorkflowValuePreview(value) {
+  if (isComfyWorkflowLink(value)) return `Node ${value[0]}:${value[1]}`;
+  if (typeof value === "string") return compactPromptText(value, 80);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (value === null || value === undefined) return "";
+  return compactPromptText(JSON.stringify(value), 80);
+}
+
+function comfyWorkflowNodeBadges(id, node, settings) {
+  const badges = [];
+  const idText = String(id);
+  if (idText === settings.positiveNodeId) badges.push("Positive");
+  if (idText === settings.negativeNodeId) badges.push("Negative");
+  if (idText === settings.seedNodeId) badges.push("Seed");
+  if (idText === settings.sizeNodeId) badges.push("Size");
+  if (idText === settings.stepsNodeId) badges.push("Steps");
+  if (idText === settings.cfgNodeId) badges.push("CFG");
+  if (idText === settings.samplerNodeId) badges.push("Sampler");
+  if (idText === settings.checkpointNodeId) badges.push("Checkpoint");
+  if (/lora/i.test(String(node?.class_type || ""))) badges.push("LoRA");
+  return [...new Set(badges)];
+}
+
+function renderComfyWorkflowVisual(settings) {
+  const { prompt, error } = parseComfyWorkflowForUi(settings.workflowJson);
+  if (error) {
+    return `<div class="workflow-visual"><div class="danger-text">${escapeHtml(error)}</div></div>`;
+  }
+  const entries = Object.entries(prompt).sort(([a], [b]) => {
+    const aNum = Number(a);
+    const bNum = Number(b);
+    if (Number.isFinite(aNum) && Number.isFinite(bNum)) return aNum - bNum;
+    return String(a).localeCompare(String(b), "ja");
+  });
+  const edges = [];
+  const loraSummary = activeComfyLoras(settings.loras).map((item) => item.name).join(", ");
+  const cards = entries.map(([id, node]) => {
+    const inputs = Object.entries(node?.inputs || {});
+    inputs.forEach(([key, value]) => {
+      if (isComfyWorkflowLink(value)) {
+        edges.push({ from: String(value[0]), output: value[1], to: String(id), input: key });
+      }
+    });
+    const badges = comfyWorkflowNodeBadges(id, node, settings);
+    const pinnedInputs = inputs
+      .filter(([, value]) => !isComfyWorkflowLink(value))
+      .slice(0, 4)
+      .map(([key, value]) => `<li><span>${escapeHtml(key)}</span>${escapeHtml(comfyWorkflowValuePreview(value))}</li>`)
+      .join("");
+    return `
+      <article class="workflow-node-card ${badges.length ? "highlight" : ""}">
+        <div class="workflow-node-top">
+          <strong>${escapeHtml(id)}</strong>
+          <span>${escapeHtml(node?.class_type || "Unknown")}</span>
+        </div>
+        <div class="workflow-node-title">${escapeHtml(comfyWorkflowNodeTitle(node, id))}</div>
+        ${badges.length ? `<div class="workflow-node-badges">${badges.map((badge) => `<span>${escapeHtml(badge)}</span>`).join("")}</div>` : ""}
+        ${pinnedInputs ? `<ul class="workflow-node-inputs">${pinnedInputs}</ul>` : ""}
+      </article>
+    `;
+  }).join("");
+  const edgeHtml = edges.slice(0, 80).map((edge) => `
+    <li><strong>${escapeHtml(edge.from)}:${escapeHtml(edge.output)}</strong><span>-&gt;</span><strong>${escapeHtml(edge.to)}</strong><span>${escapeHtml(edge.input)}</span></li>
+  `).join("");
+  return `
+    <div class="workflow-visual">
+      <div class="workflow-summary">${entries.length} nodes / ${edges.length} connections${loraSummary ? ` / LoRA: ${escapeHtml(loraSummary)}` : ""}</div>
+      <div class="workflow-node-grid">${cards}</div>
+      <div class="workflow-edge-list">
+        <div class="meta">接続</div>
+        <ul>${edgeHtml || "<li>接続はありません。</li>"}</ul>
+      </div>
+    </div>
+  `;
+}
+
+function renderComfySettings() {
+  const settings = activeComfySettings();
+  return `
+    <section class="panel settings-panel">
+      <div class="panel-header">
+        <h2>ComfyUI</h2>
+        <div class="group">
+          <button class="ghost" data-action="check-comfy">連携確認</button>
+          <button class="ghost" data-action="load-comfy-models" ${state.comfyModelStatus === "loading" ? "disabled" : ""}>モデル一覧</button>
+          <button class="ghost" data-action="validate-comfy-workflow">事前チェック</button>
+        </div>
+      </div>
+      <div class="panel-body form-grid">
+        ${renderComfyModelDatalists()}
+        <label class="full">既定GPU
+          <select id="setting-comfy-gpu-mode">
+            <option value="local" ${settings.gpuMode === "local" ? "selected" : ""}>ローカルGPU</option>
+            <option value="cloud" ${settings.gpuMode === "cloud" ? "selected" : ""}>クラウドGPU</option>
+          </select>
+        </label>
+        <label class="full">ローカルComfyUI URL
+          <input id="setting-comfy-local-url" placeholder="http://127.0.0.1:8188" value="${escapeHtml(settings.localBaseUrl)}">
+        </label>
+        <label class="full">クラウドComfyUI URL
+          <input id="setting-comfy-cloud-url" placeholder="https://your-comfy.example.com" value="${escapeHtml(settings.cloudBaseUrl)}">
+        </label>
+        <label class="full">クラウドAPIキー
+          <input id="setting-comfy-cloud-api-key" type="password" placeholder="Bearer token / API key" value="${escapeHtml(comfyCloudApiKey())}">
+        </label>
+        <label>既定幅
+          <input id="setting-comfy-width" type="number" min="64" max="4096" step="64" value="${escapeHtml(settings.width)}">
+        </label>
+        <label>既定高さ
+          <input id="setting-comfy-height" type="number" min="64" max="4096" step="64" value="${escapeHtml(settings.height)}">
+        </label>
+        <label>既定Steps
+          <input id="setting-comfy-steps" type="number" min="1" max="150" value="${escapeHtml(settings.steps)}">
+        </label>
+        <label>既定CFG
+          <input id="setting-comfy-cfg" type="number" min="0" max="30" step="0.5" value="${escapeHtml(settings.cfg)}">
+        </label>
+        <label>既定Sampler
+          <input id="setting-comfy-sampler" value="${escapeHtml(settings.samplerName)}">
+        </label>
+        <label>既定Scheduler
+          <input id="setting-comfy-scheduler" value="${escapeHtml(settings.scheduler)}">
+        </label>
+        <label>既定Batch
+          <input id="setting-comfy-batch-size" type="number" min="1" max="8" value="${escapeHtml(settings.batchSize)}">
+        </label>
+        <label>既定Seed
+          <input id="setting-comfy-seed" type="number" placeholder="空欄でランダム" value="${escapeHtml(settings.seed)}">
+        </label>
+        <label class="full">既定Checkpoint
+          <input id="setting-comfy-checkpoint" list="comfy-checkpoint-options" placeholder="例: animagineXL.safetensors" value="${escapeHtml(settings.checkpoint)}">
+        </label>
+        <div class="full comfy-lora-list">
+          <div class="field-label">LoRA</div>
+          ${renderComfyLoraRows("setting", settings.loras)}
+        </div>
+        ${renderComfyModelStatus()}
+        ${renderComfyValidationResult()}
+        <div class="full comfy-node-grid">
+          <label>Positive Node<input id="setting-comfy-positive-node" value="${escapeHtml(settings.positiveNodeId)}"></label>
+          <label>Negative Node<input id="setting-comfy-negative-node" value="${escapeHtml(settings.negativeNodeId)}"></label>
+          <label>Seed Node<input id="setting-comfy-seed-node" value="${escapeHtml(settings.seedNodeId)}"></label>
+          <label>Size Node<input id="setting-comfy-size-node" value="${escapeHtml(settings.sizeNodeId)}"></label>
+          <label>Steps Node<input id="setting-comfy-steps-node" value="${escapeHtml(settings.stepsNodeId)}"></label>
+          <label>CFG Node<input id="setting-comfy-cfg-node" value="${escapeHtml(settings.cfgNodeId)}"></label>
+          <label>Sampler Node<input id="setting-comfy-sampler-node" value="${escapeHtml(settings.samplerNodeId)}"></label>
+          <label>Checkpoint Node<input id="setting-comfy-checkpoint-node" value="${escapeHtml(settings.checkpointNodeId)}"></label>
+        </div>
+        <label class="full">Workflow表示
+          <select id="setting-comfy-workflow-mode">
+            <option value="json" ${settings.workflowViewMode === "json" ? "selected" : ""}>JSON編集</option>
+            <option value="visual" ${settings.workflowViewMode === "visual" ? "selected" : ""}>ビジュアル確認</option>
+          </select>
+        </label>
+        ${settings.workflowViewMode === "visual"
+          ? renderComfyWorkflowVisual(settings)
+          : `<label class="full">Workflow JSON
+              <textarea id="setting-comfy-workflow" class="json-textarea" spellcheck="false">${escapeHtml(settings.workflowJson)}</textarea>
+            </label>`}
+        <div class="full meta">ComfyUIで「Save (API Format)」したworkflowを貼り付けると、上のNode IDに対応する入力だけを生成時に差し替えます。完成画像は data/uploads の作品フォルダ内「_画像生成」に保存され、画像一覧にも登録されます。</div>
+      </div>
+    </section>
+  `;
+}
+
 function renderSettings() {
   const statusText = {
     idle: "モデル一覧はまだ読み込まれていません。",
@@ -5050,6 +6392,11 @@ function renderSettings() {
 	      ? "ElevenLabsモデル一覧を読み込み中です。"
 	      : state.elevenLabsModelError || "未取得時は主要TTSモデルを候補表示します。";
 	  const irodoriStatusText = state.irodoriStatusMessage || "Irodori-TTSの配置場所を確認できます。未導入の環境ではセットアップを実行すると vendor/Irodori-TTS に取得します。";
+	  const voiceboxStatusText = state.voiceboxProfileStatus === "loaded"
+	    ? `${state.voiceboxProfiles.length} 件のVoiceboxプロファイルを読み込みました。`
+	    : state.voiceboxProfileStatus === "loading"
+	      ? "Voiceboxプロファイルを読み込み中です。"
+	      : state.voiceboxProfileError || "Voiceboxアプリを起動すると、ローカルAPIからプロファイルを取得できます。";
   return `
     <section class="panel">
       <div class="panel-header"><h2>OpenRouter</h2></div>
@@ -5060,6 +6407,7 @@ function renderSettings() {
         ${renderModelSelect("setting-model", "画像判別モデル", state.db.settings.defaultModel || "", "image")}
         ${renderModelSelect("setting-text-model", "テキスト生成モデル", state.db.settings.textModel || "", "text")}
         ${renderModelSelect("setting-world-model", "世界観読み込みモデル", state.db.settings.worldModel || state.db.settings.defaultModel || "", "image")}
+        ${renderModelSelect("setting-image-agent-model", "画像生成エージェントモデル", state.db.settings.imageAgentModel || state.db.settings.textModel || "", "text")}
         ${renderModelSelect("setting-video-agent-model", "動画エージェントモデル", state.db.settings.videoAgentModel || state.db.settings.textModel || "", "image")}
         ${renderModelSelect("setting-audio-agent-model", "音声エージェントモデル", state.db.settings.audioAgentModel || state.db.settings.textModel || "", "text")}
         <label class="full">音声生成モデル
@@ -5117,6 +6465,28 @@ function renderSettings() {
 	      </div>
 	    </section>
 	    <section class="panel settings-panel">
+	      <div class="panel-header"><h2>Voicebox</h2></div>
+	      <div class="panel-body form-grid">
+	        <label class="full">API URL
+	          <input id="setting-voicebox-base-url" value="${escapeHtml(state.db.settings.voiceboxBaseUrl || voiceboxDefaultSettings.baseUrl)}" placeholder="http://127.0.0.1:17493">
+	        </label>
+	        <label class="full">既定プロファイル
+	          <select id="setting-voicebox-profile-id">${renderVoiceboxProfileOptions(state.db.settings.voiceboxProfileId || "")}</select>
+	        </label>
+	        <label>既定言語
+	          <select id="setting-voicebox-language">${Array.from(new Set([state.db.settings.voiceboxLanguage || "ja", ...voiceboxLanguageOptions].filter(Boolean))).map((language) => `<option value="${escapeHtml(language)}" ${language === (state.db.settings.voiceboxLanguage || "ja") ? "selected" : ""}>${escapeHtml(language)}</option>`).join("")}</select>
+	        </label>
+	        <label>既定Model size
+	          <select id="setting-voicebox-model-size">${Array.from(new Set([state.db.settings.voiceboxModelSize || "1.7B", ...voiceboxModelSizeOptions].filter(Boolean))).map((modelSize) => `<option value="${escapeHtml(modelSize)}" ${modelSize === (state.db.settings.voiceboxModelSize || "1.7B") ? "selected" : ""}>${escapeHtml(modelSize)}</option>`).join("")}</select>
+	        </label>
+	        <div class="full meta">${escapeHtml(voiceboxStatusText)}</div>
+	        <div class="full toolbar">
+	          <button class="ghost" data-action="load-voicebox-profiles" ${state.voiceboxProfileStatus === "loading" ? "disabled" : ""}>プロファイル取得</button>
+	        </div>
+	        <div class="full meta">Voiceboxは通常この端末のローカルAPI（http://127.0.0.1:17493）へ接続します。プロファイルはVoicebox側で作成・管理します。</div>
+	      </div>
+	    </section>
+	    <section class="panel settings-panel">
       <div class="panel-header"><h2>Irodori-TTS連携</h2></div>
       <div class="panel-body form-grid">
         <label class="full">Irodori-TTSフォルダ
@@ -5130,6 +6500,7 @@ function renderSettings() {
         <div class="full meta">この端末では既存のIrodori-TTSも検出できます。別のユーザーは「Irodori-TTSを取得」でGitHubから取得し、uv sync まで実行できます。初回生成時はモデルのダウンロードで時間がかかります。</div>
       </div>
     </section>
+    ${renderComfySettings()}
     <section class="panel settings-panel">
       <div class="panel-header"><h2>Seedance</h2></div>
       <div class="panel-body form-grid">
@@ -5169,6 +6540,7 @@ function bindView() {
   if (state.view === "studio") bindStudio();
   if (state.view === "import") bindImport();
   if (state.view === "gallery") bindGallery();
+  if (state.view === "image") bindImageAgent();
   if (state.view === "audio") bindAudioAgent();
   if (state.view === "video") bindVideoAgent();
   if (state.view === "library") bindLibrary();
@@ -5760,6 +7132,106 @@ function bindGallery() {
   });
 }
 
+function bindImageAgent() {
+  const persistImageControls = () => {
+    const controls = imageControlsFromDom();
+    rememberImageControls(controls);
+  };
+  [
+    "#image-gpu-mode",
+    "#image-title",
+    "#image-width",
+    "#image-height",
+    "#image-steps",
+    "#image-cfg",
+    "#image-sampler",
+    "#image-scheduler",
+    "#image-batch-size",
+    "#image-seed",
+    "#image-checkpoint",
+    "#image-prompt-text",
+    "#image-negative-prompt",
+    "#image-lora-name-0",
+    "#image-lora-name-1",
+    "#image-lora-name-2",
+    "#image-lora-model-0",
+    "#image-lora-model-1",
+    "#image-lora-model-2",
+    "#image-lora-clip-0",
+    "#image-lora-clip-1",
+    "#image-lora-clip-2"
+  ].forEach((selector) => {
+    document.querySelector(selector)?.addEventListener("change", persistImageControls);
+  });
+  document.querySelectorAll("[id^='image-lora-']").forEach((input) => {
+    input.addEventListener("input", persistImageControls);
+  });
+  document.querySelector("#image-prompt-text")?.addEventListener("input", (event) => {
+    state.imagePromptDraft = {
+      ...(state.imagePromptDraft || {}),
+      prompt: event.target.value
+    };
+    state.comfyValidation = null;
+  });
+  document.querySelector("#image-negative-prompt")?.addEventListener("input", (event) => {
+    state.imagePromptDraft = {
+      ...(state.imagePromptDraft || {}),
+      negativePrompt: event.target.value
+    };
+    state.comfyValidation = null;
+  });
+  document.querySelector("#image-chat-input")?.addEventListener("input", (event) => {
+    state.imageChatDraft = event.target.value;
+  });
+  document.querySelector("#image-gpu-mode")?.addEventListener("change", () => {
+    persistImageControls();
+    render();
+  });
+  document.querySelector("#image-work")?.addEventListener("change", (event) => {
+    persistImageControls();
+    state.imageWorkId = event.target.value || null;
+    state.selectedWorkId = state.imageWorkId;
+    if (state.imageCharacterId && !imageCharacterOptions().some((char) => char.id === state.imageCharacterId)) {
+      state.imageCharacterId = "";
+    }
+    render();
+  });
+  document.querySelector("#image-character")?.addEventListener("change", (event) => {
+    persistImageControls();
+    state.imageCharacterId = event.target.value || "";
+    const char = byId(state.db.characters, state.imageCharacterId);
+    if (char) {
+      state.imageWorkId = char.workId;
+      state.selectedWorkId = char.workId;
+    }
+    render();
+  });
+  document.querySelector("[data-action='image-send-message']")?.addEventListener("click", () => handleImageAgentMessage(false));
+  document.querySelector("[data-action='image-make-draft']")?.addEventListener("click", () => handleImageAgentMessage(true));
+  document.querySelector("[data-action='image-copy-prompt']")?.addEventListener("click", () => {
+    const prompt = document.querySelector("#image-prompt-text")?.value || "";
+    const negative = document.querySelector("#image-negative-prompt")?.value || "";
+    copyText(`${prompt}${negative ? `\nNegative: ${negative}` : ""}`);
+  });
+  document.querySelector("[data-action='discard-image-waiting']")?.addEventListener("click", discardImageWaitingJobs);
+  document.querySelectorAll("[data-action='load-comfy-models']").forEach((button) => {
+    button.addEventListener("click", () => loadComfyModels());
+  });
+  document.querySelectorAll("[data-action='validate-comfy-workflow']").forEach((button) => {
+    button.addEventListener("click", validateCurrentComfyWorkflow);
+  });
+  document.querySelector("[data-action='image-start-generation']")?.addEventListener("click", startComfyGeneration);
+  document.querySelectorAll("[data-action='refresh-image-job']").forEach((button) => {
+    button.addEventListener("click", () => pollComfyJob(button.dataset.id));
+  });
+  document.querySelectorAll("[data-action='copy-image-job-prompt']").forEach((button) => {
+    button.addEventListener("click", () => {
+      const job = byId(state.db.imageJobs || [], button.dataset.id);
+      if (job) copyText(`${job.prompt || ""}${job.negativePrompt ? `\nNegative: ${job.negativePrompt}` : ""}`);
+    });
+  });
+}
+
 function bindAudioAgent() {
   const persistAudioControls = () => {
     const controls = audioControlsFromDom();
@@ -5774,6 +7246,7 @@ function bindAudioAgent() {
       voice: controls.voice,
       provider: controls.provider,
       elevenLabs: controls.elevenLabs,
+      voicebox: controls.voicebox,
       ...controls.irodori,
       actingPrompt: controls.actingPrompt,
       caption: controls.caption
@@ -5790,6 +7263,10 @@ function bindAudioAgent() {
     state.db.settings.elevenLabsSpeed = controls.elevenLabs.speed;
     state.db.settings.elevenLabsSpeakerBoost = controls.elevenLabs.useSpeakerBoost;
     state.db.settings.elevenLabsLanguageCode = controls.elevenLabs.languageCode;
+    state.db.settings.voiceboxBaseUrl = controls.voicebox.baseUrl;
+    state.db.settings.voiceboxProfileId = controls.voicebox.profileId;
+    state.db.settings.voiceboxLanguage = controls.voicebox.language;
+    state.db.settings.voiceboxModelSize = controls.voicebox.modelSize;
     state.db.settings.irodoriDefaults = controls.irodori;
   };
   [
@@ -5807,6 +7284,11 @@ function bindAudioAgent() {
     "#audio-elevenlabs-language-code",
     "#audio-elevenlabs-seed",
     "#audio-elevenlabs-speaker-boost",
+    "#audio-voicebox-base-url",
+    "#audio-voicebox-profile-id",
+    "#audio-voicebox-language",
+    "#audio-voicebox-model-size",
+    "#audio-voicebox-seed",
     "#audio-irodori-mode",
     "#audio-irodori-caption",
     "#audio-irodori-steps",
@@ -5847,6 +7329,10 @@ function bindAudioAgent() {
   document.querySelector("[data-action='load-elevenlabs-models']")?.addEventListener("click", async () => {
     persistAudioControls();
     await loadElevenLabsModels();
+  });
+  document.querySelector("[data-action='load-voicebox-profiles']")?.addEventListener("click", async () => {
+    persistAudioControls();
+    await loadVoiceboxProfiles();
   });
   document.querySelector("[data-action='clear-irodori-reference']")?.addEventListener("click", () => {
     state.audioIrodoriReference = null;
@@ -6186,6 +7672,42 @@ async function loadElevenLabsModels() {
   if (state.view === "audio" || state.view === "settings") render();
 }
 
+async function loadVoiceboxProfiles() {
+  const current = voiceboxSettingsFromControls({
+    baseUrl: document.querySelector("#audio-voicebox-base-url")?.value
+      || document.querySelector("#setting-voicebox-base-url")?.value
+      || state.db.settings.voiceboxBaseUrl,
+    profileId: document.querySelector("#audio-voicebox-profile-id")?.value
+      || document.querySelector("#setting-voicebox-profile-id")?.value
+      || state.db.settings.voiceboxProfileId,
+    language: document.querySelector("#audio-voicebox-language")?.value
+      || document.querySelector("#setting-voicebox-language")?.value
+      || state.db.settings.voiceboxLanguage,
+    modelSize: document.querySelector("#audio-voicebox-model-size")?.value
+      || document.querySelector("#setting-voicebox-model-size")?.value
+      || state.db.settings.voiceboxModelSize
+  });
+  state.db.settings.voiceboxBaseUrl = current.baseUrl;
+  state.voiceboxProfileStatus = "loading";
+  state.voiceboxProfileError = "";
+  if (state.view === "audio" || state.view === "settings") render();
+  try {
+    const result = await postJson("/api/voicebox/profiles", { baseUrl: current.baseUrl });
+    state.voiceboxProfiles = Array.isArray(result.profiles) ? result.profiles : [];
+    state.voiceboxProfileStatus = "loaded";
+    if (!state.db.settings.voiceboxProfileId && state.voiceboxProfiles[0]?.id) {
+      state.db.settings.voiceboxProfileId = state.voiceboxProfiles[0].id;
+    }
+    toast(`${state.voiceboxProfiles.length} 件のVoiceboxプロファイルを読み込みました。`);
+  } catch (error) {
+    state.voiceboxProfiles = [];
+    state.voiceboxProfileStatus = "failed";
+    state.voiceboxProfileError = error.message;
+    toast(error.message);
+  }
+  if (state.view === "audio" || state.view === "settings") render();
+}
+
 async function checkIrodoriConnection() {
   const appDir = document.querySelector("#setting-irodori-app-dir")?.value.trim() || state.db.settings.irodoriAppDir || "vendor/Irodori-TTS";
   state.db.settings.irodoriAppDir = appDir;
@@ -6249,6 +7771,115 @@ function saveElevenLabsSettingsFromDom() {
   state.db.settings.elevenLabsSpeakerBoost = document.querySelector("#setting-elevenlabs-speaker-boost")?.checked ?? state.db.settings.elevenLabsSpeakerBoost ?? true;
 }
 
+function saveVoiceboxSettingsFromDom() {
+  const settings = voiceboxSettingsFromControls({
+    baseUrl: document.querySelector("#setting-voicebox-base-url")?.value || state.db.settings.voiceboxBaseUrl,
+    profileId: document.querySelector("#setting-voicebox-profile-id")?.value || state.db.settings.voiceboxProfileId,
+    language: document.querySelector("#setting-voicebox-language")?.value || state.db.settings.voiceboxLanguage,
+    modelSize: document.querySelector("#setting-voicebox-model-size")?.value || state.db.settings.voiceboxModelSize
+  });
+  state.db.settings.voiceboxBaseUrl = settings.baseUrl;
+  state.db.settings.voiceboxProfileId = settings.profileId;
+  state.db.settings.voiceboxLanguage = settings.language;
+  state.db.settings.voiceboxModelSize = settings.modelSize;
+}
+
+function comfySettingsFromDom() {
+  const current = activeComfySettings();
+  return normalizedComfySettings({
+    ...current,
+    gpuMode: document.querySelector("#setting-comfy-gpu-mode")?.value || current.gpuMode,
+    localBaseUrl: document.querySelector("#setting-comfy-local-url")?.value.trim() || current.localBaseUrl,
+    cloudBaseUrl: document.querySelector("#setting-comfy-cloud-url")?.value.trim() || "",
+    workflowJson: document.querySelector("#setting-comfy-workflow")?.value.trim() || current.workflowJson,
+    workflowViewMode: document.querySelector("#setting-comfy-workflow-mode")?.value || current.workflowViewMode,
+    positiveNodeId: document.querySelector("#setting-comfy-positive-node")?.value.trim() || current.positiveNodeId,
+    negativeNodeId: document.querySelector("#setting-comfy-negative-node")?.value.trim() || current.negativeNodeId,
+    seedNodeId: document.querySelector("#setting-comfy-seed-node")?.value.trim() || current.seedNodeId,
+    sizeNodeId: document.querySelector("#setting-comfy-size-node")?.value.trim() || current.sizeNodeId,
+    stepsNodeId: document.querySelector("#setting-comfy-steps-node")?.value.trim() || current.stepsNodeId,
+    cfgNodeId: document.querySelector("#setting-comfy-cfg-node")?.value.trim() || current.cfgNodeId,
+    samplerNodeId: document.querySelector("#setting-comfy-sampler-node")?.value.trim() || current.samplerNodeId,
+    checkpointNodeId: document.querySelector("#setting-comfy-checkpoint-node")?.value.trim() || current.checkpointNodeId,
+    width: document.querySelector("#setting-comfy-width")?.value ?? current.width,
+    height: document.querySelector("#setting-comfy-height")?.value ?? current.height,
+    steps: document.querySelector("#setting-comfy-steps")?.value ?? current.steps,
+    cfg: document.querySelector("#setting-comfy-cfg")?.value ?? current.cfg,
+    samplerName: document.querySelector("#setting-comfy-sampler")?.value.trim() || current.samplerName,
+    scheduler: document.querySelector("#setting-comfy-scheduler")?.value.trim() || current.scheduler,
+    batchSize: document.querySelector("#setting-comfy-batch-size")?.value ?? current.batchSize,
+    seed: document.querySelector("#setting-comfy-seed")?.value.trim() ?? current.seed,
+    checkpoint: document.querySelector("#setting-comfy-checkpoint")?.value.trim() ?? current.checkpoint,
+    loras: lorasFromDom("setting", current.loras)
+  });
+}
+
+function saveComfySettingsFromDom() {
+  const keyInput = document.querySelector("#setting-comfy-cloud-api-key");
+  if (keyInput) localStorage.setItem("comfy_cloud_api_key", keyInput.value.trim());
+  state.db.settings.comfy = comfySettingsFromDom();
+  state.imageGpuMode = state.db.settings.comfy.gpuMode;
+  state.comfyValidation = null;
+}
+
+async function loadComfyModels({ silent = false } = {}) {
+  if (state.view === "settings") saveComfySettingsFromDom();
+  const controls = state.view === "image" ? imageControlsFromDom() : null;
+  if (controls) rememberImageControls(controls);
+  const gpuMode = controls?.gpuMode || activeComfySettings().gpuMode;
+  const baseUrl = controls?.baseUrl || activeComfyBaseUrl(gpuMode);
+  const apiKeyValue = controls?.apiKey || activeComfyApiKey(gpuMode);
+  if (!baseUrl) return toast(`${imageGpuLabel(gpuMode)}のComfyUI URLを設定してください。`);
+  state.comfyModelStatus = "loading";
+  state.comfyModelError = "";
+  if (!silent) render({ preserveLiveTextDrafts: true });
+  try {
+    const result = await postJson("/api/comfy/models", { baseUrl, apiKey: apiKeyValue });
+    state.comfyModels = {
+      checkpoints: Array.isArray(result.checkpoints) ? result.checkpoints : [],
+      loras: Array.isArray(result.loras) ? result.loras : [],
+      updatedAt: result.updatedAt || new Date().toISOString()
+    };
+    state.comfyModelStatus = "loaded";
+    state.comfyModelError = "";
+    if (!silent) {
+      render({ preserveLiveTextDrafts: true });
+      toast(`ComfyUIモデル一覧を取得しました。Checkpoint ${state.comfyModels.checkpoints.length}件 / LoRA ${state.comfyModels.loras.length}件`);
+    }
+    return state.comfyModels;
+  } catch (error) {
+    state.comfyModelStatus = "failed";
+    state.comfyModelError = error.message;
+    if (!silent) {
+      render({ preserveLiveTextDrafts: true });
+      toast(error.message);
+    }
+    return null;
+  }
+}
+
+async function checkComfyConnection() {
+  saveComfySettingsFromDom();
+  const settings = activeComfySettings();
+  const baseUrl = activeComfyBaseUrl(settings.gpuMode);
+  if (!baseUrl) return toast(`${imageGpuLabel(settings.gpuMode)}のComfyUI URLを設定してください。`);
+  try {
+    const result = await postJson("/api/comfy/check", {
+      baseUrl,
+      apiKey: activeComfyApiKey(settings.gpuMode)
+    });
+    await saveDb();
+    const deviceText = Array.isArray(result.devices) && result.devices.length
+      ? ` / ${result.devices.map((device) => device.name || device.type || "device").join(", ")}`
+      : "";
+    toast(`ComfyUIに接続できました。${deviceText}`);
+    await loadComfyModels({ silent: true });
+    if (state.view === "settings" || state.view === "image") render({ preserveLiveTextDrafts: true });
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
 function bindSettings() {
   loadOpenRouterModels();
   if (isOpenRouterSeedanceBaseUrl()) loadOpenRouterVideoModels();
@@ -6278,9 +7909,12 @@ function bindSettings() {
 	    localStorage.setItem("openrouter_api_key", document.querySelector("#setting-api-key").value.trim());
 	    localStorage.setItem("seedance_api_key", document.querySelector("#setting-seedance-api-key")?.value.trim() || "");
 	    saveElevenLabsSettingsFromDom();
+	    saveVoiceboxSettingsFromDom();
+	    saveComfySettingsFromDom();
 	    state.db.settings.defaultModel = document.querySelector("#setting-model").value.trim();
     state.db.settings.textModel = document.querySelector("#setting-text-model").value.trim();
     state.db.settings.worldModel = document.querySelector("#setting-world-model").value.trim();
+    state.db.settings.imageAgentModel = document.querySelector("#setting-image-agent-model").value.trim();
     state.db.settings.videoAgentModel = document.querySelector("#setting-video-agent-model").value.trim();
     state.db.settings.audioAgentModel = document.querySelector("#setting-audio-agent-model").value.trim();
     state.db.settings.audioModel = openRouterTtsModel;
@@ -6294,9 +7928,12 @@ function bindSettings() {
 	  document.querySelector("[data-action='test-openrouter']")?.addEventListener("click", async () => {
 	    localStorage.setItem("openrouter_api_key", document.querySelector("#setting-api-key").value.trim());
 	    saveElevenLabsSettingsFromDom();
+	    saveVoiceboxSettingsFromDom();
+	    saveComfySettingsFromDom();
 	    state.db.settings.defaultModel = document.querySelector("#setting-model").value.trim();
     state.db.settings.textModel = document.querySelector("#setting-text-model").value.trim();
     state.db.settings.worldModel = document.querySelector("#setting-world-model").value.trim();
+    state.db.settings.imageAgentModel = document.querySelector("#setting-image-agent-model").value.trim();
     state.db.settings.videoAgentModel = document.querySelector("#setting-video-agent-model").value.trim();
     state.db.settings.audioAgentModel = document.querySelector("#setting-audio-agent-model").value.trim();
     state.db.settings.audioModel = openRouterTtsModel;
@@ -6321,7 +7958,22 @@ function bindSettings() {
 	    saveElevenLabsSettingsFromDom();
 	    await loadElevenLabsModels();
 	  });
+	  document.querySelector("[data-action='load-voicebox-profiles']")?.addEventListener("click", async () => {
+	    saveVoiceboxSettingsFromDom();
+	    await loadVoiceboxProfiles();
+	  });
 	  document.querySelector("[data-action='check-irodori']")?.addEventListener("click", checkIrodoriConnection);
+  document.querySelector("[data-action='check-comfy']")?.addEventListener("click", checkComfyConnection);
+  document.querySelectorAll("[data-action='load-comfy-models']").forEach((button) => {
+    button.addEventListener("click", () => loadComfyModels());
+  });
+  document.querySelectorAll("[data-action='validate-comfy-workflow']").forEach((button) => {
+    button.addEventListener("click", validateCurrentComfyWorkflow);
+  });
+  document.querySelector("#setting-comfy-workflow-mode")?.addEventListener("change", () => {
+    saveComfySettingsFromDom();
+    render();
+  });
   document.querySelector("[data-action='setup-irodori']")?.addEventListener("click", setupIrodori);
   document.querySelector("[data-action='reload-openrouter-models']")?.addEventListener("click", () => loadOpenRouterModels({ force: true }));
 }
@@ -7220,6 +8872,7 @@ async function boot() {
   try {
     state.db = await getJson("/api/db");
     state.selectedWorkId = state.db.works[0]?.id || null;
+    state.imageWorkId = state.selectedWorkId;
     state.audioWorkId = state.selectedWorkId;
     state.videoWorkId = state.selectedWorkId;
     state.galleryWorkId = state.selectedWorkId;
@@ -7227,6 +8880,8 @@ async function boot() {
     await normalizeStoredUploads();
     if (hadInterruptedClassifications) await saveDb();
     render();
+    const activeImageJob = (state.db.imageJobs || []).find((job) => job.providerTaskId && activeImageJobStatuses.includes(job.status));
+    if (activeImageJob) window.setTimeout(() => pollComfyJob(activeImageJob.id), 1200);
     const activeJob = (state.db.videoJobs || []).find((job) => job.providerTaskId && activeVideoJobStatuses.includes(job.status));
     if (activeJob) window.setTimeout(() => pollSeedanceJob(activeJob.id), 1200);
   } catch (error) {

@@ -47,6 +47,7 @@ const emptyDb = {
     defaultModel: "google/gemini-2.5-flash",
     textModel: "google/gemini-2.5-flash",
     worldModel: "google/gemini-2.5-flash",
+    imageAgentModel: "google/gemini-2.5-flash",
     videoAgentModel: "google/gemini-2.5-flash",
     audioAgentModel: "google/gemini-2.5-flash",
     audioProvider: "openrouter",
@@ -62,6 +63,10 @@ const emptyDb = {
     elevenLabsSpeed: 1,
     elevenLabsSpeakerBoost: true,
     elevenLabsLanguageCode: "ja",
+    voiceboxBaseUrl: "http://127.0.0.1:17493",
+    voiceboxProfileId: "",
+    voiceboxLanguage: "ja",
+    voiceboxModelSize: "1.7B",
     irodoriAppDir: "vendor/Irodori-TTS",
     irodoriDefaults: {
       mode: "VoiceDesign",
@@ -81,6 +86,31 @@ const emptyDb = {
     seedanceBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3",
     seedanceModel: "dreamina-seedance-2-0-260128",
     seedanceResolution: "720p",
+    comfy: {
+      gpuMode: "local",
+      localBaseUrl: "http://127.0.0.1:8188",
+      cloudBaseUrl: "",
+      workflowJson: "",
+      workflowViewMode: "json",
+      positiveNodeId: "6",
+      negativeNodeId: "7",
+      seedNodeId: "3",
+      sizeNodeId: "5",
+      stepsNodeId: "3",
+      cfgNodeId: "3",
+      samplerNodeId: "3",
+      checkpointNodeId: "4",
+      width: 1024,
+      height: 1024,
+      steps: 28,
+      cfg: 7,
+      samplerName: "euler",
+      scheduler: "normal",
+      batchSize: 1,
+      checkpoint: "",
+      seed: "",
+      loras: []
+    },
     moveImportedSourcesToTrash: false,
     importSourceRoot: ""
   },
@@ -90,6 +120,7 @@ const emptyDb = {
   assets: [],
   videoMedia: [],
   videoJobs: [],
+  imageJobs: [],
   audioItems: []
 };
 
@@ -119,7 +150,11 @@ function normalizeDb(db = {}) {
     ...db,
     settings: {
       ...emptyDb.settings,
-      ...(db.settings || {})
+      ...(db.settings || {}),
+      comfy: {
+        ...emptyDb.settings.comfy,
+        ...(db.settings?.comfy || {})
+      }
     },
     schemaVersion: 1
   };
@@ -1149,6 +1184,8 @@ function extensionFromAudioResponse(contentType, responseFormat = "mp3") {
   if (type.includes("wav")) return ".wav";
   if (type.includes("ogg")) return ".ogg";
   if (type.includes("pcm")) return ".pcm";
+  if (responseFormat === "wav") return ".wav";
+  if (responseFormat === "ogg") return ".ogg";
   return responseFormat === "pcm" ? ".pcm" : ".mp3";
 }
 
@@ -1461,6 +1498,252 @@ async function handleElevenLabsSpeech(req, res) {
   }
 }
 
+const defaultVoiceboxBaseUrl = "http://127.0.0.1:17493";
+
+function normalizeVoiceboxBaseUrl(value) {
+  const fallback = defaultVoiceboxBaseUrl;
+  const raw = String(value || fallback).trim() || fallback;
+  const withProtocol = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`;
+  const parsed = new URL(withProtocol);
+  parsed.hash = "";
+  parsed.search = "";
+  parsed.pathname = parsed.pathname.replace(/\/+$/g, "");
+  return parsed.href.replace(/\/$/g, "");
+}
+
+function voiceboxEndpoint(baseUrl, pathname) {
+  return `${normalizeVoiceboxBaseUrl(baseUrl)}${pathname}`;
+}
+
+async function jsonFromProviderResponse(response, fallbackMessage) {
+  const text = await response.text().catch(() => "");
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch {
+    return { error: text || fallbackMessage };
+  }
+}
+
+function normalizeVoiceboxProfile(profile = {}) {
+  const id = profile.id || profile.profile_id || profile.profileId || "";
+  return {
+    id,
+    name: profile.name || id,
+    description: profile.description || "",
+    language: profile.language || "",
+    voiceType: profile.voice_type || profile.voiceType || "",
+    defaultEngine: profile.default_engine || profile.defaultEngine || "",
+    presetEngine: profile.preset_engine || profile.presetEngine || "",
+    presetVoiceId: profile.preset_voice_id || profile.presetVoiceId || "",
+    createdAt: profile.created_at || profile.createdAt || "",
+    updatedAt: profile.updated_at || profile.updatedAt || ""
+  };
+}
+
+async function handleVoiceboxProfiles(req, res) {
+  const { baseUrl } = await readJson(req, 256 * 1024);
+  let endpoint;
+  try {
+    endpoint = voiceboxEndpoint(baseUrl, "/profiles");
+  } catch (error) {
+    return sendJson(res, 400, { error: `Voicebox URL が不正です: ${error.message}` });
+  }
+
+  try {
+    const response = await fetch(endpoint, {
+      headers: { "accept": "application/json" },
+      signal: AbortSignal.timeout(30000)
+    });
+    const payload = await jsonFromProviderResponse(response, `Voicebox profiles API が ${response.status} を返しました。`);
+    if (!response.ok) {
+      return sendJson(res, response.status, {
+        ...payload,
+        error: readableProviderError(payload.error) || readableProviderError(payload) || `Voicebox profiles API が ${response.status} を返しました。`,
+        providerError: payload.error || payload
+      });
+    }
+    const source = Array.isArray(payload) ? payload : Array.isArray(payload.profiles) ? payload.profiles : Array.isArray(payload.items) ? payload.items : [];
+    const profiles = source.map(normalizeVoiceboxProfile).filter((profile) => profile.id);
+    sendJson(res, 200, {
+      baseUrl: normalizeVoiceboxBaseUrl(baseUrl),
+      profiles,
+      raw: payload
+    });
+  } catch (error) {
+    sendJson(res, 502, {
+      error: `Voicebox に接続できません: ${error.message}`,
+      hint: "Voiceboxアプリを起動し、API URL（通常 http://127.0.0.1:17493）を確認してください。"
+    });
+  }
+}
+
+async function saveVoiceboxAudioResponse(response, title, fallbackFormat = "wav") {
+  const contentType = response.headers.get("content-type") || "";
+  const ext = extensionFromAudioResponse(contentType, fallbackFormat === "pcm" ? "pcm" : "wav");
+  const saveAsWav = ext === ".pcm";
+  const fileName = safeUploadName(title, saveAsWav ? ".wav" : ext);
+  const filePath = path.join(audioDir, fileName);
+  if (saveAsWav) {
+    const pcmBuffer = Buffer.from(await response.arrayBuffer());
+    await fs.writeFile(filePath, pcmToWavBuffer(pcmBuffer));
+  } else {
+    await pipeline(Readable.fromWeb(response.body), createWriteStream(filePath));
+  }
+  const stat = await fs.stat(filePath);
+  return {
+    url: `/audios/${encodeURIComponent(fileName)}`,
+    path: filePath,
+    mimeType: saveAsWav ? "audio/wav" : contentType || mimeForExtension(ext),
+    format: saveAsWav ? "wav" : ext.replace(".", "") || fallbackFormat,
+    size: stat.size
+  };
+}
+
+async function saveVoiceboxLocalAudio(audioPath, title) {
+  const resolved = path.resolve(String(audioPath || ""));
+  if (!await isFile(resolved)) throw new Error("Voiceboxの出力ファイルを読み込めませんでした。");
+  const ext = [".mp3", ".m4a", ".wav", ".ogg", ".webm", ".flac"].includes(path.extname(resolved).toLowerCase())
+    ? path.extname(resolved).toLowerCase()
+    : ".wav";
+  const fileName = safeUploadName(title, ext);
+  const filePath = path.join(audioDir, fileName);
+  await pipeline(createReadStream(resolved), createWriteStream(filePath));
+  const stat = await fs.stat(filePath);
+  return {
+    url: `/audios/${encodeURIComponent(fileName)}`,
+    path: filePath,
+    mimeType: mimeForExtension(ext),
+    format: ext.replace(".", "") || "wav",
+    size: stat.size
+  };
+}
+
+function voiceboxAudioUrlFromPayload(payload, baseUrl) {
+  const raw = payload?.audio_url || payload?.audioUrl || payload?.url || payload?.file || payload?.src || "";
+  if (!raw) return "";
+  try {
+    return new URL(raw, `${normalizeVoiceboxBaseUrl(baseUrl)}/`).href;
+  } catch {
+    return "";
+  }
+}
+
+async function handleVoiceboxSpeech(req, res) {
+  const {
+    baseUrl,
+    profileId,
+    input,
+    language = "ja",
+    seed,
+    modelSize = "1.7B",
+    instruct = "",
+    title = "voicebox-audio"
+  } = await readJson(req, 2 * 1024 * 1024);
+  const cleanInput = String(input || "").trim();
+  const cleanProfileId = String(profileId || "").trim();
+  const cleanLanguage = String(language || "ja").trim() || "ja";
+  const cleanModelSize = String(modelSize || "").trim();
+  const cleanInstruct = String(instruct || "").trim();
+  if (!cleanProfileId) return sendJson(res, 400, { error: "Voicebox profile ID が未設定です。" });
+  if (!cleanInput) return sendJson(res, 400, { error: "読み上げテキストが必要です。" });
+
+  let normalizedBaseUrl;
+  try {
+    normalizedBaseUrl = normalizeVoiceboxBaseUrl(baseUrl);
+  } catch (error) {
+    return sendJson(res, 400, { error: `Voicebox URL が不正です: ${error.message}` });
+  }
+
+  const requestPayload = {
+    profile_id: cleanProfileId,
+    text: cleanInput,
+    language: cleanLanguage
+  };
+  const seedText = String(seed || "").trim();
+  if (/^-?\d+$/.test(seedText)) requestPayload.seed = Number(seedText);
+  if (cleanModelSize) requestPayload.model_size = cleanModelSize;
+  if (cleanInstruct) requestPayload.instruct = cleanInstruct;
+
+  try {
+    const response = await fetch(voiceboxEndpoint(normalizedBaseUrl, "/generate"), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "accept": "application/json,audio/*,*/*"
+      },
+      body: JSON.stringify(requestPayload),
+      signal: AbortSignal.timeout(45 * 60 * 1000)
+    });
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.toLowerCase().startsWith("audio/")) {
+      if (!response.ok) {
+        return sendJson(res, response.status, { error: `Voicebox generate API が ${response.status} を返しました。` });
+      }
+      const saved = await saveVoiceboxAudioResponse(response, title, "wav");
+      return sendJson(res, 200, {
+        ...saved,
+        generationId: response.headers.get("x-generation-id") || "",
+        providerPayload: null,
+        request: {
+          ...requestPayload,
+          text: cleanInput.length > 1200 ? `${cleanInput.slice(0, 1200)}...` : cleanInput
+        }
+      });
+    }
+
+    const payload = await jsonFromProviderResponse(response, `Voicebox generate API が ${response.status} を返しました。`);
+    if (!response.ok) {
+      return sendJson(res, response.status, {
+        ...payload,
+        error: readableProviderError(payload.error) || readableProviderError(payload) || `Voicebox generate API が ${response.status} を返しました。`,
+        providerError: payload.error || payload
+      });
+    }
+
+    const generationId = payload.id || payload.generation_id || payload.generationId || "";
+    let saved;
+    const audioUrl = voiceboxAudioUrlFromPayload(payload, normalizedBaseUrl);
+    if (audioUrl) {
+      const audioResponse = await fetch(audioUrl, {
+        headers: { "accept": "audio/*,*/*" },
+        signal: AbortSignal.timeout(120000)
+      });
+      if (!audioResponse.ok) {
+        const audioPayload = await jsonFromProviderResponse(audioResponse, `Voicebox audio API が ${audioResponse.status} を返しました。`);
+        throw new Error(readableProviderError(audioPayload.error) || readableProviderError(audioPayload) || `Voicebox audio API が ${audioResponse.status} を返しました。`);
+      }
+      saved = await saveVoiceboxAudioResponse(audioResponse, title, "wav");
+    } else if (generationId) {
+      const audioResponse = await fetch(voiceboxEndpoint(normalizedBaseUrl, `/audio/${encodeURIComponent(generationId)}`), {
+        headers: { "accept": "audio/*,*/*" },
+        signal: AbortSignal.timeout(120000)
+      });
+      if (!audioResponse.ok) {
+        const audioPayload = await jsonFromProviderResponse(audioResponse, `Voicebox audio API が ${audioResponse.status} を返しました。`);
+        throw new Error(readableProviderError(audioPayload.error) || readableProviderError(audioPayload) || `Voicebox audio API が ${audioResponse.status} を返しました。`);
+      }
+      saved = await saveVoiceboxAudioResponse(audioResponse, title, "wav");
+    } else if (payload.audio_path || payload.audioPath) {
+      saved = await saveVoiceboxLocalAudio(payload.audio_path || payload.audioPath, title);
+    } else {
+      throw new Error("Voiceboxの生成結果に音声IDまたは音声ファイル情報がありません。");
+    }
+
+    sendJson(res, 200, {
+      ...saved,
+      generationId,
+      duration: payload.duration ?? null,
+      providerPayload: payload,
+      request: {
+        ...requestPayload,
+        text: cleanInput.length > 1200 ? `${cleanInput.slice(0, 1200)}...` : cleanInput
+      }
+    });
+  } catch (error) {
+    sendJson(res, 502, { error: `Voicebox 音声生成に失敗しました: ${error.message}` });
+  }
+}
+
 const irodoriBaseCheckpoint = "Aratako/Irodori-TTS-500M-v2";
 const irodoriVoiceDesignCheckpoint = "Aratako/Irodori-TTS-500M-v2-VoiceDesign";
 
@@ -1732,6 +2015,596 @@ async function saveGeneratedVideo(videoUrls, taskId, { apiKey = "", baseUrl = ""
   throw new Error(errors[0] || "生成動画のダウンロードに失敗しました。");
 }
 
+function normalizeComfyBaseUrl(value) {
+  const raw = String(value || "").trim().replace(/\/+$/g, "");
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw);
+    parsed.hash = "";
+    return parsed.href.replace(/\/+$/g, "");
+  } catch {
+    return raw;
+  }
+}
+
+function comfyEndpoint(baseUrl, pathname = "") {
+  const base = normalizeComfyBaseUrl(baseUrl);
+  if (!base) throw new Error("ComfyUI のURLが未設定です。");
+  const cleanPath = pathname.startsWith("/") ? pathname : `/${pathname}`;
+  const parsed = new URL(base);
+  const basePath = parsed.pathname.replace(/\/+$/g, "");
+  parsed.pathname = `${basePath}${cleanPath}`;
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed;
+}
+
+function comfyHeaders(apiKey = "", extra = {}) {
+  const headers = { ...extra };
+  const key = String(apiKey || "").trim();
+  if (key) {
+    headers.authorization = `Bearer ${key}`;
+    headers["x-api-key"] = key;
+  }
+  return headers;
+}
+
+async function comfyJson(response) {
+  const text = await response.text();
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch {
+    return { raw: text };
+  }
+}
+
+function comfyObjectInfoEntry(payload = {}, className) {
+  return payload?.[className] || payload?.data?.[className] || payload?.object_info?.[className] || null;
+}
+
+function comfyInputChoiceList(payload = {}, classNames = [], inputName = "") {
+  const values = [];
+  for (const className of classNames) {
+    const entry = comfyObjectInfoEntry(payload, className);
+    const input = entry?.input || entry?.inputs || {};
+    const candidates = [
+      input?.required?.[inputName],
+      input?.optional?.[inputName],
+      entry?.input_types?.required?.[inputName],
+      entry?.input_types?.optional?.[inputName]
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+      if (Array.isArray(candidate?.[0])) values.push(...candidate[0]);
+      else if (Array.isArray(candidate) && candidate.every((item) => typeof item === "string")) values.push(...candidate);
+    }
+  }
+  return [...new Set(values.map((item) => String(item || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+}
+
+async function fetchComfyObjectInfo(baseUrl, apiKey) {
+  const response = await fetch(comfyEndpoint(baseUrl, "/object_info"), {
+    headers: comfyHeaders(apiKey, { accept: "application/json" }),
+    signal: AbortSignal.timeout(20000)
+  });
+  const payload = await comfyJson(response);
+  if (!response.ok) {
+    throw new Error(readableProviderError(payload) || `ComfyUI object_info が ${response.status} を返しました。`);
+  }
+  return payload;
+}
+
+function extractComfyModels(payload = {}) {
+  return {
+    checkpoints: comfyInputChoiceList(payload, ["CheckpointLoaderSimple", "CheckpointLoader", "unCLIPCheckpointLoader"], "ckpt_name"),
+    loras: comfyInputChoiceList(payload, ["LoraLoader", "LoraLoaderModelOnly"], "lora_name")
+  };
+}
+
+function parseComfyWorkflow(value) {
+  let source = value;
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!text) throw new Error("ComfyUI workflow JSON が未設定です。");
+    source = JSON.parse(text);
+  }
+  const prompt = source?.prompt && typeof source.prompt === "object" ? source.prompt : source;
+  if (!prompt || typeof prompt !== "object" || Array.isArray(prompt)) {
+    throw new Error("ComfyUI の API Format workflow JSON が必要です。");
+  }
+  return structuredClone(prompt);
+}
+
+function patchComfyNodeInput(workflow, nodeId, keys, value) {
+  const id = String(nodeId || "").trim();
+  if (!id || value === undefined || value === null || value === "") return false;
+  const node = workflow[id];
+  if (!node || typeof node !== "object") return false;
+  node.inputs = node.inputs && typeof node.inputs === "object" ? node.inputs : {};
+  const key = keys.find((candidate) => Object.prototype.hasOwnProperty.call(node.inputs, candidate)) || keys[0];
+  node.inputs[key] = value;
+  return true;
+}
+
+function normalizedComfyLoras(value = []) {
+  const source = Array.isArray(value) ? value : [];
+  return source
+    .map((item) => ({
+      name: String(item?.name || item?.loraName || "").trim(),
+      strengthModel: boundedNumber(item?.strengthModel ?? item?.strength_model ?? 1, 1, -2, 2),
+      strengthClip: boundedNumber(item?.strengthClip ?? item?.strength_clip ?? 1, 1, -2, 2)
+    }))
+    .filter((item) => item.name);
+}
+
+function isComfyLink(value) {
+  return Array.isArray(value) && value.length >= 2 && (typeof value[0] === "string" || typeof value[0] === "number");
+}
+
+function comfyLinkEquals(a, b) {
+  return isComfyLink(a) && isComfyLink(b) && String(a[0]) === String(b[0]) && Number(a[1]) === Number(b[1]);
+}
+
+function firstComfyInputLink(workflow, nodeIds, keys) {
+  for (const nodeId of nodeIds) {
+    const node = workflow[String(nodeId || "")];
+    const inputs = node?.inputs || {};
+    for (const key of keys) {
+      if (isComfyLink(inputs[key])) return inputs[key];
+    }
+  }
+  return null;
+}
+
+function nextComfyNodeId(workflow) {
+  const numericIds = Object.keys(workflow || {})
+    .map((id) => Number(id))
+    .filter((id) => Number.isInteger(id) && id >= 0);
+  let next = numericIds.length ? Math.max(...numericIds) + 1 : 1000;
+  while (workflow[String(next)]) next += 1;
+  return String(next);
+}
+
+function replaceComfyInputLinks(workflow, fromLink, toLink, inputKeys, excludedNodeIds = new Set()) {
+  if (!isComfyLink(fromLink) || !isComfyLink(toLink)) return;
+  for (const [nodeId, node] of Object.entries(workflow || {})) {
+    if (excludedNodeIds.has(String(nodeId))) continue;
+    const inputs = node?.inputs || {};
+    for (const key of inputKeys) {
+      if (comfyLinkEquals(inputs[key], fromLink)) inputs[key] = [...toLink];
+    }
+  }
+}
+
+function countComfyWorkflowEdges(workflow = {}) {
+  let count = 0;
+  for (const node of Object.values(workflow || {})) {
+    for (const value of Object.values(node?.inputs || {})) {
+      if (isComfyLink(value)) count += 1;
+    }
+  }
+  return count;
+}
+
+function injectComfyLoras(workflow, options = {}) {
+  const loras = normalizedComfyLoras(options.loras);
+  if (!loras.length) return [];
+  const checkpointId = String(options.checkpointNodeId || "").trim();
+  const modelSource = firstComfyInputLink(workflow, [options.seedNodeId, options.samplerNodeId], ["model"])
+    || (checkpointId && workflow[checkpointId] ? [checkpointId, 0] : null);
+  const clipSource = firstComfyInputLink(workflow, [options.positiveNodeId, options.negativeNodeId], ["clip"])
+    || (checkpointId && workflow[checkpointId] ? [checkpointId, 1] : null);
+  if (!modelSource || !clipSource) {
+    throw new Error("LoRAを挿入するための model/clip 接続がworkflowから見つかりません。KSampler、Positive/Negative、CheckpointのNode IDを確認してください。");
+  }
+
+  let currentModel = [...modelSource];
+  let currentClip = [...clipSource];
+  const insertedIds = [];
+  for (const lora of loras) {
+    const nodeId = nextComfyNodeId(workflow);
+    workflow[nodeId] = {
+      class_type: "LoraLoader",
+      _meta: { title: `LoRA: ${lora.name}` },
+      inputs: {
+        lora_name: lora.name,
+        strength_model: lora.strengthModel,
+        strength_clip: lora.strengthClip,
+        model: currentModel,
+        clip: currentClip
+      }
+    };
+    insertedIds.push(nodeId);
+    currentModel = [nodeId, 0];
+    currentClip = [nodeId, 1];
+  }
+
+  const excluded = new Set(insertedIds);
+  replaceComfyInputLinks(workflow, modelSource, currentModel, ["model"], excluded);
+  replaceComfyInputLinks(workflow, clipSource, currentClip, ["clip"], excluded);
+  return insertedIds;
+}
+
+function validateComfyWorkflowRequest(body = {}, modelInfo = {}) {
+  const errors = [];
+  const warnings = [];
+  let prompt = null;
+  let patched = null;
+  let insertedLoraNodeIds = [];
+  const loras = normalizedComfyLoras(body.loras);
+  try {
+    prompt = parseComfyWorkflow(body.workflowJson || body.workflow);
+  } catch (error) {
+    return {
+      ok: false,
+      errors: [`ComfyUI workflow JSON を読み取れません: ${error.message}`],
+      warnings,
+      summary: {}
+    };
+  }
+
+  const nodeChecks = [
+    ["Positive", body.positiveNodeId],
+    ["Negative", body.negativeNodeId],
+    ["Seed", body.seedNodeId],
+    ["Size", body.sizeNodeId],
+    ["Steps", body.stepsNodeId],
+    ["CFG", body.cfgNodeId],
+    ["Sampler", body.samplerNodeId],
+    ["Checkpoint", body.checkpointNodeId]
+  ];
+  for (const [label, nodeId] of nodeChecks) {
+    const id = String(nodeId || "").trim();
+    if (!id) {
+      errors.push(`${label} Node ID が未設定です。`);
+    } else if (!prompt[id]) {
+      errors.push(`${label} Node ID ${id} がworkflow内にありません。`);
+    }
+  }
+
+  const checkpointName = String(body.checkpoint || "").trim();
+  const checkpointNames = Array.isArray(modelInfo.checkpoints) ? modelInfo.checkpoints : [];
+  if (checkpointName && checkpointNames.length && !checkpointNames.includes(checkpointName)) {
+    errors.push(`Checkpoint「${checkpointName}」がComfyUIの一覧にありません。`);
+  }
+  const loraNames = Array.isArray(modelInfo.loras) ? modelInfo.loras : [];
+  if (loras.length && loraNames.length) {
+    loras.forEach((lora) => {
+      if (!loraNames.includes(lora.name)) errors.push(`LoRA「${lora.name}」がComfyUIの一覧にありません。`);
+    });
+  }
+
+  try {
+    patched = patchComfyWorkflow(body.workflowJson || body.workflow, {
+      ...body,
+      prompt: body.prompt || "__validation_prompt__",
+      negativePrompt: body.negativePrompt || ""
+    });
+    insertedLoraNodeIds = Object.entries(patched)
+      .filter(([, node]) => node?.class_type === "LoraLoader")
+      .map(([nodeId]) => nodeId)
+      .filter((nodeId) => !prompt[nodeId]);
+  } catch (error) {
+    errors.push(error.message);
+  }
+
+  if (!body.baseUrl) warnings.push("ComfyUI URLが未設定のため、接続とモデル存在は確認していません。");
+  if (loras.length && !loraNames.length) warnings.push("LoRA一覧を取得できていないため、LoRAファイル名の存在確認は未実施です。");
+  if (checkpointName && !checkpointNames.length) warnings.push("Checkpoint一覧を取得できていないため、Checkpoint名の存在確認は未実施です。");
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    warnings,
+    summary: {
+      nodeCount: Object.keys(prompt || {}).length,
+      edgeCount: countComfyWorkflowEdges(prompt),
+      loraCount: loras.length,
+      insertedLoraNodeIds,
+      checkpoint: checkpointName || "workflow既定",
+      patchedWorkflow: patched ? scrubComfyWorkflow(patched) : null
+    }
+  };
+}
+
+function patchComfyWorkflow(workflow, options = {}) {
+  const prompt = parseComfyWorkflow(workflow);
+  patchComfyNodeInput(prompt, options.positiveNodeId, ["text", "prompt"], String(options.prompt || ""));
+  patchComfyNodeInput(prompt, options.negativeNodeId, ["text", "negative", "negative_prompt"], String(options.negativePrompt || ""));
+  const seedText = String(options.seed ?? "").trim();
+  const seed = seedText === "" ? NaN : Number(seedText);
+  if (Number.isFinite(seed) && seed >= 0) {
+    patchComfyNodeInput(prompt, options.seedNodeId, ["seed", "noise_seed"], Math.floor(seed));
+  } else {
+    patchComfyNodeInput(prompt, options.seedNodeId, ["seed", "noise_seed"], Math.floor(Math.random() * 1000000000000000));
+  }
+  patchComfyNodeInput(prompt, options.sizeNodeId, ["width"], boundedNumber(options.width, 1024, 64, 4096, true));
+  patchComfyNodeInput(prompt, options.sizeNodeId, ["height"], boundedNumber(options.height, 1024, 64, 4096, true));
+  patchComfyNodeInput(prompt, options.stepsNodeId, ["steps"], boundedNumber(options.steps, 28, 1, 150, true));
+  patchComfyNodeInput(prompt, options.cfgNodeId, ["cfg"], boundedNumber(options.cfg, 7, 0, 30));
+  patchComfyNodeInput(prompt, options.samplerNodeId, ["sampler_name"], String(options.samplerName || "euler").trim());
+  patchComfyNodeInput(prompt, options.samplerNodeId, ["scheduler"], String(options.scheduler || "normal").trim());
+  patchComfyNodeInput(prompt, options.sizeNodeId, ["batch_size"], boundedNumber(options.batchSize, 1, 1, 8, true));
+  patchComfyNodeInput(prompt, options.checkpointNodeId, ["ckpt_name"], String(options.checkpoint || "").trim());
+  injectComfyLoras(prompt, options);
+  return prompt;
+}
+
+function scrubComfyWorkflow(workflow) {
+  const text = JSON.stringify(workflow || {});
+  return text.length > 24000 ? { clipped: true, preview: `${text.slice(0, 8000)}...` } : workflow;
+}
+
+function extractComfyPromptId(payload = {}) {
+  return payload.prompt_id || payload.promptId || payload.id || payload?.data?.prompt_id || "";
+}
+
+function normalizeComfyStatus(value) {
+  const text = String(value || "").toLowerCase();
+  if (!text) return "";
+  if (["success", "succeeded", "complete", "completed"].includes(text)) return "succeeded";
+  if (["error", "failed", "failure"].includes(text)) return "failed";
+  if (["running", "processing", "executing"].includes(text)) return "running";
+  if (["queued", "pending"].includes(text)) return "queued";
+  return text;
+}
+
+function findComfyHistoryItem(payload, promptId) {
+  if (!payload || typeof payload !== "object") return null;
+  if (payload[promptId]) return payload[promptId];
+  if (payload.prompt_id === promptId || payload.promptId === promptId) return payload;
+  if (payload.data?.[promptId]) return payload.data[promptId];
+  return null;
+}
+
+function extractComfyImages(historyItem = {}) {
+  const outputs = historyItem.outputs || historyItem.output || historyItem.data?.outputs || {};
+  const images = [];
+  for (const [nodeId, output] of Object.entries(outputs || {})) {
+    const nodeImages = Array.isArray(output?.images) ? output.images : [];
+    nodeImages.forEach((image, index) => {
+      if (image?.filename) images.push({ ...image, nodeId, index });
+    });
+  }
+  return images;
+}
+
+function comfyQueueStatus(payload = {}, promptId) {
+  const inRunning = (payload.queue_running || []).some((item) => JSON.stringify(item).includes(promptId));
+  if (inRunning) return "running";
+  const inPending = (payload.queue_pending || []).some((item) => JSON.stringify(item).includes(promptId));
+  if (inPending) return "queued";
+  return "pending";
+}
+
+function extensionFromComfyImage(image = {}, contentType = "") {
+  const fromName = path.extname(String(image.filename || "")).toLowerCase();
+  if ([".png", ".jpg", ".jpeg", ".webp", ".gif"].includes(fromName)) return fromName === ".jpeg" ? ".jpg" : fromName;
+  const clean = String(contentType || "").toLowerCase();
+  if (clean.includes("jpeg") || clean.includes("jpg")) return ".jpg";
+  if (clean.includes("webp")) return ".webp";
+  if (clean.includes("gif")) return ".gif";
+  return ".png";
+}
+
+async function fetchComfyImage(baseUrl, apiKey, image) {
+  const endpoint = comfyEndpoint(baseUrl, "/view");
+  endpoint.searchParams.set("filename", image.filename);
+  endpoint.searchParams.set("subfolder", image.subfolder || "");
+  endpoint.searchParams.set("type", image.type || "output");
+  const response = await fetch(endpoint, {
+    headers: comfyHeaders(apiKey, { accept: "image/*,*/*" }),
+    signal: AbortSignal.timeout(120000)
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`ComfyUI 画像取得に失敗しました: ${response.status}${detail ? ` ${detail.slice(0, 220)}` : ""}`);
+  }
+  return response;
+}
+
+async function saveComfyImage({ baseUrl, apiKey, image, promptId, workName, title, index }) {
+  const response = await fetchComfyImage(baseUrl, apiKey, image);
+  const ext = extensionFromComfyImage(image, response.headers.get("content-type") || "");
+  const workFolder = safeFolderName(workName, "_未分類作品");
+  const destinationDir = path.join(uploadDir, workFolder, "_画像生成");
+  await fs.mkdir(destinationDir, { recursive: true });
+  const safeTitle = cleanFileNamePart(title || "comfy-image", "comfy-image", 70);
+  const safePromptId = cleanFileNamePart(promptId, "prompt", 80);
+  const fileName = `${safeTitle}-${safePromptId}-${index + 1}${ext}`;
+  const filePath = path.join(destinationDir, fileName);
+  try {
+    await fs.access(filePath);
+  } catch {
+    const data = Buffer.from(await response.arrayBuffer());
+    await fs.writeFile(filePath, data);
+  }
+  return {
+    url: uploadUrlFor(filePath),
+    path: filePath,
+    filename: image.filename,
+    nodeId: image.nodeId,
+    mimeType: mimeForExtension(ext)
+  };
+}
+
+async function handleComfyCheck(req, res) {
+  const { baseUrl, apiKey } = await readJson(req, 1024 * 1024);
+  try {
+    const response = await fetch(comfyEndpoint(baseUrl, "/system_stats"), {
+      headers: comfyHeaders(apiKey, { accept: "application/json" }),
+      signal: AbortSignal.timeout(15000)
+    });
+    const payload = await comfyJson(response);
+    if (!response.ok) return sendJson(res, response.status, payload);
+    sendJson(res, 200, {
+      ok: true,
+      system: payload.system || payload,
+      devices: payload.devices || []
+    });
+  } catch (error) {
+    sendJson(res, 502, { error: `ComfyUI 接続確認に失敗しました: ${error.message}` });
+  }
+}
+
+async function handleComfyModels(req, res) {
+  const { baseUrl, apiKey } = await readJson(req, 1024 * 1024);
+  if (!baseUrl) return sendJson(res, 400, { error: "ComfyUI のURLが未設定です。" });
+  try {
+    const objectInfo = await fetchComfyObjectInfo(baseUrl, apiKey);
+    const models = extractComfyModels(objectInfo);
+    sendJson(res, 200, {
+      ok: true,
+      ...models,
+      updatedAt: new Date().toISOString()
+    });
+  } catch (error) {
+    sendJson(res, 502, { error: `ComfyUI モデル一覧の取得に失敗しました: ${error.message}` });
+  }
+}
+
+async function handleComfyValidate(req, res) {
+  const body = await readJson(req, 12 * 1024 * 1024);
+  const modelInfo = { checkpoints: [], loras: [] };
+  const modelWarnings = [];
+  if (body.baseUrl) {
+    try {
+      Object.assign(modelInfo, extractComfyModels(await fetchComfyObjectInfo(body.baseUrl, body.apiKey)));
+    } catch (error) {
+      modelWarnings.push(`ComfyUIモデル一覧を取得できませんでした: ${error.message}`);
+    }
+  }
+  const result = validateComfyWorkflowRequest(body, modelInfo);
+  result.warnings = [...(result.warnings || []), ...modelWarnings];
+  result.models = {
+    checkpointCount: modelInfo.checkpoints.length,
+    loraCount: modelInfo.loras.length
+  };
+  sendJson(res, result.ok ? 200 : 400, result);
+}
+
+async function handleComfyCreate(req, res) {
+  const body = await readJson(req, 12 * 1024 * 1024);
+  const { baseUrl, apiKey } = body;
+  if (!baseUrl) return sendJson(res, 400, { error: "ComfyUI のURLが未設定です。" });
+  if (!body.prompt) return sendJson(res, 400, { error: "画像生成プロンプトが必要です。" });
+  try {
+    const validation = validateComfyWorkflowRequest(body);
+    if (!validation.ok) {
+      return sendJson(res, 400, {
+        error: validation.errors.join(" / "),
+        validation
+      });
+    }
+    const workflow = patchComfyWorkflow(body.workflowJson || body.workflow, body);
+    const clientId = crypto.randomUUID();
+    const requestPayload = {
+      client_id: clientId,
+      prompt: workflow
+    };
+    const response = await fetch(comfyEndpoint(baseUrl, "/prompt"), {
+      method: "POST",
+      headers: comfyHeaders(apiKey, {
+        accept: "application/json",
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify(requestPayload),
+      signal: AbortSignal.timeout(30000)
+    });
+    const payload = await comfyJson(response);
+    const nodeErrors = payload.node_errors || payload.nodeErrors || {};
+    const hasNodeErrors = nodeErrors && typeof nodeErrors === "object" && Object.keys(nodeErrors).length > 0;
+    if (!response.ok || hasNodeErrors) {
+      return sendJson(res, response.ok ? 400 : response.status, {
+        error: readableProviderError(payload.error) || readableProviderError(nodeErrors) || readableProviderError(payload) || `ComfyUI が ${response.status} を返しました。`,
+        providerPayload: payload,
+        request: { ...requestPayload, prompt: scrubComfyWorkflow(workflow) }
+      });
+    }
+    const promptId = extractComfyPromptId(payload);
+    if (!promptId) {
+      return sendJson(res, 502, {
+        error: "ComfyUI の prompt_id を取得できませんでした。",
+        providerPayload: payload,
+        request: { ...requestPayload, prompt: scrubComfyWorkflow(workflow) }
+      });
+    }
+    sendJson(res, 200, {
+      ...payload,
+      id: promptId,
+      status: "submitted",
+      request: { ...requestPayload, prompt: scrubComfyWorkflow(workflow) }
+    });
+  } catch (error) {
+    const message = error instanceof SyntaxError ? `ComfyUI workflow JSON を読み取れません: ${error.message}` : error.message;
+    sendJson(res, 502, { error: `ComfyUI への生成投入に失敗しました: ${message}` });
+  }
+}
+
+async function handleComfyStatus(req, res) {
+  const { baseUrl, apiKey, promptId, workName, title } = await readJson(req, 1024 * 1024);
+  if (!baseUrl) return sendJson(res, 400, { error: "ComfyUI のURLが未設定です。" });
+  if (!promptId) return sendJson(res, 400, { error: "promptId が必要です。" });
+  try {
+    const historyResponse = await fetch(comfyEndpoint(baseUrl, `/history/${encodeURIComponent(promptId)}`), {
+      headers: comfyHeaders(apiKey, { accept: "application/json" }),
+      signal: AbortSignal.timeout(30000)
+    });
+    const historyPayload = await comfyJson(historyResponse);
+    if (!historyResponse.ok) return sendJson(res, historyResponse.status, historyPayload);
+    const historyItem = findComfyHistoryItem(historyPayload, promptId);
+    const statusFromHistory = normalizeComfyStatus(historyItem?.status?.status_str || historyItem?.status?.status || historyItem?.status);
+    const sourceImages = extractComfyImages(historyItem);
+    if (sourceImages.length) {
+      const images = [];
+      for (let index = 0; index < sourceImages.length; index += 1) {
+        images.push(await saveComfyImage({
+          baseUrl,
+          apiKey,
+          image: sourceImages[index],
+          promptId,
+          workName,
+          title,
+          index
+        }));
+      }
+      return sendJson(res, 200, {
+        status: "succeeded",
+        progress: 100,
+        images,
+        providerPayload: historyPayload
+      });
+    }
+    if (statusFromHistory === "failed") {
+      return sendJson(res, 200, {
+        status: "failed",
+        progress: null,
+        error: readableProviderError(historyItem?.status?.messages) || "ComfyUI 生成が失敗しました。",
+        providerPayload: historyPayload
+      });
+    }
+    let queueStatus = statusFromHistory || "pending";
+    try {
+      const queueResponse = await fetch(comfyEndpoint(baseUrl, "/queue"), {
+        headers: comfyHeaders(apiKey, { accept: "application/json" }),
+        signal: AbortSignal.timeout(15000)
+      });
+      if (queueResponse.ok) {
+        queueStatus = comfyQueueStatus(await comfyJson(queueResponse), promptId);
+      }
+    } catch {
+      // History is enough for the UI to keep polling.
+    }
+    sendJson(res, 200, {
+      status: queueStatus,
+      progress: null,
+      images: [],
+      providerPayload: historyPayload
+    });
+  } catch (error) {
+    sendJson(res, 502, { error: `ComfyUI タスク確認に失敗しました: ${error.message}` });
+  }
+}
+
 async function handleSeedanceGuide(req, res) {
   try {
     const text = await fs.readFile(seedanceGuidePath, "utf8");
@@ -1961,6 +2834,14 @@ const server = http.createServer(async (req, res) => {
       return await handleElevenLabsSpeech(req, res);
     }
 
+    if (req.method === "POST" && url.pathname === "/api/voicebox/profiles") {
+      return await handleVoiceboxProfiles(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/voicebox/speech") {
+      return await handleVoiceboxSpeech(req, res);
+    }
+
     if (req.method === "POST" && url.pathname === "/api/irodori/status") {
       return await handleIrodoriStatus(req, res);
     }
@@ -1979,6 +2860,26 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/seedance/guide") {
       return await handleSeedanceGuide(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/comfy/check") {
+      return await handleComfyCheck(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/comfy/models") {
+      return await handleComfyModels(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/comfy/validate") {
+      return await handleComfyValidate(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/comfy/create") {
+      return await handleComfyCreate(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/comfy/status") {
+      return await handleComfyStatus(req, res);
     }
 
     if (req.method === "POST" && url.pathname === "/api/seedance/create") {
