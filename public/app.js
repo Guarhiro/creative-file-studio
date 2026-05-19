@@ -31,6 +31,20 @@ const state = {
   imageIsThinking: false,
   imageIsGenerating: false,
   imagePollingJobId: "",
+  imageCompareEnabled: false,
+  imageCompareCount: 3,
+  imageCompareMode: "seed",
+  imageEditWorkId: null,
+  imageEditCharacterId: "",
+  imageEditSourceKey: "",
+  imageEditProvider: "local",
+  imageEditBackgroundMode: "auto",
+  imageEditTolerance: 42,
+  imageEditFeather: 18,
+  imageEditChromaColor: "#ffffff",
+  imageEditInputFile: null,
+  imageEditResult: null,
+  imageEditIsRunning: false,
   videoWorkId: null,
   videoCharacterId: "",
   videoReferenceKind: "all",
@@ -96,6 +110,7 @@ const navItems = [
   ["import", "画像取込"],
   ["gallery", "画像一覧"],
   ["image", "画像生成"],
+  ["edit", "画像編集"],
   ["audio", "音声生成"],
   ["video", "動画生成"],
   ["library", "画像整理"],
@@ -111,6 +126,18 @@ const audioProviders = [
   ["elevenlabs", "ElevenLabs"],
   ["voicebox", "Voicebox"],
   ["irodori", "Irodori-TTS"]
+];
+
+const imageEditProviders = [
+  ["local", "ローカル"],
+  ["removebg", "クラウド remove.bg"]
+];
+
+const imageEditBackgroundModes = [
+  ["auto", "背景色を推定"],
+  ["white", "白背景"],
+  ["black", "黒背景"],
+  ["chroma", "指定色"]
 ];
 
 const voiceboxDefaultSettings = {
@@ -226,6 +253,12 @@ const grokSpeechTags = ["[pause]", "[long-pause]", "[laugh]", "[chuckle]", "[sig
 const activeImageJobStatuses = ["submitting", "submitted", "pending", "queued", "running", "processing"];
 
 const activeVideoJobStatuses = ["submitting", "submitted", "pending", "queued", "running", "processing"];
+
+const imageCompareModes = [
+  ["seed", "Seed"],
+  ["cfg", "CFG"],
+  ["steps", "Steps"]
+];
 
 const elevenLabsModelOptions = [
   "eleven_multilingual_v2",
@@ -578,6 +611,7 @@ const apiKey = () => localStorage.getItem("openrouter_api_key") || "";
 const seedanceApiKey = () => localStorage.getItem("seedance_api_key") || "";
 const elevenLabsApiKey = () => localStorage.getItem("elevenlabs_api_key") || "";
 const comfyCloudApiKey = () => localStorage.getItem("comfy_cloud_api_key") || "";
+const removeBgApiKey = () => localStorage.getItem("removebg_api_key") || "";
 const isOpenRouterSeedanceBaseUrl = (value = state.db?.settings?.seedanceBaseUrl) => String(value || "").includes("openrouter.ai");
 const isReplicateSeedanceBaseUrl = (value = state.db?.settings?.seedanceBaseUrl) => String(value || "").includes("replicate.com");
 const activeSeedanceApiKey = (baseUrl = state.db?.settings?.seedanceBaseUrl) =>
@@ -1155,6 +1189,12 @@ function normalizeImageJob(job = {}) {
     providerPayload: job.providerPayload || null,
     request: job.request || null,
     settings: job.settings || {},
+    compareGroupId: job.compareGroupId || "",
+    compareGroupTitle: job.compareGroupTitle || "",
+    compareIndex: Number.isFinite(Number(job.compareIndex)) ? Number(job.compareIndex) : null,
+    compareTotal: Number.isFinite(Number(job.compareTotal)) ? Number(job.compareTotal) : null,
+    compareMode: normalizeImageCompareMode(job.compareMode),
+    compareLabel: job.compareLabel || "",
     images: images.map((image) => ({
       url: image.url || image.localUrl || "",
       localPath: image.localPath || image.path || "",
@@ -2432,6 +2472,9 @@ async function postJson(url, body, method = "POST") {
 	    if (url.startsWith("/api/voicebox/") && /Method not allowed|Not found/i.test(text)) {
 	      throw new Error("Voicebox APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
 	    }
+	    if (url.startsWith("/api/remove-bg") && /Method not allowed|Not found/i.test(text)) {
+	      throw new Error("画像編集クラウドAPIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
+	    }
 	    const error = new Error(readableError(payload.error) || readableError(payload) || text || `${response.status} ${response.statusText}`);
 	    error.payload = payload;
 	    error.responseText = text;
@@ -2867,6 +2910,7 @@ function currentTitle() {
   if (state.view === "import") return ["画像取込", "複数画像を取り込み、AIでキャラ別に振り分けます。"];
   if (state.view === "gallery") return ["画像一覧", "作品ごと、キャラごとに保存済み画像を閲覧します。"];
   if (state.view === "image") return ["画像生成", "ComfyUIでローカルGPUまたはクラウドGPUに生成を投げます。"];
+  if (state.view === "edit") return ["画像編集", "背景除去と透過PNG変換を行います。"];
   if (state.view === "audio") return ["音声生成", "OpenRouter、ElevenLabs、Voicebox、Irodori-TTSでキャラ音声やナレーションを作ります。"];
   if (state.view === "video") return ["動画生成", "選択した動画モデル向けの指示書作成と生成を行います。"];
   if (state.view === "library") return ["画像整理", "取り込んだ画像を作品・キャラ・状態で確認します。"];
@@ -2879,6 +2923,7 @@ function renderView() {
   if (state.view === "import") return renderImport();
   if (state.view === "gallery") return renderGallery();
   if (state.view === "image") return renderImageAgent();
+  if (state.view === "edit") return renderImageEditor();
   if (state.view === "audio") return renderAudioAgent();
   if (state.view === "video") return renderVideoAgent();
   if (state.view === "library") return renderLibrary();
@@ -3526,6 +3571,526 @@ function renderGalleryAsset(asset) {
       </div>
     </article>
   `;
+}
+
+function normalizedImageEditProvider(value) {
+  return imageEditProviders.some(([provider]) => provider === value) ? value : "local";
+}
+
+function normalizedImageEditBackgroundMode(value) {
+  return imageEditBackgroundModes.some(([mode]) => mode === value) ? value : "auto";
+}
+
+function imageEditToleranceValue(value) {
+  return boundedSettingNumber(value, 42, 0, 160, true);
+}
+
+function imageEditFeatherValue(value) {
+  return boundedSettingNumber(value, 18, 0, 80, true);
+}
+
+function transparentPngName(name = "image", suffix = "transparent") {
+  const parsed = String(name || "image").split(/[\\/]/).pop().replace(/\.[^.]+$/i, "");
+  return `${parsed || "image"}-${suffix}.png`;
+}
+
+function allImageEditSources() {
+  const items = [];
+  const seen = new Set();
+  const push = (item) => {
+    if (!item?.key || !item.url || seen.has(item.key)) return;
+    seen.add(item.key);
+    items.push(item);
+  };
+  allVideoReferences()
+    .filter((item) => item.kind === "image")
+    .forEach((item) => push({
+      ...item,
+      key: item.key,
+      source: item.source || "asset"
+    }));
+  (state.db.imageJobs || []).forEach((job) => {
+    (job.images || []).forEach((image, index) => {
+      if (!image.url) return;
+      push({
+        key: `image-job:${job.id}:${index}`,
+        source: "generated-image",
+        kind: "image",
+        id: job.id,
+        workId: job.workId || null,
+        characterId: job.characterId || null,
+        name: image.filename || job.title || "生成画像",
+        url: image.url,
+        subject: job.title || "画像生成",
+        prompt: job.prompt || "",
+        dimensions: job.settings?.width && job.settings?.height ? `${job.settings.width}x${job.settings.height}` : "",
+        createdAt: job.createdAt
+      });
+    });
+  });
+  return items.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+}
+
+function filteredImageEditSources() {
+  const selectedKey = state.imageEditSourceKey;
+  return allImageEditSources().filter((item) => {
+    if (item.key === selectedKey) return true;
+    if (state.imageEditWorkId && item.workId && item.workId !== state.imageEditWorkId) return false;
+    if (state.imageEditCharacterId && item.characterId && item.characterId !== state.imageEditCharacterId) return false;
+    if (state.imageEditCharacterId && !item.characterId) return false;
+    return true;
+  });
+}
+
+function selectedImageEditSource() {
+  if (state.imageEditSourceKey === "upload" && state.imageEditInputFile) {
+    return {
+      key: "upload",
+      source: "upload",
+      kind: "image",
+      workId: state.imageEditWorkId || null,
+      characterId: state.imageEditCharacterId || null,
+      name: state.imageEditInputFile.name || "upload.png",
+      url: state.imageEditInputFile.preview,
+      dataUrl: state.imageEditInputFile.preview,
+      dimensions: state.imageEditInputFile.imageInfo?.width ? `${state.imageEditInputFile.imageInfo.width}x${state.imageEditInputFile.imageInfo.height}` : "",
+      createdAt: state.imageEditInputFile.createdAt
+    };
+  }
+  return allImageEditSources().find((item) => item.key === state.imageEditSourceKey) || null;
+}
+
+function imageEditCharacterOptions(workId, selectedValue) {
+  const selected = selectedValue || "";
+  const chars = charactersForWork(workId);
+  return [
+    `<option value="">紐づけなし</option>`,
+    ...chars.map((char) => `<option value="${escapeHtml(char.id)}" ${selected === char.id ? "selected" : ""}>${escapeHtml(char.name)}</option>`)
+  ].join("");
+}
+
+function renderImageEditSourceOptions(sources, selectedKey) {
+  const options = [];
+  if (state.imageEditInputFile) {
+    options.push(`<option value="upload" ${selectedKey === "upload" ? "selected" : ""}>アップロード: ${escapeHtml(state.imageEditInputFile.name)}</option>`);
+  }
+  sources.forEach((item) => {
+    const subject = item.subject ? ` / ${item.subject}` : "";
+    options.push(`<option value="${escapeHtml(item.key)}" ${selectedKey === item.key ? "selected" : ""}>${escapeHtml(item.name || "画像")}${escapeHtml(subject)}</option>`);
+  });
+  return options.length ? options.join("") : `<option value="">画像がありません</option>`;
+}
+
+function renderImageEditor() {
+  const work = byId(state.db.works, state.imageEditWorkId) || byId(state.db.works, state.selectedWorkId) || state.db.works[0] || null;
+  if (!state.imageEditWorkId && work) state.imageEditWorkId = work.id;
+  if (state.imageEditCharacterId && !charactersForWork(state.imageEditWorkId).some((char) => char.id === state.imageEditCharacterId)) {
+    state.imageEditCharacterId = "";
+  }
+  const sources = filteredImageEditSources();
+  if (!state.imageEditSourceKey && (state.imageEditInputFile || sources[0])) {
+    state.imageEditSourceKey = state.imageEditInputFile ? "upload" : sources[0].key;
+  }
+  const selectedSource = selectedImageEditSource();
+  const provider = normalizedImageEditProvider(state.imageEditProvider);
+  const mode = normalizedImageEditBackgroundMode(state.imageEditBackgroundMode);
+  const result = state.imageEditResult;
+  return `
+    <div class="video-layout image-edit-layout">
+      <section class="panel">
+        <div class="panel-header"><h2>編集元</h2></div>
+        <div class="panel-body form-grid">
+          <label>作品
+            <select id="image-edit-work">
+              ${state.db.works.map((item) => `<option value="${escapeHtml(item.id)}" ${state.imageEditWorkId === item.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label>保存時のキャラ
+            <select id="image-edit-character">${imageEditCharacterOptions(state.imageEditWorkId, state.imageEditCharacterId)}</select>
+          </label>
+          <label class="full">対象画像
+            <select id="image-edit-source">${renderImageEditSourceOptions(sources, state.imageEditSourceKey)}</select>
+          </label>
+          <input id="image-edit-file-input" type="file" accept="image/*" hidden>
+          <div class="full toolbar">
+            <button class="ghost" data-action="choose-image-edit-file">画像を追加</button>
+            <button class="ghost" data-action="clear-image-edit-file" ${state.imageEditInputFile ? "" : "disabled"}>追加画像を解除</button>
+          </div>
+          <label>処理
+            <select id="image-edit-provider">
+              ${imageEditProviders.map(([value, label]) => `<option value="${value}" ${provider === value ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
+            </select>
+          </label>
+          ${provider === "removebg" ? `
+            <label>remove.bg APIキー
+              <input id="image-edit-removebg-key" type="password" value="${escapeHtml(removeBgApiKey())}" placeholder="remove.bg API key">
+            </label>
+          ` : `
+            <label>背景
+              <select id="image-edit-background-mode">
+                ${imageEditBackgroundModes.map(([value, label]) => `<option value="${value}" ${mode === value ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
+              </select>
+            </label>
+            <label>指定色
+              <input id="image-edit-chroma-color" type="color" value="${escapeHtml(state.imageEditChromaColor || "#ffffff")}" ${mode === "chroma" ? "" : "disabled"}>
+            </label>
+            <label>許容値
+              <input id="image-edit-tolerance" type="range" min="0" max="160" value="${escapeHtml(state.imageEditTolerance)}">
+            </label>
+            <label>境界ぼかし
+              <input id="image-edit-feather" type="range" min="0" max="80" value="${escapeHtml(state.imageEditFeather)}">
+            </label>
+          `}
+          <div class="full toolbar">
+            <button class="accent" data-action="run-image-edit" ${state.imageEditIsRunning || !selectedSource ? "disabled" : ""}>透過PNGを作成</button>
+            <button class="ghost" data-action="save-image-edit-result" ${result ? "" : "disabled"}>画像一覧へ保存</button>
+          </div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-header"><h2>プレビュー</h2></div>
+        <div class="panel-body">
+          <div class="image-edit-preview-grid">
+            <article class="image-edit-preview-card">
+              <div class="meta">元画像</div>
+              ${selectedSource ? `<img class="transparent-preview" src="${escapeHtml(selectedSource.url)}" alt="">` : `<div class="empty compact">画像を選択してください。</div>`}
+              ${selectedSource ? `<div class="meta">${escapeHtml(selectedSource.name || "")}${selectedSource.dimensions ? ` / ${escapeHtml(selectedSource.dimensions)}` : ""}</div>` : ""}
+            </article>
+            <article class="image-edit-preview-card">
+              <div class="meta">処理後</div>
+              ${state.imageEditIsRunning ? `<div class="empty compact">処理中です。</div>` : result ? `<img class="transparent-preview" src="${escapeHtml(result.dataUrl)}" alt="">` : `<div class="empty compact">まだ結果がありません。</div>`}
+              ${result ? `<div class="meta">${escapeHtml(result.name || "")}${result.width ? ` / ${escapeHtml(`${result.width}x${result.height}`)}` : ""} / ${escapeHtml(result.providerLabel || "")}</div>` : ""}
+            </article>
+          </div>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function imageEditControlsFromDom() {
+  return {
+    workId: document.querySelector("#image-edit-work")?.value || state.imageEditWorkId || "",
+    characterId: document.querySelector("#image-edit-character")?.value || "",
+    sourceKey: document.querySelector("#image-edit-source")?.value || "",
+    provider: normalizedImageEditProvider(document.querySelector("#image-edit-provider")?.value || state.imageEditProvider),
+    backgroundMode: normalizedImageEditBackgroundMode(document.querySelector("#image-edit-background-mode")?.value || state.imageEditBackgroundMode),
+    tolerance: imageEditToleranceValue(document.querySelector("#image-edit-tolerance")?.value || state.imageEditTolerance),
+    feather: imageEditFeatherValue(document.querySelector("#image-edit-feather")?.value || state.imageEditFeather),
+    chromaColor: document.querySelector("#image-edit-chroma-color")?.value || state.imageEditChromaColor || "#ffffff",
+    removeBgKey: document.querySelector("#image-edit-removebg-key")?.value.trim() || removeBgApiKey()
+  };
+}
+
+function rememberImageEditControls(controls = imageEditControlsFromDom()) {
+  state.imageEditWorkId = controls.workId || null;
+  state.imageEditCharacterId = controls.characterId || "";
+  state.imageEditSourceKey = controls.sourceKey || state.imageEditSourceKey || "";
+  state.imageEditProvider = normalizedImageEditProvider(controls.provider);
+  state.imageEditBackgroundMode = normalizedImageEditBackgroundMode(controls.backgroundMode);
+  state.imageEditTolerance = imageEditToleranceValue(controls.tolerance);
+  state.imageEditFeather = imageEditFeatherValue(controls.feather);
+  state.imageEditChromaColor = controls.chromaColor || "#ffffff";
+  if (controls.removeBgKey) localStorage.setItem("removebg_api_key", controls.removeBgKey);
+}
+
+function parseHexColor(value) {
+  const match = String(value || "").trim().match(/^#?([0-9a-f]{6})$/i);
+  if (!match) return [255, 255, 255];
+  const hex = match[1];
+  return [
+    Number.parseInt(hex.slice(0, 2), 16),
+    Number.parseInt(hex.slice(2, 4), 16),
+    Number.parseInt(hex.slice(4, 6), 16)
+  ];
+}
+
+function imageFromDataUrl(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("画像を読み込めませんでした。"));
+    image.src = dataUrl;
+  });
+}
+
+function averageImageColor(data, width, height, startX, startY, sampleSize) {
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let count = 0;
+  const endX = Math.min(width, startX + sampleSize);
+  const endY = Math.min(height, startY + sampleSize);
+  for (let y = Math.max(0, startY); y < endY; y += 1) {
+    for (let x = Math.max(0, startX); x < endX; x += 1) {
+      const offset = (y * width + x) * 4;
+      if (data[offset + 3] < 8) continue;
+      r += data[offset];
+      g += data[offset + 1];
+      b += data[offset + 2];
+      count += 1;
+    }
+  }
+  return count ? [Math.round(r / count), Math.round(g / count), Math.round(b / count)] : [255, 255, 255];
+}
+
+function imageEditBackgroundColors(data, width, height, controls) {
+  const mode = normalizedImageEditBackgroundMode(controls.backgroundMode);
+  if (mode === "white") return [[255, 255, 255]];
+  if (mode === "black") return [[0, 0, 0]];
+  if (mode === "chroma") return [parseHexColor(controls.chromaColor)];
+  const sampleSize = Math.max(3, Math.min(18, Math.floor(Math.min(width, height) / 16)));
+  return [
+    averageImageColor(data, width, height, 0, 0, sampleSize),
+    averageImageColor(data, width, height, width - sampleSize, 0, sampleSize),
+    averageImageColor(data, width, height, 0, height - sampleSize, sampleSize),
+    averageImageColor(data, width, height, width - sampleSize, height - sampleSize, sampleSize)
+  ];
+}
+
+function minColorDistanceSquared(data, offset, colors) {
+  let best = Infinity;
+  for (const color of colors) {
+    const dr = data[offset] - color[0];
+    const dg = data[offset + 1] - color[1];
+    const db = data[offset + 2] - color[2];
+    const distance = dr * dr + dg * dg + db * db;
+    if (distance < best) best = distance;
+  }
+  return best;
+}
+
+async function removeBackgroundLocally(dataUrl, controls) {
+  const image = await imageFromDataUrl(dataUrl);
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth || image.width;
+  canvas.height = image.naturalHeight || image.height;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+  const { data, width, height } = imageData;
+  const colors = imageEditBackgroundColors(data, width, height, controls);
+  const tolerance = imageEditToleranceValue(controls.tolerance);
+  const feather = imageEditFeatherValue(controls.feather);
+  const maxDistance = tolerance + feather;
+  const thresholdSq = tolerance * tolerance;
+  const maxDistanceSq = maxDistance * maxDistance;
+  const pixelCount = width * height;
+  const mask = new Uint8Array(pixelCount);
+  const queue = [];
+  const pushIfBackground = (x, y) => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return;
+    const index = y * width + x;
+    if (mask[index]) return;
+    const offset = index * 4;
+    if (data[offset + 3] < 8 || minColorDistanceSquared(data, offset, colors) <= maxDistanceSq) {
+      mask[index] = 1;
+      queue.push(index);
+    }
+  };
+  for (let x = 0; x < width; x += 1) {
+    pushIfBackground(x, 0);
+    pushIfBackground(x, height - 1);
+  }
+  for (let y = 1; y < height - 1; y += 1) {
+    pushIfBackground(0, y);
+    pushIfBackground(width - 1, y);
+  }
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const index = queue[cursor];
+    const x = index % width;
+    const y = Math.floor(index / width);
+    pushIfBackground(x + 1, y);
+    pushIfBackground(x - 1, y);
+    pushIfBackground(x, y + 1);
+    pushIfBackground(x, y - 1);
+  }
+  for (let index = 0; index < pixelCount; index += 1) {
+    if (!mask[index]) continue;
+    const offset = index * 4;
+    if (data[offset + 3] < 8) {
+      data[offset + 3] = 0;
+      continue;
+    }
+    const distance = Math.sqrt(minColorDistanceSquared(data, offset, colors));
+    if (distance <= tolerance || feather === 0) {
+      data[offset + 3] = 0;
+    } else {
+      const ratio = Math.max(0, Math.min(1, (distance - tolerance) / feather));
+      data[offset + 3] = Math.round(data[offset + 3] * ratio);
+    }
+  }
+  context.putImageData(imageData, 0, 0);
+  return {
+    dataUrl: canvas.toDataURL("image/png"),
+    width,
+    height
+  };
+}
+
+async function sourceDataUrlForImageEdit(source) {
+  if (source?.dataUrl) return source.dataUrl;
+  if (!source?.url) throw new Error("編集元画像が選択されていません。");
+  return imageUrlToDataUrl(source.url);
+}
+
+async function runImageEdit() {
+  const controls = imageEditControlsFromDom();
+  rememberImageEditControls(controls);
+  const source = selectedImageEditSource();
+  if (!source) return toast("編集元画像を選択してください。");
+  state.imageEditIsRunning = true;
+  state.imageEditResult = null;
+  render();
+  try {
+    const dataUrl = await sourceDataUrlForImageEdit(source);
+    let output;
+    let providerLabel = "ローカル";
+    if (controls.provider === "removebg") {
+      if (!controls.removeBgKey) throw new Error("remove.bg API キーを入力してください。");
+      localStorage.setItem("removebg_api_key", controls.removeBgKey);
+      toastApiSubmitted("remove.bg に背景除去を送信しました。返答を待っています。");
+      output = await postJson("/api/remove-bg", {
+        apiKey: controls.removeBgKey,
+        dataUrl,
+        name: source.name || "image.png"
+      });
+      providerLabel = "remove.bg";
+    } else {
+      output = await removeBackgroundLocally(dataUrl, controls);
+    }
+    const info = await getImageInfo(output.dataUrl);
+    state.imageEditResult = {
+      dataUrl: output.dataUrl,
+      name: transparentPngName(source.name, controls.provider === "removebg" ? "removebg" : "transparent"),
+      sourceName: source.name || "",
+      provider: controls.provider,
+      providerLabel,
+      width: info.width,
+      height: info.height,
+      aspectRatio: info.aspectRatio,
+      aspectRatioText: info.aspectRatioText,
+      createdAt: new Date().toISOString()
+    };
+    toast("透過PNGを作成しました。");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    state.imageEditIsRunning = false;
+    render();
+  }
+}
+
+async function saveImageEditResult() {
+  const result = state.imageEditResult;
+  if (!result?.dataUrl) return toast("保存する編集結果がありません。");
+  const controls = imageEditControlsFromDom();
+  rememberImageEditControls(controls);
+  const selectedChar = byId(state.db.characters, state.imageEditCharacterId);
+  const work = byId(state.db.works, selectedChar?.workId || state.imageEditWorkId || state.selectedWorkId);
+  try {
+    const uploaded = await postJson("/api/media-upload", {
+      dataUrl: result.dataUrl,
+      name: result.name || "transparent.png",
+      workName: work?.name,
+      folderName: "_画像編集"
+    });
+    const info = await getImageInfo(result.dataUrl);
+    state.db.assets.unshift({
+      id: uid(),
+      workId: work?.id || null,
+      characterId: selectedChar?.id || null,
+      worldItemId: null,
+      name: result.name || "transparent.png",
+      url: uploaded.url,
+      localPath: uploaded.path,
+      status: selectedChar ? "matched" : "unassigned",
+      confidence: selectedChar ? 1 : null,
+      aiPrompt: "",
+      aiPromptFormat: selectedChar ? promptFormatOf(selectedChar) : "natural",
+      aiReason: `${result.providerLabel || "画像編集"}で作成`,
+      width: info.width,
+      height: info.height,
+      aspectRatio: info.aspectRatio,
+      aspectRatioText: info.aspectRatioText,
+      createdAt: new Date().toISOString()
+    });
+    await saveDb();
+    toast("編集結果を画像一覧へ保存しました。");
+    render();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+function bindImageEditor() {
+  const persist = () => rememberImageEditControls();
+  document.querySelector("#image-edit-work")?.addEventListener("change", (event) => {
+    state.imageEditWorkId = event.target.value || null;
+    state.selectedWorkId = state.imageEditWorkId;
+    if (state.imageEditCharacterId && !charactersForWork(state.imageEditWorkId).some((char) => char.id === state.imageEditCharacterId)) {
+      state.imageEditCharacterId = "";
+    }
+    state.imageEditSourceKey = state.imageEditInputFile ? "upload" : "";
+    state.imageEditResult = null;
+    render();
+  });
+  document.querySelector("#image-edit-character")?.addEventListener("change", (event) => {
+    state.imageEditCharacterId = event.target.value || "";
+    const char = byId(state.db.characters, state.imageEditCharacterId);
+    if (char) {
+      state.imageEditWorkId = char.workId;
+      state.selectedWorkId = char.workId;
+    }
+    state.imageEditResult = null;
+    render();
+  });
+  document.querySelector("#image-edit-source")?.addEventListener("change", (event) => {
+    state.imageEditSourceKey = event.target.value;
+    state.imageEditResult = null;
+    render();
+  });
+  document.querySelector("#image-edit-provider")?.addEventListener("change", () => {
+    persist();
+    render();
+  });
+  ["#image-edit-background-mode", "#image-edit-tolerance", "#image-edit-feather", "#image-edit-chroma-color"].forEach((selector) => {
+    document.querySelector(selector)?.addEventListener("input", persist);
+    document.querySelector(selector)?.addEventListener("change", () => {
+      persist();
+      if (selector === "#image-edit-background-mode") render();
+    });
+  });
+  document.querySelector("#image-edit-removebg-key")?.addEventListener("change", () => {
+    const key = document.querySelector("#image-edit-removebg-key")?.value.trim() || "";
+    localStorage.setItem("removebg_api_key", key);
+  });
+  document.querySelector("[data-action='choose-image-edit-file']")?.addEventListener("click", () => {
+    document.querySelector("#image-edit-file-input")?.click();
+  });
+  document.querySelector("#image-edit-file-input")?.addEventListener("change", async (event) => {
+    const file = [...(event.target.files || [])].find((item) => item.type.startsWith("image/"));
+    if (!file) return;
+    const preview = await fileToDataUrl(file);
+    state.imageEditInputFile = {
+      name: file.name,
+      preview,
+      size: file.size,
+      imageInfo: await getImageInfo(preview),
+      createdAt: new Date().toISOString()
+    };
+    state.imageEditSourceKey = "upload";
+    state.imageEditResult = null;
+    render();
+  });
+  document.querySelector("[data-action='clear-image-edit-file']")?.addEventListener("click", () => {
+    state.imageEditInputFile = null;
+    if (state.imageEditSourceKey === "upload") state.imageEditSourceKey = "";
+    state.imageEditResult = null;
+    render();
+  });
+  document.querySelector("[data-action='run-image-edit']")?.addEventListener("click", runImageEdit);
+  document.querySelector("[data-action='save-image-edit-result']")?.addEventListener("click", saveImageEditResult);
 }
 
 function mediaKindFromFile(file) {
@@ -4347,9 +4912,39 @@ function imageJobProgress(job) {
   return Math.max(0, Math.min(100, Math.round(progress)));
 }
 
+function normalizeImageCompareMode(value) {
+  const text = String(value || "").trim();
+  return imageCompareModes.some(([mode]) => mode === text) ? text : "seed";
+}
+
+function imageCompareModeLabel(mode) {
+  return imageCompareModes.find(([value]) => value === normalizeImageCompareMode(mode))?.[1] || "Seed";
+}
+
+function imageCompareCountValue(value) {
+  return boundedSettingNumber(value, 3, 2, 6, true);
+}
+
+function randomComfySeed() {
+  return Math.floor(Math.random() * 900000000000000) + 10000000000000;
+}
+
+function fixedComparisonSeed(seed) {
+  const number = Number(seed);
+  return Number.isFinite(number) && number >= 0 ? Math.floor(number) : randomComfySeed();
+}
+
+function activeImageJobs() {
+  return (state.db?.imageJobs || []).filter((job) => activeImageJobStatuses.includes(job.status));
+}
+
+function syncImageGenerationFlag() {
+  state.imageIsGenerating = activeImageJobs().length > 0;
+}
+
 function activeImageJob() {
   return byId(state.db.imageJobs || [], state.imagePollingJobId)
-    || (state.db.imageJobs || []).find((job) => activeImageJobStatuses.includes(job.status))
+    || activeImageJobs()[0]
     || null;
 }
 
@@ -4364,6 +4959,7 @@ function imageControlsFromDom() {
   const gpuMode = imageControlValue("image-gpu-mode", state.imageGpuMode || settings.gpuMode) === "cloud" ? "cloud" : "local";
   const loraFallback = state.imagePromptDraft?.loras || settings.loras;
   const referenceSlots = comfyReferenceSlotsFromDom("image", state.imagePromptDraft?.referenceSlots || settings.referenceSlots, true);
+  const compareEnabled = document.querySelector("#image-compare-enabled")?.checked ?? Boolean(state.imagePromptDraft?.compareEnabled ?? state.imageCompareEnabled);
   return {
     workId: imageControlValue("image-work", state.imageWorkId || state.selectedWorkId || ""),
     characterId: imageControlValue("image-character", state.imageCharacterId || ""),
@@ -4383,6 +4979,9 @@ function imageControlsFromDom() {
     loras: lorasFromDom("image", loraFallback),
     referenceSlots,
     references: activeComfyReferenceSlots(referenceSlots),
+    compareEnabled,
+    compareCount: imageCompareCountValue(imageControlValue("image-compare-count", state.imagePromptDraft?.compareCount || state.imageCompareCount || 3)),
+    compareMode: normalizeImageCompareMode(imageControlValue("image-compare-mode", state.imagePromptDraft?.compareMode || state.imageCompareMode || "seed")),
     baseUrl: activeComfyBaseUrl(gpuMode),
     apiKey: activeComfyApiKey(gpuMode),
     workflowJson: settings.workflowJson,
@@ -4403,6 +5002,9 @@ function rememberImageControls(controls, { clearValidation = true } = {}) {
   state.imageWorkId = work?.id || controls.workId || null;
   state.imageCharacterId = selectedChar?.id || "";
   state.imageGpuMode = controls.gpuMode;
+  state.imageCompareEnabled = Boolean(controls.compareEnabled);
+  state.imageCompareCount = imageCompareCountValue(controls.compareCount);
+  state.imageCompareMode = normalizeImageCompareMode(controls.compareMode);
   state.imagePromptDraft = {
     ...(state.imagePromptDraft || {}),
     title: controls.title,
@@ -4418,7 +5020,10 @@ function rememberImageControls(controls, { clearValidation = true } = {}) {
     seed: controls.seed,
     checkpoint: controls.checkpoint,
     loras: controls.loras,
-    referenceSlots: controls.referenceSlots
+    referenceSlots: controls.referenceSlots,
+    compareEnabled: state.imageCompareEnabled,
+    compareCount: state.imageCompareCount,
+    compareMode: state.imageCompareMode
   };
   state.db.settings.comfy = {
     ...activeComfySettings(),
@@ -4516,6 +5121,80 @@ function renderComfyPresetControls(prefix) {
   `;
 }
 
+function imageCompareHelpText(mode) {
+  const normalized = normalizeImageCompareMode(mode);
+  if (normalized === "cfg") return "同じSeedでCFGだけを段階的に変え、絵柄の強さやプロンプト追従を比較します。";
+  if (normalized === "steps") return "同じSeedでStepsだけを段階的に変え、仕上がり密度と時間のバランスを比較します。";
+  return "同じ設定でSeedだけを変え、構図や表情の当たりを比較します。";
+}
+
+function imageCompareGroupsForWork(workId) {
+  const groups = new Map();
+  imageJobsForWork(workId).forEach((job) => {
+    if (!job.compareGroupId) return;
+    if (!groups.has(job.compareGroupId)) {
+      groups.set(job.compareGroupId, {
+        id: job.compareGroupId,
+        title: job.compareGroupTitle || job.title || "比較生成",
+        mode: job.compareMode || "seed",
+        createdAt: job.createdAt || "",
+        updatedAt: job.updatedAt || job.createdAt || "",
+        jobs: []
+      });
+    }
+    const group = groups.get(job.compareGroupId);
+    group.jobs.push(job);
+    if (String(job.updatedAt || "").localeCompare(group.updatedAt || "") > 0) group.updatedAt = job.updatedAt;
+  });
+  return [...groups.values()]
+    .map((group) => ({
+      ...group,
+      jobs: group.jobs.sort((a, b) => (a.compareIndex ?? 0) - (b.compareIndex ?? 0))
+    }))
+    .sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")));
+}
+
+function renderImageCompareGroup(group) {
+  const done = group.jobs.filter((job) => ["succeeded", "failed", "cancelled"].includes(job.status)).length;
+  return `
+    <article class="image-compare-group">
+      <div class="compare-group-header">
+        <div>
+          <div class="char-name">${escapeHtml(group.title || "比較生成")}</div>
+          <div class="meta">${escapeHtml(imageCompareModeLabel(group.mode))}比較 / ${done}/${group.jobs.length} 完了 / ${group.updatedAt ? escapeHtml(new Date(group.updatedAt).toLocaleString("ja-JP")) : ""}</div>
+        </div>
+      </div>
+      <div class="image-compare-grid">
+        ${group.jobs.map(renderImageCompareCard).join("")}
+      </div>
+    </article>
+  `;
+}
+
+function renderImageCompareCard(job) {
+  const progress = imageJobProgress(job);
+  const image = job.images?.[0];
+  const label = job.compareLabel || `${imageCompareModeLabel(job.compareMode)} ${job.compareIndex !== null ? job.compareIndex + 1 : ""}`.trim();
+  return `
+    <article class="image-compare-card ${job.status}">
+      <div class="compare-card-media">
+        ${image?.url ? `<img src="${escapeHtml(image.url)}" alt="">` : `<div class="empty compact">${escapeHtml(imageStatusLabel(job.status))}</div>`}
+      </div>
+      <div class="compare-card-body">
+        <div class="compare-badge">${escapeHtml(label)}</div>
+        <div class="meta">${escapeHtml(imageStatusLabel(job.status))}${progress !== null ? ` ${escapeHtml(`${progress}%`)}` : ""}</div>
+        <div class="meta">Seed ${escapeHtml(job.settings?.seed ?? "")} / CFG ${escapeHtml(job.settings?.cfg ?? "")} / Steps ${escapeHtml(job.settings?.steps ?? "")}</div>
+        ${job.error ? `<div class="meta danger-text">${escapeHtml(job.error)}</div>` : ""}
+      </div>
+      <div class="card-actions">
+        <button class="ghost" data-action="adopt-image-job" data-id="${job.id}">採用</button>
+        <button class="ghost" data-action="copy-image-job-prompt" data-id="${job.id}">プロンプト</button>
+        <button class="ghost" data-action="refresh-image-job" data-id="${job.id}" ${!job.providerTaskId || ["succeeded", "cancelled"].includes(job.status) ? "disabled" : ""}>更新</button>
+      </div>
+    </article>
+  `;
+}
+
 function renderImageAgent() {
   const work = byId(state.db.works, state.imageWorkId) || byId(state.db.works, state.selectedWorkId) || state.db.works[0] || null;
   if (!state.imageWorkId && work) state.imageWorkId = work.id;
@@ -4524,11 +5203,18 @@ function renderImageAgent() {
     state.imageCharacterId = "";
   }
   const settings = activeComfySettings();
-  const controls = { ...settings, ...(state.imagePromptDraft || {}) };
+  const controls = {
+    ...settings,
+    compareEnabled: state.imageCompareEnabled,
+    compareCount: state.imageCompareCount,
+    compareMode: state.imageCompareMode,
+    ...(state.imagePromptDraft || {})
+  };
   const gpuMode = state.imageGpuMode || settings.gpuMode;
   const endpoint = activeComfyBaseUrl(gpuMode);
   const jobs = imageJobsForWork(state.imageWorkId).slice(0, 16);
-  const activeJobs = (state.db.imageJobs || []).filter((job) => activeImageJobStatuses.includes(job.status));
+  const compareGroups = imageCompareGroupsForWork(state.imageWorkId).slice(0, 4);
+  const activeJobs = activeImageJobs();
   return `
     <div class="video-layout image-layout">
       <section class="panel">
@@ -4553,6 +5239,21 @@ function renderImageAgent() {
             </select>
           </label>
           ${renderComfyPresetControls("image")}
+          <div class="full image-compare-settings">
+            <label class="check-row">
+              <input id="image-compare-enabled" type="checkbox" ${controls.compareEnabled ? "checked" : ""}>
+              <span>生成比較モード</span>
+            </label>
+            <div class="image-compare-controls">
+              <label>比較枚数<input id="image-compare-count" type="number" min="2" max="6" value="${escapeHtml(controls.compareCount || 3)}"></label>
+              <label>比較軸
+                <select id="image-compare-mode">
+                  ${imageCompareModes.map(([value, label]) => `<option value="${value}" ${normalizeImageCompareMode(controls.compareMode) === value ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
+                </select>
+              </label>
+            </div>
+            <div class="meta">${escapeHtml(imageCompareHelpText(controls.compareMode))}</div>
+          </div>
           <label class="full">タイトル<input id="image-title" value="${escapeHtml(controls.title || "生成画像")}"></label>
           <label>幅<input id="image-width" type="number" min="64" max="4096" step="64" value="${escapeHtml(controls.width || settings.width)}"></label>
           <label>高さ<input id="image-height" type="number" min="64" max="4096" step="64" value="${escapeHtml(controls.height || settings.height)}"></label>
@@ -4616,7 +5317,7 @@ function renderImageAgent() {
             <div class="group">
               <button class="ghost" data-action="image-copy-prompt">コピー</button>
               ${(state.imageIsGenerating || state.imagePollingJobId || activeJobs.length) ? `<button class="ghost danger" data-action="discard-image-waiting">待機を破棄</button>` : ""}
-              <button class="accent" data-action="image-start-generation" ${state.imageIsGenerating ? "disabled" : ""}>生成開始</button>
+              <button class="accent" data-action="image-start-generation" ${state.imageIsGenerating ? "disabled" : ""}>${controls.compareEnabled ? "比較生成開始" : "生成開始"}</button>
             </div>
           </div>
           <div class="panel-body">
@@ -4627,6 +5328,14 @@ function renderImageAgent() {
             ${state.imageIsGenerating || state.imagePollingJobId ? renderComfyAnimation() : ""}
           </div>
         </section>
+        ${compareGroups.length ? `
+          <section class="panel">
+            <div class="panel-header"><h2>比較結果</h2></div>
+            <div class="panel-body image-compare-group-list">
+              ${compareGroups.map(renderImageCompareGroup).join("")}
+            </div>
+          </section>
+        ` : ""}
         <section class="panel">
           <div class="panel-header"><h2>生成履歴</h2></div>
           <div class="panel-body image-job-list">
@@ -4672,11 +5381,12 @@ function renderImageJob(job) {
   const status = job.status;
   const loraText = activeComfyLoras(job.settings?.loras).map((item) => item.name).join(", ");
   const referenceText = (job.settings?.references || []).map((item) => item.name || item.key).filter(Boolean).join(", ");
+  const compareText = job.compareGroupId ? `${imageCompareModeLabel(job.compareMode)}比較 ${job.compareIndex !== null ? `${job.compareIndex + 1}/${job.compareTotal || "?"}` : ""}${job.compareLabel ? ` / ${job.compareLabel}` : ""}` : "";
   return `
     <article class="image-job ${status}">
       <div>
         <div class="char-name">${escapeHtml(job.title || "生成画像")}</div>
-        <div class="meta">${escapeHtml(work?.name || "全作品")} / ${char ? `${escapeHtml(char.name)} / ` : ""}${escapeHtml(imageGpuLabel(job.gpuMode))} / ${escapeHtml(imageStatusLabel(status))}${progress !== null ? ` ${escapeHtml(`${progress}%`)}` : ""}${loraText ? ` / LoRA: ${escapeHtml(loraText)}` : ""}${referenceText ? ` / 参照: ${escapeHtml(referenceText)}` : ""} / ${job.updatedAt ? escapeHtml(new Date(job.updatedAt).toLocaleString("ja-JP")) : ""}</div>
+        <div class="meta">${compareText ? `${escapeHtml(compareText)} / ` : ""}${escapeHtml(work?.name || "全作品")} / ${char ? `${escapeHtml(char.name)} / ` : ""}${escapeHtml(imageGpuLabel(job.gpuMode))} / ${escapeHtml(imageStatusLabel(status))}${progress !== null ? ` ${escapeHtml(`${progress}%`)}` : ""}${loraText ? ` / LoRA: ${escapeHtml(loraText)}` : ""}${referenceText ? ` / 参照: ${escapeHtml(referenceText)}` : ""} / ${job.updatedAt ? escapeHtml(new Date(job.updatedAt).toLocaleString("ja-JP")) : ""}</div>
       </div>
       ${activeImageJobStatuses.includes(status) ? `
         <div class="progress-track ${progress === null ? "indeterminate" : ""}">
@@ -4688,6 +5398,7 @@ function renderImageJob(job) {
       ${job.negativePrompt ? `<div class="meta">Negative</div><div class="result-text">${escapeHtml(compactPromptText(job.negativePrompt, 600))}</div>` : ""}
       <div class="card-actions">
         <button class="ghost" data-action="refresh-image-job" data-id="${job.id}" ${!job.providerTaskId || ["succeeded", "cancelled"].includes(status) ? "disabled" : ""}>更新</button>
+        <button class="ghost" data-action="adopt-image-job" data-id="${job.id}">採用</button>
         <button class="ghost" data-action="copy-image-job-prompt" data-id="${job.id}">プロンプト</button>
       </div>
       ${job.images?.map((image) => image.localPath ? `<div class="meta">保存先: ${escapeHtml(image.localPath)}</div>` : "").join("") || ""}
@@ -4987,6 +5698,163 @@ async function deleteSelectedComfyPreset() {
   toast("Comfyプリセットを削除しました。");
 }
 
+function comfySettingsSnapshotFromControls(controls) {
+  return {
+    width: controls.width,
+    height: controls.height,
+    steps: controls.steps,
+    cfg: controls.cfg,
+    samplerName: controls.samplerName,
+    scheduler: controls.scheduler,
+    batchSize: controls.batchSize,
+    seed: controls.seed,
+    checkpoint: controls.checkpoint,
+    loras: controls.loras,
+    references: controls.references,
+    referenceSlots: comfyReferenceSlotSettings(controls.referenceSlots),
+    baseUrl: controls.baseUrl
+  };
+}
+
+function persistImageGenerationState(controls, prompt = controls.prompt.trim()) {
+  const selectedChar = byId(state.db.characters, controls.characterId);
+  const work = byId(state.db.works, selectedChar?.workId || controls.workId);
+  state.db.settings.comfy = {
+    ...activeComfySettings(),
+    gpuMode: controls.gpuMode,
+    width: controls.width,
+    height: controls.height,
+    steps: controls.steps,
+    cfg: controls.cfg,
+    samplerName: controls.samplerName,
+    scheduler: controls.scheduler,
+    batchSize: controls.batchSize,
+    seed: controls.seed,
+    checkpoint: controls.checkpoint,
+    loras: controls.loras,
+    referenceSlots: comfyReferenceSlotSettings(controls.referenceSlots)
+  };
+  state.imageGpuMode = controls.gpuMode;
+  state.imageWorkId = work?.id || controls.workId || null;
+  state.imageCharacterId = selectedChar?.id || "";
+  state.imageCompareEnabled = Boolean(controls.compareEnabled);
+  state.imageCompareCount = imageCompareCountValue(controls.compareCount);
+  state.imageCompareMode = normalizeImageCompareMode(controls.compareMode);
+  state.imagePromptDraft = {
+    ...(state.imagePromptDraft || {}),
+    title: controls.title,
+    prompt,
+    negativePrompt: controls.negativePrompt,
+    width: controls.width,
+    height: controls.height,
+    steps: controls.steps,
+    cfg: controls.cfg,
+    samplerName: controls.samplerName,
+    scheduler: controls.scheduler,
+    batchSize: controls.batchSize,
+    seed: controls.seed,
+    checkpoint: controls.checkpoint,
+    loras: controls.loras,
+    referenceSlots: controls.referenceSlots,
+    compareEnabled: state.imageCompareEnabled,
+    compareCount: state.imageCompareCount,
+    compareMode: state.imageCompareMode
+  };
+  return { selectedChar, work };
+}
+
+function buildImageJobFromControls(controls, overrides = {}) {
+  const selectedChar = byId(state.db.characters, controls.characterId);
+  const work = byId(state.db.works, selectedChar?.workId || controls.workId);
+  return normalizeImageJob({
+    id: uid(),
+    workId: work?.id || controls.workId || null,
+    characterId: selectedChar?.id || null,
+    title: overrides.title || controls.title,
+    prompt: overrides.prompt || controls.prompt.trim(),
+    negativePrompt: controls.negativePrompt,
+    gpuMode: controls.gpuMode,
+    status: "submitting",
+    settings: comfySettingsSnapshotFromControls(controls),
+    compareGroupId: overrides.compareGroupId || "",
+    compareGroupTitle: overrides.compareGroupTitle || "",
+    compareIndex: overrides.compareIndex ?? null,
+    compareTotal: overrides.compareTotal ?? null,
+    compareMode: overrides.compareMode || "",
+    compareLabel: overrides.compareLabel || "",
+    progress: 0,
+    progressMessage: "送信中",
+    createdAt: overrides.createdAt || new Date().toISOString(),
+    updatedAt: overrides.createdAt || new Date().toISOString()
+  });
+}
+
+function buildImageComparisonVariants(controls) {
+  const count = imageCompareCountValue(controls.compareCount);
+  const mode = normalizeImageCompareMode(controls.compareMode);
+  const groupId = uid();
+  const groupTitle = `${controls.title || "生成画像"} / ${imageCompareModeLabel(mode)}比較`;
+  const baseSeed = fixedComparisonSeed(controls.seed);
+  const baseCfg = boundedSettingNumber(controls.cfg, 7, 0, 30);
+  const baseSteps = boundedSettingNumber(controls.steps, 28, 1, 150, true);
+  const center = (count - 1) / 2;
+  return Array.from({ length: count }, (_, index) => {
+    const variant = { ...controls, compareEnabled: false };
+    let label = "";
+    if (mode === "cfg") {
+      variant.seed = String(baseSeed);
+      variant.cfg = boundedSettingNumber(baseCfg + ((index - center) * 0.5), baseCfg, 0, 30);
+      label = `CFG ${variant.cfg}`;
+    } else if (mode === "steps") {
+      variant.seed = String(baseSeed);
+      variant.steps = boundedSettingNumber(baseSteps + Math.round((index - center) * 4), baseSteps, 1, 150, true);
+      label = `Steps ${variant.steps}`;
+    } else {
+      variant.seed = String(baseSeed + index);
+      label = `Seed ${variant.seed}`;
+    }
+    return {
+      controls: variant,
+      compareGroupId: groupId,
+      compareGroupTitle: groupTitle,
+      compareIndex: index,
+      compareTotal: count,
+      compareMode: mode,
+      compareLabel: label
+    };
+  });
+}
+
+async function submitComfyImageJob(job, controls) {
+  try {
+    const payload = await postJson("/api/comfy/create", {
+      ...controls,
+      prompt: controls.prompt.trim()
+    });
+    job.providerPayload = payload.providerPayload || payload;
+    job.request = payload.request || null;
+    const providerError = readableError(payload.error) || readableError(payload.providerPayload?.error);
+    if (providerError) throw new Error(providerError);
+    job.providerTaskId = payload.id || payload.prompt_id || "";
+    if (!job.providerTaskId) throw new Error("ComfyUIのprompt_idを取得できませんでした。");
+    job.status = payload.status || "submitted";
+    job.progress = payload.progress ?? job.progress ?? 0;
+    job.progressMessage = "ComfyUIで生成待機中です。";
+    job.updatedAt = new Date().toISOString();
+    await saveDb();
+    render();
+    return true;
+  } catch (error) {
+    job.status = "failed";
+    job.error = error.message;
+    job.updatedAt = new Date().toISOString();
+    await saveDb();
+    syncImageGenerationFlag();
+    render();
+    return false;
+  }
+}
+
 async function startComfyGeneration() {
   const controls = imageControlsFromDom();
   const prompt = controls.prompt.trim();
@@ -4998,131 +5866,110 @@ async function startComfyGeneration() {
   if (!validation.ok) {
     return toast((validation.errors || [])[0] || "ComfyUI workflowの事前チェックで問題が見つかりました。");
   }
-  const selectedChar = byId(state.db.characters, controls.characterId);
-  const work = byId(state.db.works, selectedChar?.workId || controls.workId);
-  let job = null;
+  if (controls.compareEnabled) return startComfyComparisonGeneration({ ...controls, prompt });
   try {
-    state.db.settings.comfy = {
-      ...activeComfySettings(),
-      gpuMode: controls.gpuMode,
-      width: controls.width,
-      height: controls.height,
-      steps: controls.steps,
-      cfg: controls.cfg,
-      samplerName: controls.samplerName,
-      scheduler: controls.scheduler,
-      batchSize: controls.batchSize,
-      seed: controls.seed,
-      checkpoint: controls.checkpoint,
-      loras: controls.loras,
-      referenceSlots: comfyReferenceSlotSettings(controls.referenceSlots)
-    };
-    state.imageGpuMode = controls.gpuMode;
-    state.imageWorkId = work?.id || controls.workId || null;
-    state.imageCharacterId = selectedChar?.id || "";
-    state.imagePromptDraft = {
-      ...(state.imagePromptDraft || {}),
-      title: controls.title,
-      prompt,
-      negativePrompt: controls.negativePrompt,
-      width: controls.width,
-      height: controls.height,
-      steps: controls.steps,
-      cfg: controls.cfg,
-      samplerName: controls.samplerName,
-      scheduler: controls.scheduler,
-      batchSize: controls.batchSize,
-      seed: controls.seed,
-      checkpoint: controls.checkpoint,
-      loras: controls.loras,
-      referenceSlots: controls.referenceSlots
-    };
-    job = normalizeImageJob({
-      id: uid(),
-      workId: work?.id || controls.workId || null,
-      characterId: selectedChar?.id || null,
-      title: controls.title,
-      prompt,
-      negativePrompt: controls.negativePrompt,
-      gpuMode: controls.gpuMode,
-      status: "submitting",
-      settings: {
-        width: controls.width,
-        height: controls.height,
-        steps: controls.steps,
-        cfg: controls.cfg,
-        samplerName: controls.samplerName,
-        scheduler: controls.scheduler,
-        batchSize: controls.batchSize,
-        seed: controls.seed,
-        checkpoint: controls.checkpoint,
-        loras: controls.loras,
-        references: controls.references,
-        baseUrl: controls.baseUrl
-      },
-      progress: 0,
-      progressMessage: "送信中",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    });
+    persistImageGenerationState(controls, prompt);
+    const job = buildImageJobFromControls({ ...controls, prompt });
     state.db.imageJobs.unshift(job);
     state.imageIsGenerating = true;
     await saveDb();
     render();
     toastApiSubmitted("ComfyUIに画像生成を送信しました。返答を待っています。");
-    const payload = await postJson("/api/comfy/create", controls);
-    job.providerPayload = payload.providerPayload || payload;
-    job.request = payload.request || null;
-    const providerError = readableError(payload.error) || readableError(payload.providerPayload?.error);
-    if (providerError) {
-      job.status = "failed";
-      job.error = providerError;
-      job.updatedAt = new Date().toISOString();
-      await saveDb();
-      render();
-      throw new Error(providerError);
+    const ok = await submitComfyImageJob(job, { ...controls, prompt });
+    if (ok) {
+      toast("画像生成タスクを開始しました。");
+      await pollComfyJob(job.id);
+    } else {
+      toast(job.error || "画像生成タスクを開始できませんでした。");
     }
-    job.providerTaskId = payload.id || payload.prompt_id || "";
-    if (!job.providerTaskId) {
-      job.status = "failed";
-      job.error = "ComfyUIのprompt_idを取得できませんでした。";
-      job.updatedAt = new Date().toISOString();
-      await saveDb();
-      render();
-      throw new Error(job.error);
-    }
-    job.status = payload.status || "submitted";
-    job.progress = payload.progress ?? job.progress ?? 0;
-    job.progressMessage = "ComfyUIで生成待機中です。";
-    job.updatedAt = new Date().toISOString();
+  } catch (error) {
+    syncImageGenerationFlag();
+    toast(error.message);
     await saveDb();
     render();
-    toast("画像生成タスクを開始しました。");
-    await pollComfyJob(job.id);
-  } catch (error) {
-    state.imageIsGenerating = false;
-    toast(error.message);
-    const target = job || state.db.imageJobs?.[0];
-    if (target && ["submitting", "submitted"].includes(target.status) && !target.providerTaskId) {
-      target.status = "failed";
-      target.error = target.error || error.message;
-      target.updatedAt = new Date().toISOString();
-      await saveDb();
-      render();
-    }
   }
+}
+
+async function startComfyComparisonGeneration(controls) {
+  const variants = buildImageComparisonVariants(controls);
+  const now = Date.now();
+  persistImageGenerationState(controls, controls.prompt.trim());
+  const jobs = variants.map((variant, index) => buildImageJobFromControls(variant.controls, {
+    ...variant,
+    prompt: controls.prompt.trim(),
+    title: controls.title,
+    createdAt: new Date(now + index).toISOString()
+  }));
+  state.db.imageJobs.unshift(...jobs);
+  state.imageIsGenerating = true;
+  await saveDb();
+  render();
+  toastApiSubmitted(`${jobs.length} 件の比較生成をComfyUIに送信します。返答を待っています。`);
+  let submitted = 0;
+  for (let index = 0; index < variants.length; index += 1) {
+    const ok = await submitComfyImageJob(jobs[index], {
+      ...variants[index].controls,
+      prompt: controls.prompt.trim()
+    });
+    if (ok) submitted += 1;
+  }
+  syncImageGenerationFlag();
+  await saveDb();
+  render();
+  jobs
+    .filter((job) => job.providerTaskId && activeImageJobStatuses.includes(job.status))
+    .forEach((job) => pollComfyJob(job.id));
+  toast(submitted ? `${submitted} 件の比較生成タスクを開始しました。` : "比較生成タスクを開始できませんでした。");
+}
+
+async function adoptImageJob(jobId) {
+  const job = byId(state.db.imageJobs || [], jobId);
+  if (!job) return toast("採用する画像生成ジョブが見つかりません。");
+  const settings = job.settings || {};
+  const current = activeComfySettings();
+  const referenceSlots = normalizedComfyReferenceSlots(settings.referenceSlots || settings.references || []);
+  const nextControls = {
+    ...current,
+    gpuMode: job.gpuMode,
+    workId: job.workId || "",
+    characterId: job.characterId || "",
+    title: job.title || "生成画像",
+    prompt: job.prompt || "",
+    negativePrompt: job.negativePrompt || "",
+    width: settings.width ?? current.width,
+    height: settings.height ?? current.height,
+    steps: settings.steps ?? current.steps,
+    cfg: settings.cfg ?? current.cfg,
+    samplerName: settings.samplerName || current.samplerName,
+    scheduler: settings.scheduler || current.scheduler,
+    batchSize: settings.batchSize ?? current.batchSize,
+    seed: settings.seed ?? "",
+    checkpoint: settings.checkpoint || "",
+    loras: normalizedComfyLoras(settings.loras || []),
+    referenceSlots,
+    references: activeComfyReferenceSlots(referenceSlots),
+    compareEnabled: false,
+    compareCount: state.imageCompareCount,
+    compareMode: state.imageCompareMode
+  };
+  persistImageGenerationState(nextControls, nextControls.prompt);
+  state.imageCompareEnabled = false;
+  state.imagePromptDraft.compareEnabled = false;
+  await saveDb();
+  render({ preserveLiveTextDrafts: true });
+  toast("比較案を生成設定に反映しました。");
 }
 
 async function pollComfyJob(jobId) {
   const job = byId(state.db.imageJobs || [], jobId);
   if (job && !activeImageJobStatuses.includes(job.status) && job.status !== "failed") {
-    state.imageIsGenerating = false;
+    syncImageGenerationFlag();
     if (state.imagePollingJobId === job.id) state.imagePollingJobId = "";
     render();
     return;
   }
   if (!job?.providerTaskId) {
-    state.imageIsGenerating = false;
+    syncImageGenerationFlag();
     if (state.imagePollingJobId === job?.id) state.imagePollingJobId = "";
     return;
   }
@@ -5157,7 +6004,7 @@ async function pollComfyJob(jobId) {
     await saveDb();
     const done = ["succeeded", "failed", "cancelled"].includes(job.status);
     if (done) {
-      state.imageIsGenerating = false;
+      syncImageGenerationFlag();
       state.imagePollingJobId = "";
       toast(job.status === "succeeded" ? "生成画像を画像一覧へ保存しました。" : `画像生成タスクが ${imageStatusLabel(job.status)} で終了しました。`);
       render();
@@ -5165,7 +6012,7 @@ async function pollComfyJob(jobId) {
     }
     window.setTimeout(() => pollComfyJob(job.id), 8000);
   } catch (error) {
-    state.imageIsGenerating = false;
+    syncImageGenerationFlag();
     state.imagePollingJobId = "";
     job.error = error.message;
     job.updatedAt = new Date().toISOString();
@@ -7037,6 +7884,7 @@ function bindView() {
   if (state.view === "import") bindImport();
   if (state.view === "gallery") bindGallery();
   if (state.view === "image") bindImageAgent();
+  if (state.view === "edit") bindImageEditor();
   if (state.view === "audio") bindAudioAgent();
   if (state.view === "video") bindVideoAgent();
   if (state.view === "library") bindLibrary();
@@ -7664,7 +8512,10 @@ function bindImageAgent() {
     "#image-reference-node-2",
     "#image-reference-input-0",
     "#image-reference-input-1",
-    "#image-reference-input-2"
+    "#image-reference-input-2",
+    "#image-compare-enabled",
+    "#image-compare-count",
+    "#image-compare-mode"
   ].forEach((selector) => {
     document.querySelector(selector)?.addEventListener("change", persistImageControls);
   });
@@ -7694,6 +8545,12 @@ function bindImageAgent() {
   document.querySelector("#image-gpu-mode")?.addEventListener("change", () => {
     persistImageControls();
     render();
+  });
+  ["#image-compare-enabled", "#image-compare-mode"].forEach((selector) => {
+    document.querySelector(selector)?.addEventListener("change", () => {
+      persistImageControls();
+      render({ preserveLiveTextDrafts: true });
+    });
   });
   document.querySelector("#image-work")?.addEventListener("change", (event) => {
     persistImageControls();
@@ -7747,6 +8604,9 @@ function bindImageAgent() {
       const job = byId(state.db.imageJobs || [], button.dataset.id);
       if (job) copyText(`${job.prompt || ""}${job.negativePrompt ? `\nNegative: ${job.negativePrompt}` : ""}`);
     });
+  });
+  document.querySelectorAll("[data-action='adopt-image-job']").forEach((button) => {
+    button.addEventListener("click", () => adoptImageJob(button.dataset.id));
   });
 }
 

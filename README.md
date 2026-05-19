@@ -1,7 +1,7 @@
 # Creative File Studio
 
-ローカル環境で動く、創作支援向けのファイル管理アプリです。作品、キャラ設定、取り込み画像、世界観資料、生成プロンプト、画像生成、音声、動画をまとめて扱えます。
-画像生成はComfyUI互換APIでローカルGPUとクラウドGPUを切り替え、動画生成は公式Seedance APIまたはOpenRouterの動画モデル、音声生成はOpenRouter TTS、ElevenLabs、Voicebox、ローカル Irodori-TTS を切り替えて使えます。
+ローカル環境で動く、創作支援向けのファイル管理アプリです。作品、キャラ設定、取り込み画像、世界観資料、生成プロンプト、画像生成、画像編集、音声、動画をまとめて扱えます。
+画像生成はComfyUI互換APIでローカルGPUとクラウドGPUを切り替え、画像編集はローカル処理またはremove.bgクラウドAPI、動画生成は公式Seedance APIまたはOpenRouterの動画モデル、音声生成はOpenRouter TTS、ElevenLabs、Voicebox、ローカル Irodori-TTS を切り替えて使えます。
 
 ## 起動
 
@@ -158,9 +158,19 @@ ZIPに含めないもの:
 - Comfy設定をプリセットとして保存し、立ち絵、背景、表情差分など用途別に呼び出し
 - 画像一覧、キャラ立ち絵、その他情報、追加アップロード画像をComfy参照画像として選択
 - 選択した参照画像をComfyUIへアップロードし、指定したLoadImage系Nodeの入力へ差し替え
+- Seed、CFG、Stepsを軸に複数案を投げる生成比較モード
 - 生成待ちジョブの状態確認、完成画像の自動保存
 - 完成画像を `data/uploads/<作品名>/_画像生成/` に保存し、画像一覧と画像整理に自動登録
 - キャラ指定ありで生成した画像は、そのキャラの画像として保存
+
+### 画像編集
+
+- 画像一覧、キャラ立ち絵、その他情報、生成画像、追加アップロード画像から編集元を選択
+- 背景除去と透過PNG変換に対応
+- ローカル処理では端末内のCanvasで背景色を推定し、許容値と境界ぼかしを調整
+- クラウド処理ではremove.bg APIを選択し、透過PNGを取得
+- 編集結果を `data/uploads/<作品名>/_画像編集/` に保存し、画像一覧と画像整理に自動登録
+- 保存時にキャラを指定すると、そのキャラの画像として登録
 
 ### 動画生成
 
@@ -203,6 +213,7 @@ ZIPに含めないもの:
 - 作品、キャラ、画像メタデータ: `data/db.json`
 - 取り込み画像、立ち絵: `data/uploads/作品名/キャラ名/`
 - 生成完了後に保存された画像: `data/uploads/作品名/_画像生成/`
+- 画像編集後に保存された画像: `data/uploads/作品名/_画像編集/`
 - Comfy参照画像として追加した画像: `data/uploads/作品名/_Comfy参照画像/`
 - 生成完了後に保存された音声: `data/audios/`
 - 動画生成用に追加した素材: `data/uploads/作品名/_動画生成_画像/`、`_動画生成_動画/`、`_動画生成_音声/`
@@ -211,6 +222,7 @@ ZIPに含めないもの:
 - ElevenLabs API キー: ブラウザの localStorage
 - Seedance API キー: ブラウザの localStorage
 - ComfyUI クラウドAPI キー: ブラウザの localStorage
+- remove.bg API キー: ブラウザの localStorage
 
 既存の `data/uploads/` 直下にある画像は、アプリ読み込み時に現在の作品・キャラ割当に合わせて自動で移動されます。未割当画像は `作品名/_未割当/` に入ります。
 
@@ -256,7 +268,7 @@ ZIPに含めないもの:
 - Workflow JSON: ComfyUIの `Save (API Format)` で保存したJSONを貼り付けます。
 - Node ID: Positive、Negative、Seed、Size、Steps、CFG、Sampler、Checkpointの入力を書き換えるノード番号を指定します。
 
-画像生成画面では、作品、キャラ、GPU、幅、高さ、Steps、CFG、Sampler、Scheduler、Batch、Seed、Checkpointを指定できます。エージェントに相談してプロンプト案を作ることも、プロンプト欄へ直接入力することもできます。
+画像生成画面では、作品、キャラ、GPU、幅、高さ、Steps、CFG、Sampler、Scheduler、Batch、Seed、Checkpointを指定できます。エージェントに相談してプロンプト案を作ることも、プロンプト欄へ直接入力することもできます。生成比較モードをONにすると、Seed、CFG、Stepsのいずれかを軸に複数ジョブを投入し、比較結果から採用した案を生成設定へ戻せます。
 
 生成が完了すると、画像は `data/uploads/<作品名>/_画像生成/` に保存され、画像一覧と画像整理に自動登録されます。キャラ指定ありで生成した場合は、そのキャラの画像として登録されます。
 

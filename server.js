@@ -693,6 +693,61 @@ async function handleMediaUpload(req, res) {
   });
 }
 
+async function handleRemoveBackground(req, res) {
+  const { apiKey, dataUrl, name, size = "auto" } = await readJson(req, 64 * 1024 * 1024);
+  if (!apiKey) return sendJson(res, 400, { error: "remove.bg API キーが未設定です。" });
+  let parsed;
+  try {
+    parsed = parseDataUrl(dataUrl, ["image"]);
+  } catch {
+    return sendJson(res, 400, { error: "背景除去する画像の data URL が必要です。" });
+  }
+
+  try {
+    const imageBuffer = Buffer.from(parsed.base64, "base64");
+    const formData = new FormData();
+    formData.append("size", String(size || "auto"));
+    formData.append("format", "png");
+    formData.append(
+      "image_file",
+      new Blob([imageBuffer], { type: `${parsed.kind}/${parsed.subtype}` }),
+      safeOriginalFileName(name, parsed.ext)
+    );
+    const response = await fetch("https://api.remove.bg/v1.0/removebg", {
+      method: "POST",
+      headers: { "X-Api-Key": apiKey },
+      body: formData,
+      signal: AbortSignal.timeout(120000)
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      let payload;
+      try {
+        payload = text ? JSON.parse(text) : {};
+      } catch {
+        payload = { error: text };
+      }
+      const message = readableProviderError(payload.errors)
+        || readableProviderError(payload.error)
+        || readableProviderError(payload)
+        || `remove.bg API が ${response.status} を返しました。`;
+      return sendJson(res, response.status, {
+        error: message,
+        providerError: payload
+      });
+    }
+    const outputBuffer = Buffer.from(await response.arrayBuffer());
+    sendJson(res, 200, {
+      dataUrl: `data:image/png;base64,${outputBuffer.toString("base64")}`,
+      mimeType: "image/png",
+      provider: "remove.bg",
+      size: outputBuffer.length
+    });
+  } catch (error) {
+    sendJson(res, 502, { error: `remove.bg への接続に失敗しました: ${error.message}` });
+  }
+}
+
 async function handleTrashImportSource(req, res) {
   const payload = await readJson(req, 1024 * 1024);
   try {
@@ -2895,6 +2950,10 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/media-upload") {
       return await handleMediaUpload(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/remove-bg") {
+      return await handleRemoveBackground(req, res);
     }
 
     if (req.method === "POST" && url.pathname === "/api/trash-import-source") {
