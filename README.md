@@ -155,6 +155,9 @@ ZIPに含めないもの:
 - LoRA名、Model強度、CLIP強度を指定し、生成時にComfyUIのLoraLoaderとして読み込み
 - ComfyUIのCheckpoint / LoRA一覧を取得し、入力候補として表示
 - 生成前にworkflowのNode ID、LoRA接続、Checkpoint / LoRA名を事前チェック
+- Comfy設定をプリセットとして保存し、立ち絵、背景、表情差分など用途別に呼び出し
+- 画像一覧、キャラ立ち絵、その他情報、追加アップロード画像をComfy参照画像として選択
+- 選択した参照画像をComfyUIへアップロードし、指定したLoadImage系Nodeの入力へ差し替え
 - 生成待ちジョブの状態確認、完成画像の自動保存
 - 完成画像を `data/uploads/<作品名>/_画像生成/` に保存し、画像一覧と画像整理に自動登録
 - キャラ指定ありで生成した画像は、そのキャラの画像として保存
@@ -178,7 +181,7 @@ ZIPに含めないもの:
 
 - 作品情報、世界観、キャラ情報を読んだ音声生成エージェント
 - OpenRouter TTS、ElevenLabs、Voicebox、ローカル Irodori-TTS を切り替え
-- OpenRouterでは `google/gemini-3.1-flash-tts-preview` によるTTS生成
+- OpenRouterでは `google/gemini-3.1-flash-tts-preview` と `x-ai/grok-voice-tts-1.0` を切り替え
 - ElevenLabsではVoice ID、モデル、出力形式、Stability、Similarity、Style、Speed、Speaker Boost、言語コード、Seedを指定
 - VoiceboxではローカルAPI URL、プロファイル、言語、Model size、Seed、演技指示を指定
 - Irodori-TTSではVoiceDesign/Reference、Steps、候補数、Seed、CFG、デバイス、精度、参照音声を指定
@@ -190,7 +193,7 @@ ZIPに含めないもの:
 - OpenRouter APIキー、ElevenLabs APIキー、Seedance/Replicate APIキー、ComfyUIクラウドAPIキーをブラウザのlocalStorageに保存
 - 画像判別、テキスト生成、世界観読み込み、画像生成エージェント、動画エージェント、音声エージェントのモデルを個別に設定
 - OpenRouterのモデル一覧と動画モデル対応設定を再取得
-- ComfyUIのローカルURL、クラウドURL、workflow、Node ID、既定生成値、LoRA、workflow表示モード、モデル候補取得、事前チェックを設定
+- ComfyUIのローカルURL、クラウドURL、workflow、Node ID、既定生成値、LoRA、workflow表示モード、モデル候補取得、事前チェック、プリセットを設定
 - 動画生成プロバイダーを公式 / OpenRouter / Replicateから選択
 - VoiceboxのAPI URL、既定プロファイル、言語、Model sizeを設定
 - Irodori-TTSの既存フォルダ指定、または `scripts/setup-irodori.sh` による取得
@@ -200,6 +203,7 @@ ZIPに含めないもの:
 - 作品、キャラ、画像メタデータ: `data/db.json`
 - 取り込み画像、立ち絵: `data/uploads/作品名/キャラ名/`
 - 生成完了後に保存された画像: `data/uploads/作品名/_画像生成/`
+- Comfy参照画像として追加した画像: `data/uploads/作品名/_Comfy参照画像/`
 - 生成完了後に保存された音声: `data/audios/`
 - 動画生成用に追加した素材: `data/uploads/作品名/_動画生成_画像/`、`_動画生成_動画/`、`_動画生成_音声/`
 - 生成完了後に保存された動画: `data/videos/`
@@ -262,18 +266,19 @@ ZIPに含めないもの:
 
 生成方式は以下から選択できます。
 
-- OpenRouter / Gemini TTS: `google/gemini-3.1-flash-tts-preview` を使います。
+- OpenRouter TTS: `google/gemini-3.1-flash-tts-preview` または `x-ai/grok-voice-tts-1.0` を使います。
 - ElevenLabs: 指定した Voice ID とモデルでElevenLabs APIを呼び出し、音声ファイルを保存します。
 - Voicebox: この端末またはリモートで起動したVoicebox APIへ接続し、保存済みプロファイルの声で音声ファイルを保存します。
 - Irodori-TTS: この端末上の Irodori-TTS を `uv run python infer.py` で実行し、WAVを保存します。
 
 OpenRouter選択時:
 
-- 生成モデル: `google/gemini-3.1-flash-tts-preview`
-- 出力形式: OpenRouterからPCMで受け取り、アプリ内ではWAVとして保存します。
+- 生成モデル: `google/gemini-3.1-flash-tts-preview`、`x-ai/grok-voice-tts-1.0`
+- ボイス: Geminiは `Kore` などのGemini TTSボイス、Grokは `eve`、`ara`、`rex`、`sal`、`leo` を選択できます。
+- 出力形式: MP3またはPCMを選べます。PCMはアプリ内で再生しやすいようWAVに変換して保存します。Geminiは従来どおりPCM保存が既定、GrokはMP3保存が既定です。
 - APIキー: 設定画面のOpenRouter APIキーを使います。
 - 演技指示: 声質、感情、速度、間、距離感、アクセント、インライン音声タグを指定できます。
-- エージェント: 作品情報、世界観、キャラメモを参照して、読み上げ本文と演技指示を分けて作ります。読み上げ本文には `[laughs]`、`[whispers]`、`[sighs]`、`[excited]` などの感情タグを必ず1つ以上入れ、生成時は本文と演技指示をGemini TTS向けのプロンプトに合成します。
+- エージェント: 作品情報、世界観、キャラメモを参照して、読み上げ本文と演技指示を分けて作ります。Geminiでは生成時に本文と演技指示をTTS向けのプロンプトに合成します。Grokでは本文とボイスを中心に送信し、本文内の `[pause]`、`[laugh]`、`<whisper>` などのタグで演技ニュアンスを補えます。
 
 ElevenLabs選択時:
 

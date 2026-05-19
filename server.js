@@ -53,6 +53,7 @@ const emptyDb = {
     audioProvider: "openrouter",
     audioModel: "google/gemini-3.1-flash-tts-preview",
     audioVoice: "Kore",
+    audioResponseFormat: "pcm",
     audioActingPrompt: "自然な日本語で、感情と間を大切にして読み上げてください。音声案の本文には [laughs] [whispers] [sighs] [excited] などの感情タグを必ず1つ以上入れてください。",
     elevenLabsVoiceId: "JBFqnCBsd6RMkjVDRZzb",
     elevenLabsModelId: "eleven_multilingual_v2",
@@ -109,8 +110,10 @@ const emptyDb = {
       batchSize: 1,
       checkpoint: "",
       seed: "",
-      loras: []
+      loras: [],
+      referenceSlots: []
     },
+    comfyPresets: [],
     moveImportedSourcesToTrash: false,
     importSourceRoot: ""
   },
@@ -667,7 +670,7 @@ async function handleUpload(req, res) {
 }
 
 async function handleMediaUpload(req, res) {
-  const { dataUrl, name, workName } = await readJson(req, 220 * 1024 * 1024);
+  const { dataUrl, name, workName, folderName } = await readJson(req, 220 * 1024 * 1024);
   let parsed;
   try {
     parsed = parseDataUrl(dataUrl, ["image", "video", "audio"]);
@@ -676,7 +679,8 @@ async function handleMediaUpload(req, res) {
   }
   const fileName = safeOriginalFileName(name, parsed.ext, parsed.kind);
   const workFolder = safeFolderName(workName, "_未分類作品");
-  const kindFolder = parsed.kind === "image" ? "_動画生成_画像" : parsed.kind === "video" ? "_動画生成_動画" : "_動画生成_音声";
+  const customFolder = parsed.kind === "image" ? String(folderName || "").trim() : "";
+  const kindFolder = customFolder ? safeFolderName(customFolder, "_参照画像") : parsed.kind === "image" ? "_動画生成_画像" : parsed.kind === "video" ? "_動画生成_動画" : "_動画生成_音声";
   const destinationDir = path.join(uploadDir, workFolder, kindFolder);
   await fs.mkdir(destinationDir, { recursive: true });
   const filePath = await uniqueFilePath(destinationDir, fileName);
@@ -2136,6 +2140,20 @@ function normalizedComfyLoras(value = []) {
     .filter((item) => item.name);
 }
 
+function normalizedComfyReferenceSlots(value = []) {
+  const source = Array.isArray(value) ? value : [];
+  return source
+    .map((item, index) => ({
+      key: String(item?.key || item?.referenceKey || "").trim(),
+      name: String(item?.name || item?.label || `Reference ${index + 1}`).trim() || `Reference ${index + 1}`,
+      url: String(item?.url || "").trim(),
+      nodeId: String(item?.nodeId || item?.node_id || "").trim(),
+      inputName: String(item?.inputName || item?.input_name || "image").trim() || "image",
+      comfyFileName: String(item?.comfyFileName || item?.filename || item?.comfyImage?.filename || "").trim()
+    }))
+    .filter((item) => item.nodeId || item.url);
+}
+
 function isComfyLink(value) {
   return Array.isArray(value) && value.length >= 2 && (typeof value[0] === "string" || typeof value[0] === "number");
 }
@@ -2224,6 +2242,78 @@ function injectComfyLoras(workflow, options = {}) {
   return insertedIds;
 }
 
+function patchComfyReferenceImages(workflow, references = [], { requireUrl = false } = {}) {
+  const slots = normalizedComfyReferenceSlots(references);
+  const patched = [];
+  for (const slot of slots) {
+    if (requireUrl && !slot.url) continue;
+    if (!slot.nodeId) throw new Error(`参照画像「${slot.name}」のNode IDが未設定です。`);
+    const node = workflow[slot.nodeId];
+    if (!node) throw new Error(`参照画像Node ID ${slot.nodeId} がworkflow内にありません。`);
+    node.inputs = node.inputs && typeof node.inputs === "object" ? node.inputs : {};
+    const imageName = slot.comfyFileName || slot.filename || slot.comfyImage?.filename || "__reference_image__.png";
+    node.inputs[slot.inputName || "image"] = imageName;
+    if (Object.prototype.hasOwnProperty.call(node.inputs, "upload")) node.inputs.upload = "image";
+    patched.push({
+      name: slot.name,
+      nodeId: slot.nodeId,
+      inputName: slot.inputName || "image",
+      filename: imageName
+    });
+  }
+  return patched;
+}
+
+function safeComfyUploadName(reference = {}, index = 0) {
+  const ext = path.extname(String(reference.url || reference.name || "")).toLowerCase();
+  const cleanExt = [".png", ".jpg", ".jpeg", ".webp", ".gif"].includes(ext) ? ext : ".png";
+  const base = cleanFileNamePart(path.parse(String(reference.name || reference.url || "reference")).name, "reference", 60);
+  const hash = crypto.createHash("sha1").update(`${reference.url || ""}:${reference.key || ""}:${index}`).digest("hex").slice(0, 10);
+  return `cfs_ref_${hash}_${base}${cleanExt}`;
+}
+
+async function uploadComfyReferenceImage(baseUrl, apiKey, reference, index) {
+  const filePath = localMediaPathFromUrl(reference.url);
+  const stat = await fs.stat(filePath);
+  if (!stat.isFile()) throw new Error(`参照画像ファイルが見つかりません: ${reference.name || reference.url}`);
+  const ext = path.extname(filePath).toLowerCase();
+  if (![".png", ".jpg", ".jpeg", ".webp", ".gif"].includes(ext)) {
+    throw new Error(`ComfyUIへ送れる参照画像形式ではありません: ${reference.name || reference.url}`);
+  }
+  const data = await fs.readFile(filePath);
+  const fileName = safeComfyUploadName({ ...reference, url: reference.url || filePath }, index);
+  const form = new FormData();
+  form.append("image", new Blob([data], { type: mimeForExtension(ext) }), fileName);
+  form.append("overwrite", "true");
+  form.append("type", "input");
+  const response = await fetch(comfyEndpoint(baseUrl, "/upload/image"), {
+    method: "POST",
+    headers: comfyHeaders(apiKey, { accept: "application/json" }),
+    body: form,
+    signal: AbortSignal.timeout(120000)
+  });
+  const payload = await comfyJson(response);
+  if (!response.ok) {
+    throw new Error(readableProviderError(payload) || `ComfyUI 参照画像アップロードが ${response.status} を返しました。`);
+  }
+  return {
+    ...reference,
+    comfyFileName: payload.name || payload.filename || fileName,
+    comfySubfolder: payload.subfolder || "",
+    comfyType: payload.type || "input",
+    uploadPayload: payload
+  };
+}
+
+async function uploadComfyReferenceImages(baseUrl, apiKey, references = []) {
+  const slots = normalizedComfyReferenceSlots(references).filter((slot) => slot.url);
+  const uploaded = [];
+  for (let index = 0; index < slots.length; index += 1) {
+    uploaded.push(await uploadComfyReferenceImage(baseUrl, apiKey, slots[index], index));
+  }
+  return uploaded;
+}
+
 function validateComfyWorkflowRequest(body = {}, modelInfo = {}) {
   const errors = [];
   const warnings = [];
@@ -2231,6 +2321,7 @@ function validateComfyWorkflowRequest(body = {}, modelInfo = {}) {
   let patched = null;
   let insertedLoraNodeIds = [];
   const loras = normalizedComfyLoras(body.loras);
+  const references = normalizedComfyReferenceSlots(body.references);
   try {
     prompt = parseComfyWorkflow(body.workflowJson || body.workflow);
   } catch (error) {
@@ -2299,6 +2390,7 @@ function validateComfyWorkflowRequest(body = {}, modelInfo = {}) {
       nodeCount: Object.keys(prompt || {}).length,
       edgeCount: countComfyWorkflowEdges(prompt),
       loraCount: loras.length,
+      referenceCount: references.filter((item) => item.url).length,
       insertedLoraNodeIds,
       checkpoint: checkpointName || "workflow既定",
       patchedWorkflow: patched ? scrubComfyWorkflow(patched) : null
@@ -2326,6 +2418,7 @@ function patchComfyWorkflow(workflow, options = {}) {
   patchComfyNodeInput(prompt, options.sizeNodeId, ["batch_size"], boundedNumber(options.batchSize, 1, 1, 8, true));
   patchComfyNodeInput(prompt, options.checkpointNodeId, ["ckpt_name"], String(options.checkpoint || "").trim());
   injectComfyLoras(prompt, options);
+  patchComfyReferenceImages(prompt, options.references, { requireUrl: true });
   return prompt;
 }
 
@@ -2495,7 +2588,11 @@ async function handleComfyCreate(req, res) {
         validation
       });
     }
-    const workflow = patchComfyWorkflow(body.workflowJson || body.workflow, body);
+    const uploadedReferences = await uploadComfyReferenceImages(baseUrl, apiKey, body.references);
+    const workflow = patchComfyWorkflow(body.workflowJson || body.workflow, {
+      ...body,
+      references: uploadedReferences
+    });
     const clientId = crypto.randomUUID();
     const requestPayload = {
       client_id: clientId,
@@ -2532,6 +2629,16 @@ async function handleComfyCreate(req, res) {
       ...payload,
       id: promptId,
       status: "submitted",
+      referenceUploads: uploadedReferences.map((item) => ({
+        key: item.key,
+        name: item.name,
+        nodeId: item.nodeId,
+        inputName: item.inputName,
+        url: item.url,
+        comfyFileName: item.comfyFileName,
+        comfySubfolder: item.comfySubfolder,
+        comfyType: item.comfyType
+      })),
       request: { ...requestPayload, prompt: scrubComfyWorkflow(workflow) }
     });
   } catch (error) {

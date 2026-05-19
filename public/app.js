@@ -103,10 +103,11 @@ const navItems = [
   ["settings", "設定"]
 ];
 
-const openRouterTtsModel = "google/gemini-3.1-flash-tts-preview";
+const defaultOpenRouterTtsModel = "google/gemini-3.1-flash-tts-preview";
+const grokOpenRouterTtsModel = "x-ai/grok-voice-tts-1.0";
 
 const audioProviders = [
-  ["openrouter", "OpenRouter / Gemini TTS"],
+  ["openrouter", "OpenRouter TTS"],
   ["elevenlabs", "ElevenLabs"],
   ["voicebox", "Voicebox"],
   ["irodori", "Irodori-TTS"]
@@ -212,12 +213,15 @@ const comfyDefaultSettings = {
   batchSize: 1,
   checkpoint: "",
   seed: "",
-  loras: []
+  loras: [],
+  referenceSlots: []
 };
 
 const defaultAudioActingPrompt = "自然な日本語で、感情と間を大切にして読み上げてください。音声案の本文には [laughs] [whispers] [sighs] [excited] などの感情タグを必ず1つ以上入れてください。";
 
 const audioEmotionTags = ["[laughs]", "[whispers]", "[sighs]", "[excited]"];
+
+const grokSpeechTags = ["[pause]", "[long-pause]", "[laugh]", "[chuckle]", "[sigh]", "<whisper>", "<slow>", "<fast>", "<emphasis>"];
 
 const activeImageJobStatuses = ["submitting", "submitted", "pending", "queued", "running", "processing"];
 
@@ -277,6 +281,94 @@ const ttsVoices = [
   ["Alnilam", "Firm / 男性"],
   ["Rasalgethi", "Informative / 男性"]
 ];
+
+const grokTtsVoices = [
+  ["eve", "Energetic / upbeat"],
+  ["ara", "Warm / friendly"],
+  ["rex", "Confident / clear"],
+  ["sal", "Smooth / balanced"],
+  ["leo", "Authoritative / strong"]
+];
+
+const openRouterTtsResponseFormats = [
+  ["mp3", "MP3"],
+  ["pcm", "PCM（WAV保存）"]
+];
+
+function openRouterTtsModelConfigs() {
+  return [
+    {
+      id: defaultOpenRouterTtsModel,
+      label: "Gemini 3.1 Flash TTS Preview",
+      provider: "Google",
+      defaultVoice: "Kore",
+      defaultResponseFormat: "pcm",
+      voiceOptions: ttsVoices,
+      formatNote: "PCMで受信し、アプリ内ではWAVとして保存します。"
+    },
+    {
+      id: grokOpenRouterTtsModel,
+      label: "Grok Voice TTS 1.0",
+      provider: "xAI",
+      defaultVoice: "eve",
+      defaultResponseFormat: "mp3",
+      voiceOptions: grokTtsVoices,
+      formatNote: "標準ではMP3保存。PCMを選ぶとアプリ内ではWAVとして保存します。"
+    }
+  ];
+}
+
+function openRouterTtsModelConfig(modelId) {
+  const current = String(modelId || "").trim();
+  return openRouterTtsModelConfigs().find((model) => model.id === current) || openRouterTtsModelConfigs()[0];
+}
+
+function normalizeOpenRouterTtsModel(modelId) {
+  return openRouterTtsModelConfig(modelId).id;
+}
+
+function openRouterTtsVoiceOptions(modelId) {
+  return openRouterTtsModelConfig(modelId).voiceOptions || ttsVoices;
+}
+
+function normalizeOpenRouterTtsVoice(voice, modelId) {
+  const options = openRouterTtsVoiceOptions(modelId);
+  const raw = String(voice || "").trim();
+  const exact = options.find(([value]) => value === raw);
+  if (exact) return exact[0];
+  const lower = raw.toLowerCase();
+  const ci = options.find(([value]) => String(value).toLowerCase() === lower);
+  if (ci) return ci[0];
+  return openRouterTtsModelConfig(modelId).defaultVoice || options[0]?.[0] || "Kore";
+}
+
+function normalizeOpenRouterTtsResponseFormat(format, modelId) {
+  const raw = String(format || "").trim().toLowerCase();
+  if (openRouterTtsResponseFormats.some(([value]) => value === raw)) return raw;
+  return openRouterTtsModelConfig(modelId).defaultResponseFormat || "mp3";
+}
+
+function renderOpenRouterTtsModelOptions(selectedModel) {
+  const current = normalizeOpenRouterTtsModel(selectedModel);
+  return openRouterTtsModelConfigs()
+    .map((model) => `<option value="${escapeHtml(model.id)}" ${model.id === current ? "selected" : ""}>${escapeHtml(model.label)} / ${escapeHtml(model.id)}</option>`)
+    .join("");
+}
+
+function renderOpenRouterTtsVoiceOptions(selectedVoice, modelId) {
+  const currentModel = normalizeOpenRouterTtsModel(modelId);
+  const current = normalizeOpenRouterTtsVoice(selectedVoice, currentModel);
+  return openRouterTtsVoiceOptions(currentModel)
+    .map(([voice, label]) => `<option value="${escapeHtml(voice)}" ${voice === current ? "selected" : ""}>${escapeHtml(voice)} (${escapeHtml(label)})</option>`)
+    .join("");
+}
+
+function renderOpenRouterTtsResponseFormatOptions(selectedFormat, modelId) {
+  const current = normalizeOpenRouterTtsResponseFormat(selectedFormat, modelId);
+  return openRouterTtsResponseFormats
+    .map(([format, label]) => `<option value="${escapeHtml(format)}" ${format === current ? "selected" : ""}>${escapeHtml(label)}</option>`)
+    .join("");
+}
 
 const workColors = ["#d85f43", "#1f8a84", "#677a2f", "#b78017", "#7b5ea7", "#bd4d72", "#4a7fbd"];
 
@@ -1028,7 +1120,7 @@ function normalizeAudioItem(item = {}) {
     input: item.input || item.text || "",
     provider,
     voice: item.voice || (provider === "irodori" ? irodori?.mode || "VoiceDesign" : provider === "voicebox" ? voicebox?.profileId || "Voicebox" : "Kore"),
-    model: item.model || (provider === "irodori" ? "Irodori-TTS" : provider === "voicebox" ? "Voicebox" : openRouterTtsModel),
+    model: item.model || (provider === "irodori" ? "Irodori-TTS" : provider === "voicebox" ? "Voicebox" : defaultOpenRouterTtsModel),
     format: item.format || (provider === "irodori" || provider === "voicebox" ? "wav" : "mp3"),
     url: item.url || "",
     localPath: item.localPath || item.path || "",
@@ -1038,6 +1130,7 @@ function normalizeAudioItem(item = {}) {
     agentNote: item.agentNote || "",
     caption: item.caption || irodori?.caption || "",
     actingPrompt: item.actingPrompt || item.caption || "",
+    audioResponseFormat: item.audioResponseFormat || item.responseFormat || "",
     irodori,
     elevenLabs: item.elevenLabs || null,
     voicebox,
@@ -1314,6 +1407,36 @@ function activeComfyLoras(value = []) {
   return normalizedComfyLoras(value, 0).filter((item) => item.name);
 }
 
+function emptyComfyReferenceSlot(index = 0) {
+  return { label: `参照${index + 1}`, key: "", name: "", url: "", nodeId: "", inputName: "image" };
+}
+
+function normalizedComfyReferenceSlots(value = [], minSlots = 3) {
+  const source = Array.isArray(value) ? value : [];
+  const items = source.slice(0, 3).map((item, index) => ({
+    label: String(item?.label || item?.name || `参照${index + 1}`).trim() || `参照${index + 1}`,
+    key: String(item?.key || item?.referenceKey || "").trim(),
+    name: String(item?.name || "").trim(),
+    url: String(item?.url || "").trim(),
+    nodeId: String(item?.nodeId || item?.node_id || "").trim(),
+    inputName: String(item?.inputName || item?.input_name || "image").trim() || "image"
+  }));
+  while (items.length < minSlots) items.push(emptyComfyReferenceSlot(items.length));
+  return items;
+}
+
+function comfyReferenceSlotSettings(slots = []) {
+  return normalizedComfyReferenceSlots(slots).map((slot, index) => ({
+    label: slot.label || `参照${index + 1}`,
+    nodeId: slot.nodeId,
+    inputName: slot.inputName || "image"
+  }));
+}
+
+function activeComfyReferenceSlots(slots = []) {
+  return normalizedComfyReferenceSlots(slots, 0).filter((slot) => slot.key && slot.url && slot.nodeId);
+}
+
 function normalizedIrodoriSettings(value = {}) {
   const source = { ...irodoriDefaultSettings, ...(value || {}) };
   const modelDevice = ["auto", "cpu", "mps", "cuda"].includes(source.modelDevice) ? source.modelDevice : "auto";
@@ -1383,9 +1506,30 @@ function normalizedComfySettings(value = {}) {
     batchSize: boundedSettingNumber(source.batchSize, 1, 1, 8, true),
     checkpoint: String(source.checkpoint || "").trim(),
     seed: String(source.seed ?? "").trim(),
-    loras: normalizedComfyLoras(source.loras)
+    loras: normalizedComfyLoras(source.loras),
+    referenceSlots: comfyReferenceSlotSettings(source.referenceSlots)
   };
 }
+
+function normalizedComfyPreset(value = {}, index = 0) {
+  const settingsSource = value.settings || value.comfy || value;
+  return {
+    id: String(value.id || uid()).trim(),
+    name: String(value.name || `Comfy Preset ${index + 1}`).trim() || `Comfy Preset ${index + 1}`,
+    memo: String(value.memo || value.description || "").trim(),
+    settings: normalizedComfySettings(settingsSource),
+    createdAt: value.createdAt || new Date().toISOString(),
+    updatedAt: value.updatedAt || value.createdAt || new Date().toISOString()
+  };
+}
+
+function normalizedComfyPresets(value = []) {
+  return (Array.isArray(value) ? value : [])
+    .map((item, index) => normalizedComfyPreset(item, index))
+    .filter((item) => item.name);
+}
+
+const comfyPresets = () => normalizedComfyPresets(state.db?.settings?.comfyPresets || []);
 
 function normalizeSettings() {
   state.db.settings = {
@@ -1396,8 +1540,9 @@ function normalizeSettings() {
     videoAgentModel: state.db.settings?.textModel || state.db.settings?.defaultModel || "google/gemini-2.5-flash",
     audioAgentModel: state.db.settings?.textModel || state.db.settings?.defaultModel || "google/gemini-2.5-flash",
     audioProvider: "openrouter",
-    audioModel: openRouterTtsModel,
+    audioModel: defaultOpenRouterTtsModel,
     audioVoice: "Kore",
+    audioResponseFormat: "pcm",
     audioActingPrompt: defaultAudioActingPrompt,
     elevenLabsVoiceId: "JBFqnCBsd6RMkjVDRZzb",
     elevenLabsModelId: "eleven_multilingual_v2",
@@ -1418,6 +1563,7 @@ function normalizeSettings() {
     seedanceModel: "dreamina-seedance-2-0-260128",
     seedanceResolution: "720p",
     comfy: { ...comfyDefaultSettings },
+    comfyPresets: [],
     moveImportedSourcesToTrash: false,
     importSourceRoot: "",
     videoPricing: {
@@ -1434,8 +1580,9 @@ function normalizeSettings() {
   if (!state.db.settings.audioAgentModel) state.db.settings.audioAgentModel = state.db.settings.textModel || state.db.settings.defaultModel;
   state.db.settings.audioProvider = normalizedAudioProvider(state.db.settings.audioProvider);
   state.audioProvider = normalizedAudioProvider(state.db.settings.audioProvider || state.audioProvider);
-  state.db.settings.audioModel = state.db.settings.audioModel || openRouterTtsModel;
-  state.db.settings.audioVoice = ttsVoices.some(([voice]) => voice === state.db.settings.audioVoice) ? state.db.settings.audioVoice : "Kore";
+  state.db.settings.audioModel = normalizeOpenRouterTtsModel(state.db.settings.audioModel || defaultOpenRouterTtsModel);
+  state.db.settings.audioVoice = normalizeOpenRouterTtsVoice(state.db.settings.audioVoice, state.db.settings.audioModel);
+  state.db.settings.audioResponseFormat = normalizeOpenRouterTtsResponseFormat(state.db.settings.audioResponseFormat, state.db.settings.audioModel);
   state.db.settings.audioActingPrompt = String(state.db.settings.audioActingPrompt || defaultAudioActingPrompt).trim() || defaultAudioActingPrompt;
   state.db.settings.elevenLabsVoiceId = String(state.db.settings.elevenLabsVoiceId || "JBFqnCBsd6RMkjVDRZzb").trim() || "JBFqnCBsd6RMkjVDRZzb";
   state.db.settings.elevenLabsModelId = String(state.db.settings.elevenLabsModelId || "eleven_multilingual_v2").trim() || "eleven_multilingual_v2";
@@ -1453,6 +1600,7 @@ function normalizeSettings() {
   state.db.settings.irodoriAppDir = String(state.db.settings.irodoriAppDir || "vendor/Irodori-TTS").trim() || "vendor/Irodori-TTS";
   state.db.settings.irodoriDefaults = normalizedIrodoriSettings(state.db.settings.irodoriDefaults);
   state.db.settings.comfy = normalizedComfySettings(state.db.settings.comfy);
+  state.db.settings.comfyPresets = normalizedComfyPresets(state.db.settings.comfyPresets);
   state.imageGpuMode = state.db.settings.comfy.gpuMode || state.imageGpuMode;
   state.db.settings.moveImportedSourcesToTrash = state.db.settings.moveImportedSourcesToTrash === true;
   state.db.settings.importSourceRoot = String(state.db.settings.importSourceRoot || "").trim();
@@ -3990,7 +4138,8 @@ async function uploadVideoReferenceFiles(files) {
       const uploaded = await postJson("/api/media-upload", {
         dataUrl,
         name: file.name,
-        workName: work?.name
+        workName: work?.name,
+        folderName: "_Comfy参照画像"
       });
       const info = kind === "image" ? await getImageInfo(dataUrl) : {};
       state.db.videoMedia.unshift({
@@ -4012,6 +4161,45 @@ async function uploadVideoReferenceFiles(files) {
     await saveDb();
     render();
     toast(`${accepted.length} 件を参照素材に追加しました。`);
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function uploadImageReferenceFiles(files) {
+  const selectedChar = byId(state.db.characters, state.imageCharacterId);
+  const work = byId(state.db.works, selectedChar?.workId || state.imageWorkId || state.selectedWorkId);
+  const accepted = [...files].filter((file) => file.type.startsWith("image/"));
+  if (!accepted.length) return;
+  try {
+    for (const file of accepted) {
+      const dataUrl = await fileToDataUrl(file);
+      const uploaded = await postJson("/api/media-upload", {
+        dataUrl,
+        name: file.name,
+        workName: work?.name
+      });
+      const info = await getImageInfo(dataUrl);
+      state.db.videoMedia.unshift({
+        id: uid(),
+        workId: work?.id || null,
+        characterId: selectedChar?.id || null,
+        kind: "image",
+        name: file.name,
+        url: uploaded.url,
+        localPath: uploaded.path,
+        mimeType: uploaded.mimeType || file.type,
+        width: info.width || null,
+        height: info.height || null,
+        aspectRatio: info.aspectRatio || null,
+        aspectRatioText: info.aspectRatioText || "",
+        subject: "Comfy参照画像",
+        createdAt: new Date().toISOString()
+      });
+    }
+    await saveDb();
+    render({ preserveLiveTextDrafts: true });
+    toast(`${accepted.length} 件をComfy参照画像に追加しました。`);
   } catch (error) {
     toast(error.message);
   }
@@ -4175,6 +4363,7 @@ function imageControlsFromDom() {
   const negativeInput = document.querySelector("#image-negative-prompt");
   const gpuMode = imageControlValue("image-gpu-mode", state.imageGpuMode || settings.gpuMode) === "cloud" ? "cloud" : "local";
   const loraFallback = state.imagePromptDraft?.loras || settings.loras;
+  const referenceSlots = comfyReferenceSlotsFromDom("image", state.imagePromptDraft?.referenceSlots || settings.referenceSlots, true);
   return {
     workId: imageControlValue("image-work", state.imageWorkId || state.selectedWorkId || ""),
     characterId: imageControlValue("image-character", state.imageCharacterId || ""),
@@ -4192,6 +4381,8 @@ function imageControlsFromDom() {
     seed: imageControlValue("image-seed", state.imagePromptDraft?.seed ?? settings.seed),
     checkpoint: imageControlValue("image-checkpoint", state.imagePromptDraft?.checkpoint || settings.checkpoint),
     loras: lorasFromDom("image", loraFallback),
+    referenceSlots,
+    references: activeComfyReferenceSlots(referenceSlots),
     baseUrl: activeComfyBaseUrl(gpuMode),
     apiKey: activeComfyApiKey(gpuMode),
     workflowJson: settings.workflowJson,
@@ -4226,7 +4417,8 @@ function rememberImageControls(controls, { clearValidation = true } = {}) {
     batchSize: controls.batchSize,
     seed: controls.seed,
     checkpoint: controls.checkpoint,
-    loras: controls.loras
+    loras: controls.loras,
+    referenceSlots: controls.referenceSlots
   };
   state.db.settings.comfy = {
     ...activeComfySettings(),
@@ -4240,10 +4432,88 @@ function rememberImageControls(controls, { clearValidation = true } = {}) {
     batchSize: controls.batchSize,
     seed: controls.seed,
     checkpoint: controls.checkpoint,
-    loras: controls.loras
+    loras: controls.loras,
+    referenceSlots: comfyReferenceSlotSettings(controls.referenceSlots)
   };
   if (clearValidation) state.comfyValidation = null;
   return { selectedChar, work };
+}
+
+function currentComfySettingsForPreset() {
+  if (state.view === "image") {
+    const controls = imageControlsFromDom();
+    rememberImageControls(controls, { clearValidation: false });
+    return normalizedComfySettings({
+      ...activeComfySettings(),
+      gpuMode: controls.gpuMode,
+      width: controls.width,
+      height: controls.height,
+      steps: controls.steps,
+      cfg: controls.cfg,
+      samplerName: controls.samplerName,
+      scheduler: controls.scheduler,
+      batchSize: controls.batchSize,
+      seed: controls.seed,
+      checkpoint: controls.checkpoint,
+      loras: controls.loras,
+      referenceSlots: comfyReferenceSlotSettings(controls.referenceSlots)
+    });
+  }
+  if (state.view === "settings") return comfySettingsFromDom();
+  return activeComfySettings();
+}
+
+function applyComfyPreset(presetId) {
+  const preset = comfyPresets().find((item) => item.id === presetId);
+  if (!preset) return false;
+  const current = activeComfySettings();
+  const next = normalizedComfySettings({
+    ...preset.settings,
+    localBaseUrl: current.localBaseUrl,
+    cloudBaseUrl: current.cloudBaseUrl
+  });
+  state.db.settings.comfy = next;
+  state.imageGpuMode = next.gpuMode;
+  state.comfyValidation = null;
+  if (state.view === "image") {
+    state.imagePromptDraft = {
+      ...(state.imagePromptDraft || {}),
+      width: next.width,
+      height: next.height,
+      steps: next.steps,
+      cfg: next.cfg,
+      samplerName: next.samplerName,
+      scheduler: next.scheduler,
+      batchSize: next.batchSize,
+      seed: next.seed,
+      checkpoint: next.checkpoint,
+      loras: next.loras,
+      referenceSlots: next.referenceSlots,
+      agentNote: `Comfyプリセット「${preset.name}」を適用しました。`
+    };
+  }
+  return true;
+}
+
+function renderComfyPresetControls(prefix) {
+  const presets = comfyPresets();
+  return `
+    <div class="full comfy-preset-panel">
+      <label>Comfyプリセット
+        <select id="${prefix}-comfy-preset">
+          <option value="">選択してください</option>
+          ${presets.map((preset) => `<option value="${preset.id}">${escapeHtml(preset.name)}</option>`).join("")}
+        </select>
+      </label>
+      <div class="toolbar slim-toolbar">
+        <button class="ghost" data-action="apply-comfy-preset" ${presets.length ? "" : "disabled"}>適用</button>
+        <button class="ghost" data-action="save-comfy-preset">現在値を保存</button>
+        <button class="ghost" data-action="update-comfy-preset" ${presets.length ? "" : "disabled"}>上書き</button>
+        <button class="ghost danger" data-action="delete-comfy-preset" ${presets.length ? "" : "disabled"}>削除</button>
+      </div>
+      <div class="meta">${presets.length ? `${presets.length} 件のプリセット` : "立ち絵、背景、表情差分などの設定を保存できます。"}</div>
+    </div>
+  `;
 }
 
 function renderImageAgent() {
@@ -4282,6 +4552,7 @@ function renderImageAgent() {
               <option value="cloud" ${gpuMode === "cloud" ? "selected" : ""}>クラウドGPU</option>
             </select>
           </label>
+          ${renderComfyPresetControls("image")}
           <label class="full">タイトル<input id="image-title" value="${escapeHtml(controls.title || "生成画像")}"></label>
           <label>幅<input id="image-width" type="number" min="64" max="4096" step="64" value="${escapeHtml(controls.width || settings.width)}"></label>
           <label>高さ<input id="image-height" type="number" min="64" max="4096" step="64" value="${escapeHtml(controls.height || settings.height)}"></label>
@@ -4295,6 +4566,19 @@ function renderImageAgent() {
           <div class="full comfy-lora-list">
             <div class="field-label">LoRA</div>
             ${renderComfyLoraRows("image", controls.loras || settings.loras)}
+          </div>
+          <div class="full comfy-reference-panel">
+            <div class="toolbar slim-toolbar">
+              <div>
+                <div class="field-label">参照画像</div>
+                <div class="meta">LoadImage系NodeのIDを指定すると、選んだ画像をComfyUIへアップロードして差し替えます。</div>
+              </div>
+              <div>
+                <input id="image-reference-file-input" type="file" accept="image/*" multiple hidden>
+                <button class="ghost" data-action="choose-image-reference-files">画像追加</button>
+              </div>
+            </div>
+            ${renderComfyReferenceSlotRows("image", controls.referenceSlots || settings.referenceSlots, { includeReference: true })}
           </div>
           ${renderComfyModelDatalists()}
           ${renderComfyModelStatus()}
@@ -4387,11 +4671,12 @@ function renderImageJob(job) {
   const progress = imageJobProgress(job);
   const status = job.status;
   const loraText = activeComfyLoras(job.settings?.loras).map((item) => item.name).join(", ");
+  const referenceText = (job.settings?.references || []).map((item) => item.name || item.key).filter(Boolean).join(", ");
   return `
     <article class="image-job ${status}">
       <div>
         <div class="char-name">${escapeHtml(job.title || "生成画像")}</div>
-        <div class="meta">${escapeHtml(work?.name || "全作品")} / ${char ? `${escapeHtml(char.name)} / ` : ""}${escapeHtml(imageGpuLabel(job.gpuMode))} / ${escapeHtml(imageStatusLabel(status))}${progress !== null ? ` ${escapeHtml(`${progress}%`)}` : ""}${loraText ? ` / LoRA: ${escapeHtml(loraText)}` : ""} / ${job.updatedAt ? escapeHtml(new Date(job.updatedAt).toLocaleString("ja-JP")) : ""}</div>
+        <div class="meta">${escapeHtml(work?.name || "全作品")} / ${char ? `${escapeHtml(char.name)} / ` : ""}${escapeHtml(imageGpuLabel(job.gpuMode))} / ${escapeHtml(imageStatusLabel(status))}${progress !== null ? ` ${escapeHtml(`${progress}%`)}` : ""}${loraText ? ` / LoRA: ${escapeHtml(loraText)}` : ""}${referenceText ? ` / 参照: ${escapeHtml(referenceText)}` : ""} / ${job.updatedAt ? escapeHtml(new Date(job.updatedAt).toLocaleString("ja-JP")) : ""}</div>
       </div>
       ${activeImageJobStatuses.includes(status) ? `
         <div class="progress-track ${progress === null ? "indeterminate" : ""}">
@@ -4443,6 +4728,9 @@ function buildImageAgentText(inputText, controls) {
   const work = byId(state.db.works, selectedChar?.workId) || byId(state.db.works, controls.workId) || byId(state.db.works, state.selectedWorkId);
   const chars = selectedChar ? [selectedChar] : work ? charactersForWork(work.id).slice(0, 12) : [];
   const loraText = activeComfyLoras(controls.loras).map((item) => `${item.name}(model=${item.strengthModel}, clip=${item.strengthClip})`).join(", ") || "なし";
+  const referenceText = activeComfyReferenceSlots(controls.referenceSlots)
+    .map((item) => `${item.name || item.key} -> node ${item.nodeId}.${item.inputName || "image"}`)
+    .join(", ") || "なし";
   const charText = chars.map((char) => [
     `名前=${char.name}`,
     `メモ=${compactPromptText(char.memo, 460)}`,
@@ -4454,7 +4742,7 @@ function buildImageAgentText(inputText, controls) {
 ${inputText}
 
 現在の設定:
-gpu=${controls.gpuMode}, width=${controls.width}, height=${controls.height}, steps=${controls.steps}, cfg=${controls.cfg}, sampler=${controls.samplerName}, scheduler=${controls.scheduler}, batch=${controls.batchSize}, checkpoint=${controls.checkpoint || "workflow既定"}, lora=${loraText}
+gpu=${controls.gpuMode}, width=${controls.width}, height=${controls.height}, steps=${controls.steps}, cfg=${controls.cfg}, sampler=${controls.samplerName}, scheduler=${controls.scheduler}, batch=${controls.batchSize}, checkpoint=${controls.checkpoint || "workflow既定"}, lora=${loraText}, reference=${referenceText}
 
 作品情報 / 世界観:
 ${buildPromptLabWorldContext(work)}
@@ -4486,6 +4774,7 @@ function mergeImageDraft(result, fallbackControls) {
     seed: source.seed ?? fallbackControls.seed ?? "",
     checkpoint: source.checkpoint || source.ckpt_name || fallbackControls.checkpoint || "",
     loras: normalizedComfyLoras(source.loras || fallbackControls.loras || []),
+    referenceSlots: normalizedComfyReferenceSlots(fallbackControls.referenceSlots || []),
     agentNote: source.agentNote || source.note || result?.message || ""
   };
 }
@@ -4610,6 +4899,94 @@ async function validateCurrentComfyWorkflow() {
   return result;
 }
 
+function selectedComfyPresetId() {
+  return document.querySelector("#image-comfy-preset")?.value
+    || document.querySelector("#setting-comfy-preset")?.value
+    || "";
+}
+
+function openComfyPresetModal() {
+  const settings = currentComfySettingsForPreset();
+  const defaultName = [
+    settings.checkpoint || "workflow既定",
+    `${settings.width}x${settings.height}`,
+    activeComfyLoras(settings.loras).map((item) => item.name).join("+")
+  ].filter(Boolean).join(" / ");
+  openModal(
+    "Comfyプリセット保存",
+    `
+      <div class="form-grid">
+        <label class="full">名前<input id="comfy-preset-name" value="${escapeHtml(defaultName || "Comfyプリセット")}"></label>
+        <label class="full">メモ<textarea id="comfy-preset-memo" placeholder="例：立ち絵、背景、表情差分、線画確認など"></textarea></label>
+      </div>
+    `,
+    `<button data-action="save-comfy-preset-modal">保存</button>`,
+    (modal, close) => {
+      modal.querySelector("[data-action='save-comfy-preset-modal']").addEventListener("click", async () => {
+        const name = modal.querySelector("#comfy-preset-name").value.trim() || "Comfyプリセット";
+        const memo = modal.querySelector("#comfy-preset-memo").value.trim();
+        state.db.settings.comfyPresets = [
+          ...comfyPresets(),
+          {
+            id: uid(),
+            name,
+            memo,
+            settings,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          }
+        ];
+        await saveDb();
+        close();
+        render({ preserveLiveTextDrafts: true });
+        toast(`Comfyプリセット「${name}」を保存しました。`);
+      });
+    }
+  );
+}
+
+async function applySelectedComfyPreset() {
+  if (state.view === "settings") saveComfySettingsFromDom();
+  const id = selectedComfyPresetId();
+  if (!id) return toast("Comfyプリセットを選択してください。");
+  const preset = comfyPresets().find((item) => item.id === id);
+  if (!preset || !applyComfyPreset(id)) return toast("Comfyプリセットが見つかりません。");
+  await saveDb();
+  render({ preserveLiveTextDrafts: true });
+  toast(`Comfyプリセット「${preset.name}」を適用しました。`);
+}
+
+async function updateSelectedComfyPreset() {
+  const id = selectedComfyPresetId();
+  const presets = comfyPresets();
+  const index = presets.findIndex((item) => item.id === id);
+  if (index === -1) return toast("上書きするComfyプリセットを選択してください。");
+  const ok = window.confirm(`Comfyプリセット「${presets[index].name}」を現在値で上書きします。`);
+  if (!ok) return;
+  presets[index] = {
+    ...presets[index],
+    settings: currentComfySettingsForPreset(),
+    updatedAt: new Date().toISOString()
+  };
+  state.db.settings.comfyPresets = presets;
+  await saveDb();
+  render({ preserveLiveTextDrafts: true });
+  toast("Comfyプリセットを上書きしました。");
+}
+
+async function deleteSelectedComfyPreset() {
+  const id = selectedComfyPresetId();
+  const presets = comfyPresets();
+  const preset = presets.find((item) => item.id === id);
+  if (!preset) return toast("削除するComfyプリセットを選択してください。");
+  const ok = window.confirm(`Comfyプリセット「${preset.name}」を削除します。`);
+  if (!ok) return;
+  state.db.settings.comfyPresets = presets.filter((item) => item.id !== id);
+  await saveDb();
+  render({ preserveLiveTextDrafts: true });
+  toast("Comfyプリセットを削除しました。");
+}
+
 async function startComfyGeneration() {
   const controls = imageControlsFromDom();
   const prompt = controls.prompt.trim();
@@ -4637,7 +5014,8 @@ async function startComfyGeneration() {
       batchSize: controls.batchSize,
       seed: controls.seed,
       checkpoint: controls.checkpoint,
-      loras: controls.loras
+      loras: controls.loras,
+      referenceSlots: comfyReferenceSlotSettings(controls.referenceSlots)
     };
     state.imageGpuMode = controls.gpuMode;
     state.imageWorkId = work?.id || controls.workId || null;
@@ -4656,7 +5034,8 @@ async function startComfyGeneration() {
       batchSize: controls.batchSize,
       seed: controls.seed,
       checkpoint: controls.checkpoint,
-      loras: controls.loras
+      loras: controls.loras,
+      referenceSlots: controls.referenceSlots
     };
     job = normalizeImageJob({
       id: uid(),
@@ -4678,6 +5057,7 @@ async function startComfyGeneration() {
         seed: controls.seed,
         checkpoint: controls.checkpoint,
         loras: controls.loras,
+        references: controls.references,
         baseUrl: controls.baseUrl
       },
       progress: 0,
@@ -5136,6 +5516,23 @@ function audioControlsFromDom() {
   const selectedCharId = document.querySelector("#audio-character")?.value || state.audioCharacterId || "";
   const selectedChar = byId(state.db.characters, selectedCharId);
   const provider = normalizedAudioProvider(document.querySelector("#audio-provider")?.value || state.audioProvider || state.db.settings.audioProvider);
+  const openRouterModel = normalizeOpenRouterTtsModel(
+    document.querySelector("#audio-openrouter-model")?.value
+    || state.audioPromptDraft?.audioModel
+    || state.db.settings.audioModel
+  );
+  const openRouterResponseFormat = normalizeOpenRouterTtsResponseFormat(
+    document.querySelector("#audio-openrouter-response-format")?.value
+    || state.audioPromptDraft?.audioResponseFormat
+    || state.db.settings.audioResponseFormat,
+    openRouterModel
+  );
+  const openRouterVoice = normalizeOpenRouterTtsVoice(
+    document.querySelector("#audio-voice")?.value
+    || state.audioVoice
+    || state.db.settings.audioVoice,
+    openRouterModel
+  );
   const audioInput = document.querySelector("#audio-input-text");
   const actingPrompt = (
     document.querySelector("#audio-acting-prompt")?.value
@@ -5188,7 +5585,9 @@ function audioControlsFromDom() {
       ? elevenLabs.voiceId
       : provider === "voicebox"
         ? voicebox.profileId
-        : document.querySelector("#audio-voice")?.value || state.audioVoice || state.db.settings.audioVoice || "Kore",
+        : openRouterVoice,
+    audioModel: openRouterModel,
+    audioResponseFormat: openRouterResponseFormat,
     irodori,
     elevenLabs,
     voicebox,
@@ -5212,8 +5611,18 @@ ${cleanPrompt}
 ${cleanText}`;
 }
 
+function composeOpenRouterTtsInput(modelId, text, actingPrompt) {
+  const cleanText = String(text || "").trim();
+  const model = normalizeOpenRouterTtsModel(modelId);
+  if (model === defaultOpenRouterTtsModel) return composeGeminiTtsInput(cleanText, actingPrompt);
+  return cleanText;
+}
+
 function buildAudioAgentSystemPrompt() {
-  const voices = ttsVoices.map(([voice, label]) => `${voice}: ${label}`).join("\n");
+  const voices = [
+    `Gemini TTS voices:\n${ttsVoices.map(([voice, label]) => `${voice}: ${label}`).join("\n")}`,
+    `Grok Voice TTS voices:\n${grokTtsVoices.map(([voice, label]) => `${voice}: ${label}`).join("\n")}`
+  ].join("\n\n");
   return `あなたは創作向けの音声演出エージェントです。ユーザーの要望、作品情報、キャラ情報から、音声生成に送る読み上げテキストを作ります。
 
 必ず次のJSONだけを返してください。
@@ -5239,6 +5648,8 @@ function buildAudioAgentSystemPrompt() {
 - キャラ指定がない場合は、ナレーションや汎用ボイスとして自然に使える本文にする。
 - Gemini TTSの場合は actingPrompt に「低い声、怒りを抑える、少し速め、近い距離、語尾を弱める」などを具体的に書く。
 - Gemini TTSでは input に [whispers] [laughs] [sighs] [excited] [short pause] などのインライン音声タグを少量だけ使える。感情タグは必須、間のタグは必要時だけ使う。
+- Grok Voice TTSの場合は voice に eve / ara / rex / sal / leo のいずれかを使う。Grok向けタグは ${grokSpeechTags.join(" ")} を必要最小限だけ本文に入れられる。
+- Grok Voice TTSでは actingPrompt は履歴・確認用メモとして保存し、APIへは本文とvoiceを主に送る。演技ニュアンスは本文内の自然な言葉と少量のタグに反映する。
 - ElevenLabsの場合は voice ID と voice_settings が主な制御なので、input は読み上げ本文に集中し、actingPrompt は画面で確認・保存できる演技指示として短くまとめる。
 - Voiceboxの場合は選択プロファイルで声が決まる。Qwen CustomVoice系では actingPrompt を自然言語の演技指示として使える。Chatterbox Turbo以外では角括弧タグがそのまま読まれる場合があるため、タグは必要最小限にする。
 - 過剰な演技タグは避け、重要な間や感情だけに使う。1案につき1〜3個程度を目安にする。
@@ -5264,7 +5675,7 @@ function buildAudioAgentText(inputText, controls) {
 ${inputText}
 
 現在の設定:
-provider=${controls.provider}, voice=${controls.voice}, actingPrompt=${controls.actingPrompt || ""}, elevenLabsVoiceId=${controls.elevenLabs?.voiceId || ""}, elevenLabsModel=${controls.elevenLabs?.modelId || ""}, voiceboxProfileId=${controls.voicebox?.profileId || ""}, voiceboxLanguage=${controls.voicebox?.language || ""}, irodoriMode=${controls.irodori?.mode || "VoiceDesign"}, caption=${controls.irodori?.caption || ""}, title=${controls.title}, characterId=${controls.characterId || "未指定"}
+provider=${controls.provider}, voice=${controls.voice}, openRouterTtsModel=${controls.audioModel || ""}, openRouterResponseFormat=${controls.audioResponseFormat || ""}, actingPrompt=${controls.actingPrompt || ""}, elevenLabsVoiceId=${controls.elevenLabs?.voiceId || ""}, elevenLabsModel=${controls.elevenLabs?.modelId || ""}, voiceboxProfileId=${controls.voicebox?.profileId || ""}, voiceboxLanguage=${controls.voicebox?.language || ""}, irodoriMode=${controls.irodori?.mode || "VoiceDesign"}, caption=${controls.irodori?.caption || ""}, title=${controls.title}, characterId=${controls.characterId || "未指定"}
 
 作品情報 / 世界観:
 ${buildPromptLabWorldContext(work)}
@@ -5295,11 +5706,14 @@ function mergeAudioDraft(result, fallbackControls) {
   ).trim();
   const taggedInput = ensureAudioEmotionTag(source.input || "", actingPrompt);
   const irodori = normalizedIrodoriSettings({ ...fallbackControls.irodori, caption: source.caption || actingPrompt || fallbackControls.irodori?.caption });
+  const audioModel = fallbackControls.audioModel || state.db.settings.audioModel || defaultOpenRouterTtsModel;
   return {
     title: source.title || fallbackControls.title || "生成音声",
     input: taggedInput,
-    voice: ttsVoices.some(([item]) => item === voice) ? voice : fallbackControls.voice || "Kore",
+    voice: fallbackControls.provider === "openrouter" ? normalizeOpenRouterTtsVoice(voice, audioModel) : fallbackControls.voice || voice || "Kore",
     provider: fallbackControls.provider || "openrouter",
+    audioModel,
+    audioResponseFormat: fallbackControls.audioResponseFormat || state.db.settings.audioResponseFormat,
     elevenLabs: fallbackControls.elevenLabs,
     voicebox: fallbackControls.voicebox,
     ...irodori,
@@ -5339,6 +5753,9 @@ async function handleAudioAgentMessage(forceDraft = false) {
   state.audioVoice = controls.voice;
   state.audioProvider = controls.provider;
   state.db.settings.audioProvider = controls.provider;
+  state.db.settings.audioModel = controls.audioModel;
+  state.db.settings.audioResponseFormat = controls.audioResponseFormat;
+  state.db.settings.audioVoice = controls.voice;
   state.db.settings.audioActingPrompt = controls.actingPrompt || defaultAudioActingPrompt;
   state.db.settings.irodoriDefaults = controls.irodori;
   state.audioChatDraft = "";
@@ -5395,7 +5812,8 @@ async function startAudioGeneration() {
   state.db.settings.audioProvider = controls.provider;
   state.db.settings.audioVoice = controls.voice;
   state.db.settings.audioActingPrompt = controls.actingPrompt || defaultAudioActingPrompt;
-  state.db.settings.audioModel = openRouterTtsModel;
+  state.db.settings.audioModel = controls.audioModel;
+  state.db.settings.audioResponseFormat = controls.audioResponseFormat;
   state.db.settings.elevenLabsVoiceId = controls.elevenLabs.voiceId;
   state.db.settings.elevenLabsModelId = controls.elevenLabs.modelId;
   state.db.settings.elevenLabsOutputFormat = controls.elevenLabs.outputFormat;
@@ -5416,12 +5834,13 @@ async function startAudioGeneration() {
     let created = [];
     toastApiSubmitted("音声生成APIに送信しました。返答を待っています。");
     if (controls.provider === "openrouter") {
+      const openRouterModelConfig = openRouterTtsModelConfig(controls.audioModel);
       const payload = await postJson("/api/openrouter/speech", {
         apiKey: key,
-        model: openRouterTtsModel,
-        input: composeGeminiTtsInput(controls.input, controls.actingPrompt),
+        model: controls.audioModel,
+        input: composeOpenRouterTtsInput(controls.audioModel, controls.input, controls.actingPrompt),
         voice: controls.voice,
-        responseFormat: "pcm",
+        responseFormat: controls.audioResponseFormat,
         title: controls.title
       });
       const format = payload.format || (String(payload.mimeType || "").includes("wav") ? "wav" : "mp3");
@@ -5433,7 +5852,7 @@ async function startAudioGeneration() {
         title: controls.title,
         input: controls.input,
         voice: controls.voice,
-        model: openRouterTtsModel,
+        model: controls.audioModel,
         format,
         caption: controls.actingPrompt,
         actingPrompt: controls.actingPrompt,
@@ -5442,7 +5861,8 @@ async function startAudioGeneration() {
         mimeType: payload.mimeType,
         generationId: payload.generationId,
         size: payload.size,
-        agentNote: state.audioPromptDraft?.agentNote || "",
+        agentNote: [state.audioPromptDraft?.agentNote || "", `${openRouterModelConfig.label} / ${openRouterModelConfig.formatNote}`].filter(Boolean).join(" / "),
+        audioResponseFormat: controls.audioResponseFormat,
         createdAt: new Date().toISOString()
       })];
     } else if (controls.provider === "elevenlabs") {
@@ -5568,13 +5988,14 @@ async function startAudioGeneration() {
 
 function renderAudioItem(audio) {
   const providerLabel = audio.provider === "irodori" ? "Irodori-TTS" : audio.provider === "elevenlabs" ? "ElevenLabs" : audio.provider === "voicebox" ? "Voicebox" : "OpenRouter TTS";
+  const openRouterModelLabel = audio.provider === "openrouter" ? openRouterTtsModelConfig(audio.model).label : "";
   const voiceLabel = audio.provider === "irodori"
     ? `${audio.irodori?.mode || audio.voice || "VoiceDesign"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`
     : audio.provider === "elevenlabs"
       ? `${audio.voice || "voice ID未設定"} / ${audio.model || "eleven_multilingual_v2"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`
       : audio.provider === "voicebox"
         ? `${audio.voicebox?.profileName || audio.voicebox?.profileId || audio.voice || "profile未設定"} / ${audio.voicebox?.language || "ja"}${audio.voicebox?.defaultEngine ? ` / ${audio.voicebox.defaultEngine}` : ""}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`
-        : `${audio.voice || "Kore"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`;
+        : `${openRouterModelLabel} / ${audio.voice || "Kore"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`;
   return `
     <article class="audio-job">
       <div>
@@ -5598,7 +6019,11 @@ function renderAudioAgent() {
   }
   const controls = state.audioPromptDraft || {};
   const providerValue = normalizedAudioProvider(controls.provider || state.audioProvider || state.db.settings.audioProvider);
-  const voiceValue = controls.voice || state.audioVoice || state.db.settings.audioVoice || "Kore";
+  const openRouterModelValue = normalizeOpenRouterTtsModel(controls.audioModel || state.db.settings.audioModel);
+  const openRouterResponseFormatValue = normalizeOpenRouterTtsResponseFormat(controls.audioResponseFormat || state.db.settings.audioResponseFormat, openRouterModelValue);
+  const voiceValue = providerValue === "openrouter"
+    ? normalizeOpenRouterTtsVoice(controls.voice || state.audioVoice || state.db.settings.audioVoice, openRouterModelValue)
+    : controls.voice || state.audioVoice || state.db.settings.audioVoice || "Kore";
   const actingPromptValue = controls.actingPrompt || (providerValue === "openrouter" ? controls.caption : "") || state.db.settings.audioActingPrompt || defaultAudioActingPrompt;
   const elevenLabsValue = elevenLabsSettingsFromControls(controls.elevenLabs || {});
   const voiceboxValue = voiceboxSettingsFromControls(controls.voicebox || {});
@@ -5627,13 +6052,19 @@ function renderAudioAgent() {
             <select id="audio-provider">${renderAudioProviderOptions(providerValue)}</select>
           </label>
           ${providerValue === "openrouter" ? `
+            <label class="full">モデル
+              <select id="audio-openrouter-model">${renderOpenRouterTtsModelOptions(openRouterModelValue)}</select>
+            </label>
             <label class="full">ボイス
-              <select id="audio-voice">${renderTtsVoiceOptions(voiceValue)}</select>
+              <select id="audio-voice">${renderOpenRouterTtsVoiceOptions(voiceValue, openRouterModelValue)}</select>
+            </label>
+            <label>出力形式
+              <select id="audio-openrouter-response-format">${renderOpenRouterTtsResponseFormatOptions(openRouterResponseFormatValue, openRouterModelValue)}</select>
             </label>
             <label class="full">演技指示
               <textarea id="audio-acting-prompt" rows="4" placeholder="例：低く静かな声。怒りを抑え、近い距離で囁くように。重要な間だけ [short pause] を入れる。">${escapeHtml(actingPromptValue)}</textarea>
             </label>
-            <div class="full meta">生成モデル: ${escapeHtml(openRouterTtsModel)} / 形式: WAV（PCMを受信して保存）</div>
+            <div class="full meta">生成モデル: ${escapeHtml(openRouterTtsModelConfig(openRouterModelValue).label)} / ${escapeHtml(openRouterTtsModelConfig(openRouterModelValue).formatNote)}</div>
           ` : providerValue === "elevenlabs" ? `
             <div class="full meta">ElevenLabsを使って音声を生成します。voice ID と voice settings を指定できます。</div>
             <label class="full">演技指示
@@ -6141,6 +6572,65 @@ function lorasFromDom(prefix, fallback = []) {
   }));
 }
 
+function allImageReferences() {
+  return allVideoReferences().filter((item) => item.kind === "image");
+}
+
+function imageReferenceOptionsForCurrentWork(selectedKeys = []) {
+  const selected = new Set(selectedKeys);
+  return allImageReferences().filter((item) => {
+    if (selected.has(item.key)) return true;
+    return !state.imageWorkId || item.workId === state.imageWorkId || !item.workId;
+  });
+}
+
+function comfyReferenceSlotsFromDom(prefix, fallback = [], includeReference = false) {
+  const fallbackItems = normalizedComfyReferenceSlots(fallback);
+  const referenceMap = new Map(allImageReferences().map((item) => [item.key, item]));
+  return fallbackItems.map((item, index) => {
+    const key = includeReference
+      ? (document.querySelector(`#${prefix}-reference-key-${index}`)?.value || item.key)
+      : item.key;
+    const reference = key ? referenceMap.get(key) : null;
+    return {
+      label: document.querySelector(`#${prefix}-reference-label-${index}`)?.value.trim() || item.label || `参照${index + 1}`,
+      key: key || "",
+      name: reference?.name || item.name || "",
+      url: reference?.url || item.url || "",
+      nodeId: document.querySelector(`#${prefix}-reference-node-${index}`)?.value.trim() || item.nodeId,
+      inputName: document.querySelector(`#${prefix}-reference-input-${index}`)?.value.trim() || item.inputName || "image"
+    };
+  });
+}
+
+function renderComfyReferenceSlotRows(prefix, slots = [], { includeReference = false } = {}) {
+  const normalized = normalizedComfyReferenceSlots(slots);
+  const selectedKeys = normalized.map((slot) => slot.key).filter(Boolean);
+  const references = imageReferenceOptionsForCurrentWork(selectedKeys);
+  return normalized.map((slot, index) => {
+    const selected = references.find((item) => item.key === slot.key);
+    return `
+      <div class="comfy-reference-row">
+        ${includeReference ? `
+          <label>画像 ${index + 1}
+            <select id="${prefix}-reference-key-${index}">
+              <option value="">指定なし</option>
+              ${references.map((item) => `<option value="${escapeHtml(item.key)}" ${slot.key === item.key ? "selected" : ""}>${escapeHtml(item.name || item.subject || "参照画像")}</option>`).join("")}
+            </select>
+          </label>
+        ` : `<label>ラベル<input id="${prefix}-reference-label-${index}" value="${escapeHtml(slot.label)}"></label>`}
+        <label>Node ID
+          <input id="${prefix}-reference-node-${index}" placeholder="LoadImageのNode ID" value="${escapeHtml(slot.nodeId)}">
+        </label>
+        <label>Input
+          <input id="${prefix}-reference-input-${index}" value="${escapeHtml(slot.inputName || "image")}">
+        </label>
+        ${includeReference ? `<div class="reference-slot-preview">${selected ? `<img src="${escapeHtml(selected.url)}" alt=""><span>${escapeHtml(selected.subject || selected.name || "")}</span>` : `<span>未選択</span>`}</div>` : ""}
+      </div>
+    `;
+  }).join("");
+}
+
 function renderComfyModelDatalists() {
   const checkpoints = Array.isArray(state.comfyModels?.checkpoints) ? state.comfyModels.checkpoints : [];
   const loras = Array.isArray(state.comfyModels?.loras) ? state.comfyModels.loras : [];
@@ -6176,7 +6666,7 @@ function renderComfyValidationResult() {
   return `
     <div class="full comfy-validation ${className}">
       <strong>${escapeHtml(title)}</strong>
-      <div class="meta">${escapeHtml(`${summary.nodeCount ?? "-"} nodes / ${summary.edgeCount ?? "-"} connections / LoRA ${summary.loraCount ?? 0}件 / Checkpoint ${summary.checkpoint || "workflow既定"}`)}</div>
+      <div class="meta">${escapeHtml(`${summary.nodeCount ?? "-"} nodes / ${summary.edgeCount ?? "-"} connections / LoRA ${summary.loraCount ?? 0}件 / 参照画像 ${summary.referenceCount ?? 0}件 / Checkpoint ${summary.checkpoint || "workflow既定"}`)}</div>
       ${errors.length ? `<ul>${errors.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
       ${warnings.length ? `<ul>${warnings.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
     </div>
@@ -6294,6 +6784,7 @@ function renderComfySettings() {
       </div>
       <div class="panel-body form-grid">
         ${renderComfyModelDatalists()}
+        ${renderComfyPresetControls("setting")}
         <label class="full">既定GPU
           <select id="setting-comfy-gpu-mode">
             <option value="local" ${settings.gpuMode === "local" ? "selected" : ""}>ローカルGPU</option>
@@ -6339,6 +6830,11 @@ function renderComfySettings() {
         <div class="full comfy-lora-list">
           <div class="field-label">LoRA</div>
           ${renderComfyLoraRows("setting", settings.loras)}
+        </div>
+        <div class="full comfy-reference-panel">
+          <div class="field-label">参照画像Node</div>
+          <div class="meta">画像生成画面で選んだ参照画像を差し込むLoadImage系Nodeを指定します。</div>
+          ${renderComfyReferenceSlotRows("setting", settings.referenceSlots)}
         </div>
         ${renderComfyModelStatus()}
         ${renderComfyValidationResult()}
@@ -6411,7 +6907,7 @@ function renderSettings() {
         ${renderModelSelect("setting-video-agent-model", "動画エージェントモデル", state.db.settings.videoAgentModel || state.db.settings.textModel || "", "image")}
         ${renderModelSelect("setting-audio-agent-model", "音声エージェントモデル", state.db.settings.audioAgentModel || state.db.settings.textModel || "", "text")}
         <label class="full">音声生成モデル
-          <input value="${escapeHtml(openRouterTtsModel)}" readonly>
+          <select id="setting-audio-tts-model">${renderOpenRouterTtsModelOptions(state.db.settings.audioModel || defaultOpenRouterTtsModel)}</select>
         </label>
         <div class="full meta">${escapeHtml(statusText)}</div>
         <div class="full meta">キーはブラウザ内に保存されます。作品データ、画像、生成音声はこのアプリの data フォルダに保存されます。世界観読み込みモデルは設定シート画像の読解に使います。音声エージェントモデルは読み上げテキスト案の作成だけに使います。</div>
@@ -7159,9 +7655,21 @@ function bindImageAgent() {
     "#image-lora-model-2",
     "#image-lora-clip-0",
     "#image-lora-clip-1",
-    "#image-lora-clip-2"
+    "#image-lora-clip-2",
+    "#image-reference-key-0",
+    "#image-reference-key-1",
+    "#image-reference-key-2",
+    "#image-reference-node-0",
+    "#image-reference-node-1",
+    "#image-reference-node-2",
+    "#image-reference-input-0",
+    "#image-reference-input-1",
+    "#image-reference-input-2"
   ].forEach((selector) => {
     document.querySelector(selector)?.addEventListener("change", persistImageControls);
+  });
+  document.querySelectorAll("[id^='image-reference-']").forEach((input) => {
+    input.addEventListener("input", persistImageControls);
   });
   document.querySelectorAll("[id^='image-lora-']").forEach((input) => {
     input.addEventListener("input", persistImageControls);
@@ -7220,6 +7728,16 @@ function bindImageAgent() {
   document.querySelectorAll("[data-action='validate-comfy-workflow']").forEach((button) => {
     button.addEventListener("click", validateCurrentComfyWorkflow);
   });
+  document.querySelector("[data-action='choose-image-reference-files']")?.addEventListener("click", () => {
+    document.querySelector("#image-reference-file-input")?.click();
+  });
+  document.querySelector("#image-reference-file-input")?.addEventListener("change", async (event) => {
+    await uploadImageReferenceFiles(event.target.files);
+  });
+  document.querySelector("[data-action='apply-comfy-preset']")?.addEventListener("click", applySelectedComfyPreset);
+  document.querySelector("[data-action='save-comfy-preset']")?.addEventListener("click", openComfyPresetModal);
+  document.querySelector("[data-action='update-comfy-preset']")?.addEventListener("click", updateSelectedComfyPreset);
+  document.querySelector("[data-action='delete-comfy-preset']")?.addEventListener("click", deleteSelectedComfyPreset);
   document.querySelector("[data-action='image-start-generation']")?.addEventListener("click", startComfyGeneration);
   document.querySelectorAll("[data-action='refresh-image-job']").forEach((button) => {
     button.addEventListener("click", () => pollComfyJob(button.dataset.id));
@@ -7245,6 +7763,8 @@ function bindAudioAgent() {
       input: controls.input,
       voice: controls.voice,
       provider: controls.provider,
+      audioModel: controls.audioModel,
+      audioResponseFormat: controls.audioResponseFormat,
       elevenLabs: controls.elevenLabs,
       voicebox: controls.voicebox,
       ...controls.irodori,
@@ -7253,6 +7773,8 @@ function bindAudioAgent() {
     };
     state.db.settings.audioProvider = controls.provider;
     state.db.settings.audioVoice = controls.voice;
+    state.db.settings.audioModel = controls.audioModel;
+    state.db.settings.audioResponseFormat = controls.audioResponseFormat;
     state.db.settings.audioActingPrompt = controls.actingPrompt || defaultAudioActingPrompt;
     state.db.settings.elevenLabsVoiceId = controls.elevenLabs.voiceId;
     state.db.settings.elevenLabsModelId = controls.elevenLabs.modelId;
@@ -7270,7 +7792,9 @@ function bindAudioAgent() {
     state.db.settings.irodoriDefaults = controls.irodori;
   };
   [
+    "#audio-openrouter-model",
     "#audio-voice",
+    "#audio-openrouter-response-format",
     "#audio-acting-prompt",
     "#audio-title",
     "#audio-input-text",
@@ -7315,6 +7839,10 @@ function bindAudioAgent() {
     state.audioChatDraft = event.target.value;
   });
   document.querySelector("#audio-provider")?.addEventListener("change", () => {
+    persistAudioControls();
+    render();
+  });
+  document.querySelector("#audio-openrouter-model")?.addEventListener("change", () => {
     persistAudioControls();
     render();
   });
@@ -7810,7 +8338,8 @@ function comfySettingsFromDom() {
     batchSize: document.querySelector("#setting-comfy-batch-size")?.value ?? current.batchSize,
     seed: document.querySelector("#setting-comfy-seed")?.value.trim() ?? current.seed,
     checkpoint: document.querySelector("#setting-comfy-checkpoint")?.value.trim() ?? current.checkpoint,
-    loras: lorasFromDom("setting", current.loras)
+    loras: lorasFromDom("setting", current.loras),
+    referenceSlots: comfyReferenceSlotsFromDom("setting", current.referenceSlots)
   });
 }
 
@@ -7917,7 +8446,9 @@ function bindSettings() {
     state.db.settings.imageAgentModel = document.querySelector("#setting-image-agent-model").value.trim();
     state.db.settings.videoAgentModel = document.querySelector("#setting-video-agent-model").value.trim();
     state.db.settings.audioAgentModel = document.querySelector("#setting-audio-agent-model").value.trim();
-    state.db.settings.audioModel = openRouterTtsModel;
+    state.db.settings.audioModel = normalizeOpenRouterTtsModel(document.querySelector("#setting-audio-tts-model")?.value || state.db.settings.audioModel);
+    state.db.settings.audioVoice = normalizeOpenRouterTtsVoice(state.db.settings.audioVoice, state.db.settings.audioModel);
+    state.db.settings.audioResponseFormat = normalizeOpenRouterTtsResponseFormat(state.db.settings.audioResponseFormat, state.db.settings.audioModel);
     state.db.settings.irodoriAppDir = document.querySelector("#setting-irodori-app-dir")?.value.trim() || "vendor/Irodori-TTS";
     state.db.settings.seedanceBaseUrl = document.querySelector("#setting-seedance-base-url")?.value.trim() || "https://ark.ap-southeast.bytepluses.com/api/v3";
     state.db.settings.seedanceModel = document.querySelector("#setting-seedance-model")?.value.trim() || "dreamina-seedance-2-0-260128";
@@ -7936,7 +8467,9 @@ function bindSettings() {
     state.db.settings.imageAgentModel = document.querySelector("#setting-image-agent-model").value.trim();
     state.db.settings.videoAgentModel = document.querySelector("#setting-video-agent-model").value.trim();
     state.db.settings.audioAgentModel = document.querySelector("#setting-audio-agent-model").value.trim();
-    state.db.settings.audioModel = openRouterTtsModel;
+    state.db.settings.audioModel = normalizeOpenRouterTtsModel(document.querySelector("#setting-audio-tts-model")?.value || state.db.settings.audioModel);
+    state.db.settings.audioVoice = normalizeOpenRouterTtsVoice(state.db.settings.audioVoice, state.db.settings.audioModel);
+    state.db.settings.audioResponseFormat = normalizeOpenRouterTtsResponseFormat(state.db.settings.audioResponseFormat, state.db.settings.audioModel);
     state.db.settings.irodoriAppDir = document.querySelector("#setting-irodori-app-dir")?.value.trim() || "vendor/Irodori-TTS";
     try {
       await callOpenRouter({
@@ -7970,6 +8503,10 @@ function bindSettings() {
   document.querySelectorAll("[data-action='validate-comfy-workflow']").forEach((button) => {
     button.addEventListener("click", validateCurrentComfyWorkflow);
   });
+  document.querySelector("[data-action='apply-comfy-preset']")?.addEventListener("click", applySelectedComfyPreset);
+  document.querySelector("[data-action='save-comfy-preset']")?.addEventListener("click", openComfyPresetModal);
+  document.querySelector("[data-action='update-comfy-preset']")?.addEventListener("click", updateSelectedComfyPreset);
+  document.querySelector("[data-action='delete-comfy-preset']")?.addEventListener("click", deleteSelectedComfyPreset);
   document.querySelector("#setting-comfy-workflow-mode")?.addEventListener("change", () => {
     saveComfySettingsFromDom();
     render();

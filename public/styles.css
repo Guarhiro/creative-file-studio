@@ -1361,6 +1361,55 @@ textarea {
   padding: 12px;
 }
 
+.comfy-preset-panel {
+  display: grid;
+  gap: 10px;
+  border: 1px solid rgba(103, 122, 47, 0.24);
+  border-radius: 8px;
+  background: #fbfaf4;
+  padding: 12px;
+}
+
+.comfy-preset-panel .slim-toolbar {
+  margin-bottom: 0;
+}
+
+.comfy-reference-panel {
+  display: grid;
+  gap: 10px;
+  border: 1px solid rgba(31, 138, 132, 0.22);
+  border-radius: 8px;
+  background: #f7fbfa;
+  padding: 12px;
+}
+
+.comfy-reference-row {
+  display: grid;
+  grid-template-columns: minmax(190px, 1.4fr) minmax(110px, 0.75fr) minmax(100px, 0.6fr) minmax(120px, 0.8fr);
+  gap: 10px;
+  align-items: end;
+}
+
+.reference-slot-preview {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.reference-slot-preview img {
+  width: 42px;
+  height: 42px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  object-fit: cover;
+  background: #ece7dd;
+}
+
 .comfy-lora-row {
   display: grid;
   grid-template-columns: minmax(220px, 2fr) minmax(120px, 1fr) minmax(120px, 1fr);
@@ -1551,6 +1600,7 @@ textarea {
   .world-sheet-row,
   .info-list,
   .comfy-node-grid,
+  .comfy-reference-row,
   .comfy-lora-row,
   .irodori-settings,
   .elevenlabs-settings,
