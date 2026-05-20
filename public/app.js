@@ -3338,7 +3338,6 @@ function render(options = {}) {
             <p>${sub}</p>
           </div>
           <div class="topbar-actions">
-            <button class="ghost" data-action="save-now">保存</button>
             <button class="ghost icon-button help-button" data-action="open-help" aria-label="${escapeHtml(title)}のヘルプを表示" title="ヘルプ">?</button>
           </div>
         </header>
@@ -10036,10 +10035,6 @@ function bindCommon() {
       state.view = button.dataset.view;
       render();
     });
-  });
-  document.querySelector("[data-action='save-now']")?.addEventListener("click", async () => {
-    await saveDb();
-    toast("保存しました。");
   });
   document.querySelector("[data-action='open-help']")?.addEventListener("click", openCurrentHelpModal);
 }
