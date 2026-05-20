@@ -50,6 +50,13 @@ const state = {
   imageEditBackgroundRemoverErodeSize: 10,
   imageEditManualTool: "erase",
   imageEditManualBrushSize: 42,
+  imageEditAspectRatio: "1:1",
+  imageEditAspectCustomWidth: 1,
+  imageEditAspectCustomHeight: 1,
+  imageEditAspectFill: "transparent",
+  imageEditAspectPositionX: 0,
+  imageEditAspectPositionY: 0,
+  imageEditAspectScale: 100,
   imageEditInputFile: null,
   imageEditResult: null,
   imageEditIsRunning: false,
@@ -138,6 +145,10 @@ const state = {
   videoCostCollapsed: false
 };
 
+const imageEditSourceDataUrlCache = new Map();
+let imageEditAspectPreviewTimer = null;
+let imageEditAspectPreviewToken = 0;
+
 const navItems = [
   { id: "studio", label: "作品とキャラ" },
   { id: "import", label: "画像取込" },
@@ -149,6 +160,7 @@ const navItems = [
     defaultView: "edit",
     children: [
       { id: "edit", label: "背景除去" },
+      { id: "edit-aspect", label: "アスペクト比変換" },
       { id: "edit-gif", label: "動画GIF化" }
     ]
   },
@@ -265,8 +277,8 @@ const screenHelpContent = {
     ]
   },
   edit: {
-    title: "画像編集のヘルプ",
-    lead: "画像や動画/GIFの背景除去、透過PNG作成、動画のGIF化、処理結果の保存を行う画面です。",
+    title: "背景除去のヘルプ",
+    lead: "画像や動画/GIFの背景除去、透過PNG作成、処理結果の保存を行う画面です。",
     sections: [
       {
         title: "使い方",
@@ -284,8 +296,8 @@ const screenHelpContent = {
         items: [
           { term: "作品", description: "編集結果を保存する作品です。保存先フォルダと画像一覧への登録先になります。" },
           { term: "保存時のキャラ", description: "処理後の画像を画像一覧へ保存する時に紐づけるキャラです。指定なしでも保存できます。" },
-          { term: "対象画像", description: "背景除去に使う元画像です。保存済み画像または追加画像から選びます。" },
-          { term: "処理", description: "背景除去に使う方式です。軽い確認、ローカルAI、クラウドAPIを用途に応じて切り替えます。" },
+          { term: "対象画像", description: "処理に使う元画像です。保存済み画像または追加画像から選びます。" },
+          { term: "処理", description: "背景除去、手動編集、ローカルAI、クラウドAPIなどの方式を切り替えます。" },
           { term: "簡易ローカル", description: "ブラウザ内で背景色を推定して透過します。軽い確認向きです。" },
           { term: "手動フリーモード", description: "境界指定、ペン除去、復元ペンで透過PNGを手動調整します。" },
           { term: "ローカルAI rembg", description: "rembgを使う高精度な背景除去です。初回セットアップが必要です。" },
@@ -311,6 +323,24 @@ const screenHelpContent = {
           { term: "Workers", description: "動画処理の並列ワーカー数です。1-4で、多いほど速くなる場合がありますが、CPU負荷とメモリ使用量も増えます。" },
           { term: "最大幅（GIF化）", description: "GIF化時の横幅です。縦横比は維持され、値を下げるほど軽くなります。" },
           { term: "開始秒 / 長さ", description: "動画のどこから何秒GIF化するかを指定します。長さ0なら末尾まで変換します。" }
+        ]
+      }
+    ]
+  },
+  "edit-aspect": {
+    title: "アスペクト比変換のヘルプ",
+    lead: "画像を指定比率のキャンバスへ配置し、余白、位置、拡大率を調整してPNGとして保存する画面です。",
+    sections: [
+      {
+        title: "使い方",
+        items: [
+          { term: "対象画像", description: "作品内の保存済み画像、または追加した画像ファイルから変換対象を選びます。" },
+          { term: "変換後の比率", description: "1:1、16:9、9:16、4:3、3:4、21:9、2:3、3:2、またはカスタム比率を選びます。" },
+          { term: "余白", description: "追加された領域を透過、白、黒のどれで埋めるかを指定します。" },
+          { term: "横位置 / 縦位置", description: "画像を中央から左右上下へ移動します。スライダーと数値ステッパーのどちらでも調整できます。" },
+          { term: "拡大・縮小", description: "画像の配置サイズを10-400%で調整します。拡大時はキャンバス外が見切れることがあります。" },
+          { term: "プレビュー", description: "比率、余白、位置、拡大率の変更は処理後プレビューへ自動反映されます。" },
+          { term: "画像一覧へ保存", description: "変換後のPNGを作品の画像一覧へ登録します。" }
         ]
       }
     ]
@@ -482,6 +512,7 @@ const audioProviders = [
 
 const imageEditProviders = [
   ["local", "簡易ローカル"],
+  ["aspect", "アスペクト比変換"],
   ["manual", "手動フリーモード"],
   ["rembg", "ローカルAI rembg"],
   ["backgroundremover", "ローカルAI backgroundremover"],
@@ -522,6 +553,24 @@ const manualImageEditTools = [
   ["erase", "ペンで除去"],
   ["restore", "復元ペン"],
   ["boundary", "境界指定"]
+];
+
+const imageEditAspectRatioOptions = [
+  ["1:1", "1:1 正方形"],
+  ["16:9", "16:9 横長"],
+  ["9:16", "9:16 縦長"],
+  ["4:3", "4:3 横"],
+  ["3:4", "3:4 縦"],
+  ["21:9", "21:9 ワイド"],
+  ["2:3", "2:3 縦"],
+  ["3:2", "3:2 横"],
+  ["custom", "カスタム"]
+];
+
+const imageEditAspectFillOptions = [
+  ["transparent", "透過"],
+  ["white", "白"],
+  ["black", "黒"]
 ];
 
 const voiceboxDefaultSettings = {
@@ -3340,7 +3389,8 @@ function currentTitle() {
   if (state.view === "import") return ["画像取込", "複数画像を取り込み、AIでキャラ別に振り分けます。"];
   if (state.view === "gallery") return ["画像一覧", "作品ごと、キャラごとに保存済み画像を閲覧します。"];
   if (state.view === "image") return ["画像生成", "ComfyUIでローカルGPUまたはクラウドGPUに生成を投げます。"];
-  if (state.view === "edit") return ["画像編集", "背景除去と透過PNG変換を行います。"];
+  if (state.view === "edit") return ["背景除去", "背景除去と透過PNG変換を行います。"];
+  if (state.view === "edit-aspect") return ["アスペクト比変換", "指定比率へ配置し、位置と拡大率を調整します。"];
   if (state.view === "edit-gif") return ["動画GIF化", "動画をGIFに変換して画像一覧へ保存します。"];
   if (state.view === "audio") return ["音声生成", "OpenRouter、ElevenLabs、Voicebox、Irodori-TTSでキャラ音声やナレーションを作ります。"];
   if (state.view === "video") return ["動画生成", "選択した動画モデル向けの指示書作成と生成を行います。"];
@@ -3396,6 +3446,7 @@ function renderView() {
   if (state.view === "gallery") return renderGallery();
   if (state.view === "image") return renderImageAgent();
   if (state.view === "edit") return renderImageEditor();
+  if (state.view === "edit-aspect") return renderImageEditor({ forcedProvider: "aspect", hideProviderChooser: true, includeVideoPanel: false });
   if (state.view === "edit-gif") return renderVideoGifConverter();
   if (state.view === "audio") return renderAudioAgent();
   if (state.view === "video") return renderVideoAgent();
@@ -4073,6 +4124,14 @@ function normalizedManualImageEditTool(value) {
   return manualImageEditTools.some(([tool]) => tool === value) ? value : "erase";
 }
 
+function normalizedImageEditAspectRatio(value) {
+  return imageEditAspectRatioOptions.some(([ratio]) => ratio === value) ? value : "1:1";
+}
+
+function normalizedImageEditAspectFill(value) {
+  return imageEditAspectFillOptions.some(([fill]) => fill === value) ? value : "transparent";
+}
+
 function imageEditToleranceValue(value) {
   return boundedSettingNumber(value, 42, 0, 160, true);
 }
@@ -4083,6 +4142,18 @@ function imageEditFeatherValue(value) {
 
 function imageEditManualBrushSizeValue(value) {
   return boundedSettingNumber(value, 42, 4, 220, true);
+}
+
+function imageEditAspectCustomValue(value, fallback = 1) {
+  return boundedSettingNumber(value, fallback, 1, 9999, true);
+}
+
+function imageEditAspectPositionValue(value) {
+  return boundedSettingNumber(value, 0, -100, 100, true);
+}
+
+function imageEditAspectScaleValue(value) {
+  return boundedSettingNumber(value, 100, 10, 400, true);
 }
 
 function backgroundRemoverErodeSizeValue(value) {
@@ -4132,6 +4203,84 @@ function formatBytes(value) {
 function transparentPngName(name = "image", suffix = "transparent") {
   const parsed = String(name || "image").split(/[\\/]/).pop().replace(/\.[^.]+$/i, "");
   return `${parsed || "image"}-${suffix}.png`;
+}
+
+function renderImageEditAspectRatioOptions(selectedValue) {
+  const selected = normalizedImageEditAspectRatio(selectedValue);
+  return imageEditAspectRatioOptions
+    .map(([value, label]) => `<option value="${escapeHtml(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(label)}</option>`)
+    .join("");
+}
+
+function renderImageEditAspectFillOptions(selectedValue) {
+  const selected = normalizedImageEditAspectFill(selectedValue);
+  return imageEditAspectFillOptions
+    .map(([value, label]) => `<option value="${escapeHtml(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(label)}</option>`)
+    .join("");
+}
+
+function renderImageEditAspectRangeNumber({ id, value, min, max, step = 1, unit = "", decreaseLabel = "減らす", increaseLabel = "増やす" }) {
+  const safeValue = escapeHtml(value);
+  const safeId = escapeHtml(id);
+  const safeStep = escapeHtml(step);
+  return `
+    <div class="image-edit-range-number">
+      <input id="${safeId}" type="range" min="${escapeHtml(min)}" max="${escapeHtml(max)}" step="${safeStep}" value="${safeValue}">
+      <div class="number-stepper">
+        <button type="button" class="ghost stepper-button" data-action="step-image-edit-aspect" data-target="${safeId}" data-step="-${safeStep}" aria-label="${escapeHtml(decreaseLabel)}">-</button>
+        <input id="${safeId}-number" type="number" min="${escapeHtml(min)}" max="${escapeHtml(max)}" step="${safeStep}" value="${safeValue}">
+        ${unit ? `<span class="stepper-unit">${escapeHtml(unit)}</span>` : ""}
+        <button type="button" class="ghost stepper-button" data-action="step-image-edit-aspect" data-target="${safeId}" data-step="${safeStep}" aria-label="${escapeHtml(increaseLabel)}">+</button>
+      </div>
+    </div>
+  `;
+}
+
+function imageEditAspectRatioParts(controls) {
+  const ratio = normalizedImageEditAspectRatio(controls.aspectRatio);
+  if (ratio === "custom") {
+    return {
+      width: imageEditAspectCustomValue(controls.aspectCustomWidth, state.imageEditAspectCustomWidth),
+      height: imageEditAspectCustomValue(controls.aspectCustomHeight, state.imageEditAspectCustomHeight)
+    };
+  }
+  const [width, height] = ratio.split(":").map((part) => Number.parseInt(part, 10));
+  return { width: width || 1, height: height || 1 };
+}
+
+function imageEditAspectRatioLabel(controls) {
+  const parts = imageEditAspectRatioParts(controls);
+  return `${parts.width}:${parts.height}`;
+}
+
+function imageEditAspectFillLabel(value) {
+  const normalized = normalizedImageEditAspectFill(value);
+  return imageEditAspectFillOptions.find(([option]) => option === normalized)?.[1] || "透過";
+}
+
+function imageEditAspectProviderLabel(controls) {
+  return `アスペクト比変換 / ${imageEditAspectRatioLabel(controls)} / ${imageEditAspectFillLabel(controls.aspectFill)} / ${imageEditAspectScaleValue(controls.aspectScale)}%`;
+}
+
+function imageEditRunButtonLabel(provider) {
+  if (provider === "manual") return "手動編集を結果に反映";
+  if (provider === "aspect") return "アスペクト比を変換";
+  return "透過PNGを作成";
+}
+
+function renderImageEditProviderButtons(selectedProvider) {
+  const selected = normalizedImageEditProvider(selectedProvider);
+  return imageEditProviders
+    .filter(([value]) => value !== "aspect")
+    .map(([value, label]) => `
+      <button
+        class="ghost image-edit-provider-button ${value === selected ? "active-toggle" : ""}"
+        data-action="set-image-edit-provider"
+        data-provider="${escapeHtml(value)}"
+        aria-pressed="${value === selected ? "true" : "false"}"
+      >${escapeHtml(label)}</button>
+    `)
+    .join("");
 }
 
 function allImageEditSources() {
@@ -4266,7 +4415,7 @@ function backgroundRemoverVideoModeLabel(value) {
   return backgroundRemoverVideoModeOptions.find(([option]) => option === mode)?.[1] || "透過GIF";
 }
 
-function renderImageEditor() {
+function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, includeVideoPanel = true } = {}) {
   const work = byId(state.db.works, state.imageEditWorkId) || byId(state.db.works, state.selectedWorkId) || state.db.works[0] || null;
   if (!state.imageEditWorkId && work) state.imageEditWorkId = work.id;
   if (state.imageEditCharacterId && !charactersForWork(state.imageEditWorkId).some((char) => char.id === state.imageEditCharacterId)) {
@@ -4277,12 +4426,17 @@ function renderImageEditor() {
     state.imageEditSourceKey = state.imageEditInputFile ? "upload" : sources[0].key;
   }
   const selectedSource = selectedImageEditSource();
-  const provider = normalizedImageEditProvider(state.imageEditProvider);
+  let provider = forcedProvider ? normalizedImageEditProvider(forcedProvider) : normalizedImageEditProvider(state.imageEditProvider);
+  if (!forcedProvider && provider === "aspect") {
+    provider = "local";
+    state.imageEditProvider = provider;
+  }
   const mode = normalizedImageEditBackgroundMode(state.imageEditBackgroundMode);
   const result = state.imageEditResult;
+  const aspectResult = provider === "aspect" && result?.provider === "aspect" ? result : null;
   const isRembgBusy = state.rembgStatus === "loading" || state.rembgStatus === "installing";
   const isBackgroundRemoverBusy = state.backgroundRemoverStatus === "loading" || state.backgroundRemoverStatus === "installing";
-  const runButtonLabel = provider === "manual" ? "手動編集を結果に反映" : "透過PNGを作成";
+  const runButtonLabel = imageEditRunButtonLabel(provider);
   return `
     <div class="image-edit-stack">
     <div class="video-layout image-edit-layout">
@@ -4305,12 +4459,68 @@ function renderImageEditor() {
             <button class="ghost" data-action="choose-image-edit-file">画像を追加</button>
             <button class="ghost" data-action="clear-image-edit-file" ${state.imageEditInputFile ? "" : "disabled"}>追加画像を解除</button>
           </div>
-          <label>処理
-            <select id="image-edit-provider">
-              ${imageEditProviders.map(([value, label]) => `<option value="${value}" ${provider === value ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
-            </select>
-          </label>
-          ${provider === "manual" ? `
+          <input id="image-edit-provider" type="hidden" value="${escapeHtml(provider)}">
+          ${hideProviderChooser ? "" : `
+            <div class="full image-edit-provider-panel">
+              <div class="meta">処理</div>
+              <div class="image-edit-provider-buttons">
+                ${renderImageEditProviderButtons(provider)}
+              </div>
+            </div>
+          `}
+          ${provider === "aspect" ? `
+            <label>変換後の比率
+              <select id="image-edit-aspect-ratio">${renderImageEditAspectRatioOptions(state.imageEditAspectRatio)}</select>
+            </label>
+            <label>余白
+              <select id="image-edit-aspect-fill">${renderImageEditAspectFillOptions(state.imageEditAspectFill)}</select>
+            </label>
+            ${normalizedImageEditAspectRatio(state.imageEditAspectRatio) === "custom" ? `
+              <label>カスタム横
+                <input id="image-edit-aspect-custom-width" type="number" min="1" max="9999" value="${escapeHtml(state.imageEditAspectCustomWidth)}">
+              </label>
+              <label>カスタム縦
+                <input id="image-edit-aspect-custom-height" type="number" min="1" max="9999" value="${escapeHtml(state.imageEditAspectCustomHeight)}">
+              </label>
+            ` : ""}
+            <label class="full">横位置
+              ${renderImageEditAspectRangeNumber({
+                id: "image-edit-aspect-position-x",
+                value: imageEditAspectPositionValue(state.imageEditAspectPositionX),
+                min: -100,
+                max: 100,
+                unit: "%",
+                decreaseLabel: "横位置を左へ",
+                increaseLabel: "横位置を右へ"
+              })}
+            </label>
+            <label class="full">縦位置
+              ${renderImageEditAspectRangeNumber({
+                id: "image-edit-aspect-position-y",
+                value: imageEditAspectPositionValue(state.imageEditAspectPositionY),
+                min: -100,
+                max: 100,
+                unit: "%",
+                decreaseLabel: "縦位置を上へ",
+                increaseLabel: "縦位置を下へ"
+              })}
+            </label>
+            <label class="full">拡大・縮小
+              ${renderImageEditAspectRangeNumber({
+                id: "image-edit-aspect-scale",
+                value: imageEditAspectScaleValue(state.imageEditAspectScale),
+                min: 10,
+                max: 400,
+                unit: "%",
+                decreaseLabel: "縮小",
+                increaseLabel: "拡大"
+              })}
+            </label>
+            <div class="full toolbar">
+              <button class="ghost" data-action="reset-image-edit-aspect-position">中央に戻す</button>
+              <button class="ghost" data-action="reset-image-edit-aspect-scale">拡大率100%</button>
+            </div>
+          ` : provider === "manual" ? `
             <label>手動ツール
               <select id="image-edit-manual-tool">
                 ${manualImageEditTools.map(([value, label]) => `<option value="${value}" ${state.imageEditManualTool === value ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
@@ -4404,14 +4614,18 @@ function renderImageEditor() {
                   <canvas id="image-edit-manual-overlay" class="manual-editor-overlay"></canvas>
                 </div>
                 <div class="meta">${escapeHtml(result?.provider === "manual" ? `${result.name || ""}${result.width ? ` / ${result.width}x${result.height}` : ""} / ${result.providerLabel || ""}` : "手動編集中")}</div>
+              ` : provider === "aspect" && selectedSource ? `
+                <div id="image-edit-aspect-preview-status" class="empty compact" hidden></div>
+                <img id="image-edit-aspect-preview" class="transparent-preview" src="${aspectResult ? escapeHtml(aspectResult.dataUrl) : ""}" alt="" ${aspectResult ? "" : "hidden"}>
+                <div id="image-edit-aspect-preview-meta" class="meta">${aspectResult ? escapeHtml(imageEditAspectResultMetaText(aspectResult)) : ""}</div>
               ` : state.imageEditIsRunning ? `<div class="empty compact">処理中です。</div>` : result ? `<img class="transparent-preview" src="${escapeHtml(result.dataUrl)}" alt="">` : `<div class="empty compact">まだ結果がありません。</div>`}
-              ${provider !== "manual" && result ? `<div class="meta">${escapeHtml(result.name || "")}${result.width ? ` / ${escapeHtml(`${result.width}x${result.height}`)}` : ""} / ${escapeHtml(result.providerLabel || "")}</div>` : ""}
+              ${provider !== "manual" && provider !== "aspect" && result ? `<div class="meta">${escapeHtml(result.name || "")}${result.width ? ` / ${escapeHtml(`${result.width}x${result.height}`)}` : ""} / ${escapeHtml(result.providerLabel || "")}</div>` : ""}
             </article>
           </div>
         </div>
       </section>
     </div>
-    ${renderBackgroundRemoverVideoPanel(work)}
+    ${includeVideoPanel ? renderBackgroundRemoverVideoPanel(work) : ""}
     </div>
   `;
 }
@@ -4569,6 +4783,9 @@ function renderVideoGifConverter() {
 }
 
 function imageEditControlsFromDom() {
+  const aspectPositionXValue = document.querySelector("#image-edit-aspect-position-x-number")?.value ?? document.querySelector("#image-edit-aspect-position-x")?.value ?? state.imageEditAspectPositionX;
+  const aspectPositionYValue = document.querySelector("#image-edit-aspect-position-y-number")?.value ?? document.querySelector("#image-edit-aspect-position-y")?.value ?? state.imageEditAspectPositionY;
+  const aspectScaleValue = document.querySelector("#image-edit-aspect-scale-number")?.value ?? document.querySelector("#image-edit-aspect-scale")?.value ?? state.imageEditAspectScale;
   return {
     workId: document.querySelector("#image-edit-work")?.value || state.imageEditWorkId || "",
     characterId: document.querySelector("#image-edit-character")?.value || "",
@@ -4586,6 +4803,13 @@ function imageEditControlsFromDom() {
     backgroundRemoverErodeSize: backgroundRemoverErodeSizeValue(document.querySelector("#image-edit-backgroundremover-erode-size")?.value || state.imageEditBackgroundRemoverErodeSize),
     manualTool: normalizedManualImageEditTool(document.querySelector("#image-edit-manual-tool")?.value || state.imageEditManualTool),
     manualBrushSize: imageEditManualBrushSizeValue(document.querySelector("#image-edit-manual-brush-size")?.value || state.imageEditManualBrushSize),
+    aspectRatio: normalizedImageEditAspectRatio(document.querySelector("#image-edit-aspect-ratio")?.value || state.imageEditAspectRatio),
+    aspectCustomWidth: imageEditAspectCustomValue(document.querySelector("#image-edit-aspect-custom-width")?.value || state.imageEditAspectCustomWidth, state.imageEditAspectCustomWidth),
+    aspectCustomHeight: imageEditAspectCustomValue(document.querySelector("#image-edit-aspect-custom-height")?.value || state.imageEditAspectCustomHeight, state.imageEditAspectCustomHeight),
+    aspectFill: normalizedImageEditAspectFill(document.querySelector("#image-edit-aspect-fill")?.value || state.imageEditAspectFill),
+    aspectPositionX: imageEditAspectPositionValue(aspectPositionXValue),
+    aspectPositionY: imageEditAspectPositionValue(aspectPositionYValue),
+    aspectScale: imageEditAspectScaleValue(aspectScaleValue),
     removeBgKey: document.querySelector("#image-edit-removebg-key")?.value.trim() || removeBgApiKey()
   };
 }
@@ -4607,6 +4831,13 @@ function rememberImageEditControls(controls = imageEditControlsFromDom()) {
   state.imageEditBackgroundRemoverErodeSize = backgroundRemoverErodeSizeValue(controls.backgroundRemoverErodeSize);
   state.imageEditManualTool = normalizedManualImageEditTool(controls.manualTool);
   state.imageEditManualBrushSize = imageEditManualBrushSizeValue(controls.manualBrushSize);
+  state.imageEditAspectRatio = normalizedImageEditAspectRatio(controls.aspectRatio);
+  state.imageEditAspectCustomWidth = imageEditAspectCustomValue(controls.aspectCustomWidth, state.imageEditAspectCustomWidth);
+  state.imageEditAspectCustomHeight = imageEditAspectCustomValue(controls.aspectCustomHeight, state.imageEditAspectCustomHeight);
+  state.imageEditAspectFill = normalizedImageEditAspectFill(controls.aspectFill);
+  state.imageEditAspectPositionX = imageEditAspectPositionValue(controls.aspectPositionX);
+  state.imageEditAspectPositionY = imageEditAspectPositionValue(controls.aspectPositionY);
+  state.imageEditAspectScale = imageEditAspectScaleValue(controls.aspectScale);
   if (controls.removeBgKey) localStorage.setItem("removebg_api_key", controls.removeBgKey);
 }
 
@@ -5183,6 +5414,184 @@ async function sourceDataUrlForImageEdit(source) {
   return imageUrlToDataUrl(source.url);
 }
 
+async function cachedSourceDataUrlForImageEdit(source) {
+  if (source?.dataUrl) return source.dataUrl;
+  const cacheKey = `${source?.key || ""}:${source?.url || ""}`;
+  if (cacheKey && imageEditSourceDataUrlCache.has(cacheKey)) return imageEditSourceDataUrlCache.get(cacheKey);
+  const dataUrl = await sourceDataUrlForImageEdit(source);
+  if (cacheKey) imageEditSourceDataUrlCache.set(cacheKey, dataUrl);
+  return dataUrl;
+}
+
+function fillImageEditAspectPadding(context, fill, width, height, imageX, imageY, imageWidth, imageHeight) {
+  if (fill === "transparent") return;
+  context.save();
+  context.fillStyle = fill === "black" ? "#000000" : "#ffffff";
+  const top = Math.max(0, imageY);
+  const left = Math.max(0, imageX);
+  const right = Math.min(width, imageX + imageWidth);
+  const bottom = Math.min(height, imageY + imageHeight);
+  if (top > 0) context.fillRect(0, 0, width, top);
+  if (bottom < height) context.fillRect(0, bottom, width, height - bottom);
+  if (left > 0 && bottom > top) context.fillRect(0, top, left, bottom - top);
+  if (right < width && bottom > top) context.fillRect(right, top, width - right, bottom - top);
+  context.restore();
+}
+
+function imageEditAspectPositionOffset(available, position) {
+  return Math.round((available / 2) + (Math.abs(available) / 2) * (position / 100));
+}
+
+function buildImageEditAspectResult(source, controls, output) {
+  return {
+    dataUrl: output.dataUrl,
+    name: transparentPngName(source.name, "aspect"),
+    sourceName: source.name || "",
+    provider: "aspect",
+    providerLabel: imageEditAspectProviderLabel(controls),
+    width: output.width,
+    height: output.height,
+    aspectRatio: output.aspectRatio,
+    aspectRatioText: output.aspectRatioText,
+    settings: output.settings || {},
+    createdAt: new Date().toISOString()
+  };
+}
+
+function imageEditAspectResultMetaText(result) {
+  if (!result) return "";
+  const size = result.width ? ` / ${result.width}x${result.height}` : "";
+  return `${result.name || ""}${size} / ${result.providerLabel || ""}`;
+}
+
+async function convertImageAspectRatio(dataUrl, controls) {
+  const image = await imageFromDataUrl(dataUrl);
+  const sourceWidth = image.naturalWidth || image.width;
+  const sourceHeight = image.naturalHeight || image.height;
+  if (!sourceWidth || !sourceHeight) throw new Error("画像サイズを取得できませんでした。");
+  const ratioParts = imageEditAspectRatioParts(controls);
+  const targetRatio = ratioParts.width / ratioParts.height;
+  if (!Number.isFinite(targetRatio) || targetRatio <= 0) throw new Error("変換後の比率が正しくありません。");
+
+  const sourceRatio = sourceWidth / sourceHeight;
+  let outputWidth = sourceWidth;
+  let outputHeight = sourceHeight;
+  if (Math.abs(sourceRatio - targetRatio) > 0.0001) {
+    if (targetRatio > sourceRatio) {
+      outputWidth = Math.max(sourceWidth, Math.round(sourceHeight * targetRatio));
+    } else {
+      outputHeight = Math.max(sourceHeight, Math.round(sourceWidth / targetRatio));
+    }
+  }
+  if (outputWidth > 16000 || outputHeight > 16000 || outputWidth * outputHeight > 120000000) {
+    throw new Error("変換後の画像が大きすぎます。元画像を小さくしてから試してください。");
+  }
+
+  const scale = imageEditAspectScaleValue(controls.aspectScale);
+  const scaledWidth = Math.max(1, Math.round(sourceWidth * (scale / 100)));
+  const scaledHeight = Math.max(1, Math.round(sourceHeight * (scale / 100)));
+  const availableX = outputWidth - scaledWidth;
+  const availableY = outputHeight - scaledHeight;
+  const positionX = imageEditAspectPositionValue(controls.aspectPositionX);
+  const positionY = imageEditAspectPositionValue(controls.aspectPositionY);
+  const imageX = imageEditAspectPositionOffset(availableX, positionX);
+  const imageY = imageEditAspectPositionOffset(availableY, positionY);
+  const fill = normalizedImageEditAspectFill(controls.aspectFill);
+  const canvas = document.createElement("canvas");
+  canvas.width = outputWidth;
+  canvas.height = outputHeight;
+  const context = canvas.getContext("2d");
+  context.clearRect(0, 0, outputWidth, outputHeight);
+  context.drawImage(image, imageX, imageY, scaledWidth, scaledHeight);
+  fillImageEditAspectPadding(context, fill, outputWidth, outputHeight, imageX, imageY, scaledWidth, scaledHeight);
+  return {
+    dataUrl: canvas.toDataURL("image/png"),
+    width: outputWidth,
+    height: outputHeight,
+    aspectRatio: Number((outputWidth / outputHeight).toFixed(4)),
+    aspectRatioText: formatAspectRatio(outputWidth, outputHeight),
+    settings: {
+      targetRatio: imageEditAspectRatioLabel(controls),
+      fill,
+      positionX,
+      positionY,
+      scale,
+      sourceWidth,
+      sourceHeight,
+      imageWidth: scaledWidth,
+      imageHeight: scaledHeight
+    }
+  };
+}
+
+function currentImageEditProviderFromDom() {
+  return normalizedImageEditProvider(document.querySelector("#image-edit-provider")?.value || state.imageEditProvider);
+}
+
+function setImageEditAspectSaveEnabled(enabled) {
+  const saveButton = document.querySelector("[data-action='save-image-edit-result']");
+  if (saveButton) saveButton.disabled = !enabled;
+}
+
+function setImageEditAspectPreviewPending(message = "", { clearPreview = false } = {}) {
+  state.imageEditResult = null;
+  setImageEditAspectSaveEnabled(false);
+  const status = document.querySelector("#image-edit-aspect-preview-status");
+  const image = document.querySelector("#image-edit-aspect-preview");
+  const meta = document.querySelector("#image-edit-aspect-preview-meta");
+  if (status) {
+    status.textContent = message || "";
+    status.hidden = !message;
+  }
+  if (image && clearPreview) {
+    image.removeAttribute("src");
+    image.hidden = true;
+  }
+  if (meta && clearPreview) meta.textContent = "";
+}
+
+function updateImageEditAspectPreviewDom(result) {
+  const status = document.querySelector("#image-edit-aspect-preview-status");
+  const image = document.querySelector("#image-edit-aspect-preview");
+  const meta = document.querySelector("#image-edit-aspect-preview-meta");
+  if (status) status.hidden = true;
+  if (image) {
+    image.src = result.dataUrl;
+    image.hidden = false;
+  }
+  if (meta) meta.textContent = imageEditAspectResultMetaText(result);
+  setImageEditAspectSaveEnabled(Boolean(result?.dataUrl));
+}
+
+async function refreshImageEditAspectPreview(token) {
+  if (!isImageEditorView() || currentImageEditProviderFromDom() !== "aspect" || state.imageEditIsRunning) return;
+  const source = selectedImageEditSource();
+  if (!source) {
+    setImageEditAspectPreviewPending("画像を選択してください。", { clearPreview: true });
+    return;
+  }
+  const controls = imageEditControlsFromDom();
+  rememberImageEditControls(controls);
+  setImageEditAspectPreviewPending();
+  try {
+    const dataUrl = await cachedSourceDataUrlForImageEdit(source);
+    const output = await convertImageAspectRatio(dataUrl, controls);
+    if (token !== imageEditAspectPreviewToken || !isImageEditorView() || currentImageEditProviderFromDom() !== "aspect") return;
+    const result = buildImageEditAspectResult(source, controls, output);
+    state.imageEditResult = result;
+    updateImageEditAspectPreviewDom(result);
+  } catch (error) {
+    if (token !== imageEditAspectPreviewToken) return;
+    setImageEditAspectPreviewPending(error.message || "プレビューを作成できませんでした。", { clearPreview: true });
+  }
+}
+
+function scheduleImageEditAspectPreview({ immediate = false } = {}) {
+  if (imageEditAspectPreviewTimer) clearTimeout(imageEditAspectPreviewTimer);
+  const token = ++imageEditAspectPreviewToken;
+  imageEditAspectPreviewTimer = setTimeout(() => refreshImageEditAspectPreview(token), immediate ? 0 : 120);
+}
+
 async function runImageEdit() {
   const controls = imageEditControlsFromDom();
   rememberImageEditControls(controls);
@@ -5234,13 +5643,16 @@ async function runImageEdit() {
         erodeSize: controls.backgroundRemoverErodeSize
       });
       providerLabel = `backgroundremover / ${output.model || controls.backgroundRemoverModel}`;
+    } else if (controls.provider === "aspect") {
+      output = await convertImageAspectRatio(dataUrl, controls);
+      providerLabel = imageEditAspectProviderLabel(controls);
     } else {
       output = await removeBackgroundLocally(dataUrl, controls);
     }
     const info = await getImageInfo(output.dataUrl);
-    state.imageEditResult = {
+    state.imageEditResult = controls.provider === "aspect" ? buildImageEditAspectResult(source, controls, output) : {
       dataUrl: output.dataUrl,
-      name: transparentPngName(source.name, controls.provider === "removebg" ? "removebg" : controls.provider === "rembg" ? "rembg" : controls.provider === "backgroundremover" ? "backgroundremover" : "transparent"),
+      name: transparentPngName(source.name, controls.provider === "removebg" ? "removebg" : controls.provider === "rembg" ? "rembg" : controls.provider === "backgroundremover" ? "backgroundremover" : controls.provider === "aspect" ? "aspect" : "transparent"),
       sourceName: source.name || "",
       provider: controls.provider,
       providerLabel,
@@ -5250,7 +5662,7 @@ async function runImageEdit() {
       aspectRatioText: info.aspectRatioText,
       createdAt: new Date().toISOString()
     };
-    toast("透過PNGを作成しました。");
+    toast(controls.provider === "aspect" ? "アスペクト比を変換しました。" : "透過PNGを作成しました。");
   } catch (error) {
     toast(error.message);
   } finally {
@@ -5549,7 +5961,11 @@ async function runVideoGifConversion() {
   }
 }
 
-function bindImageEditor() {
+function isImageEditorView() {
+  return state.view === "edit" || state.view === "edit-aspect";
+}
+
+function bindImageEditor({ forcedProvider = "" } = {}) {
   const persist = () => rememberImageEditControls();
   document.querySelector("#image-edit-work")?.addEventListener("change", (event) => {
     state.imageEditWorkId = event.target.value || null;
@@ -5576,19 +5992,30 @@ function bindImageEditor() {
     state.imageEditResult = null;
     render();
   });
-  document.querySelector("#image-edit-provider")?.addEventListener("change", () => {
+  const handleProviderChange = () => {
     persist();
     if (state.imageEditProvider === "rembg" && state.rembgStatus === "idle") {
       checkRembgStatus({ silent: true }).then(() => {
-        if (state.view === "edit") render();
+        if (isImageEditorView()) render();
       });
     }
     if (state.imageEditProvider === "backgroundremover" && state.backgroundRemoverStatus === "idle") {
       checkBackgroundRemoverStatus({ silent: true }).then(() => {
-        if (state.view === "edit") render();
+        if (isImageEditorView()) render();
       });
     }
     render();
+  };
+  document.querySelector("#image-edit-provider")?.addEventListener("change", handleProviderChange);
+  document.querySelectorAll("[data-action='set-image-edit-provider']").forEach((button) => {
+    button.addEventListener("click", () => {
+      const nextProvider = normalizedImageEditProvider(button.dataset.provider);
+      const input = document.querySelector("#image-edit-provider");
+      if (input) input.value = nextProvider;
+      state.imageEditProvider = nextProvider;
+      state.imageEditResult = null;
+      handleProviderChange();
+    });
   });
   ["#image-edit-rembg-model", "#image-edit-rembg-alpha-matting", "#image-edit-rembg-post-process"].forEach((selector) => {
     document.querySelector(selector)?.addEventListener("change", persist);
@@ -5607,6 +6034,59 @@ function bindImageEditor() {
       if (selector === "#image-edit-background-mode") render();
     });
   });
+  const scheduleAspectPreview = () => {
+    persist();
+    if (currentImageEditProviderFromDom() === "aspect") scheduleImageEditAspectPreview();
+  };
+  ["#image-edit-aspect-fill", "#image-edit-aspect-custom-width", "#image-edit-aspect-custom-height"].forEach((selector) => {
+    document.querySelector(selector)?.addEventListener("input", scheduleAspectPreview);
+    document.querySelector(selector)?.addEventListener("change", scheduleAspectPreview);
+  });
+  const aspectNumberControls = [
+    { id: "image-edit-aspect-position-x", normalize: imageEditAspectPositionValue },
+    { id: "image-edit-aspect-position-y", normalize: imageEditAspectPositionValue },
+    { id: "image-edit-aspect-scale", normalize: imageEditAspectScaleValue }
+  ];
+  const setAspectNumberControl = (id, value, normalize) => {
+    const normalized = normalize(value);
+    const range = document.querySelector(`#${id}`);
+    const number = document.querySelector(`#${id}-number`);
+    if (range) range.value = String(normalized);
+    if (number) number.value = String(normalized);
+    scheduleAspectPreview();
+  };
+  aspectNumberControls.forEach(({ id, normalize }) => {
+    const range = document.querySelector(`#${id}`);
+    const number = document.querySelector(`#${id}-number`);
+    range?.addEventListener("input", () => setAspectNumberControl(id, range.value, normalize));
+    range?.addEventListener("change", () => setAspectNumberControl(id, range.value, normalize));
+    number?.addEventListener("input", () => setAspectNumberControl(id, number.value, normalize));
+    number?.addEventListener("change", () => setAspectNumberControl(id, number.value, normalize));
+  });
+  document.querySelectorAll("[data-action='step-image-edit-aspect']").forEach((button) => {
+    button.addEventListener("click", () => {
+      const target = button.dataset.target || "";
+      const config = aspectNumberControls.find((item) => item.id === target);
+      if (!config) return;
+      const number = document.querySelector(`#${target}-number`);
+      const range = document.querySelector(`#${target}`);
+      const current = Number(number?.value || range?.value || 0);
+      const step = Number(button.dataset.step || 1);
+      setAspectNumberControl(target, current + step, config.normalize);
+    });
+  });
+  document.querySelector("#image-edit-aspect-ratio")?.addEventListener("change", () => {
+    persist();
+    render();
+  });
+  document.querySelector("[data-action='reset-image-edit-aspect-position']")?.addEventListener("click", () => {
+    setAspectNumberControl("image-edit-aspect-position-x", 0, imageEditAspectPositionValue);
+    setAspectNumberControl("image-edit-aspect-position-y", 0, imageEditAspectPositionValue);
+  });
+  document.querySelector("[data-action='reset-image-edit-aspect-scale']")?.addEventListener("click", () => {
+    setAspectNumberControl("image-edit-aspect-scale", 100, imageEditAspectScaleValue);
+  });
+  if (currentImageEditProviderFromDom() === "aspect") scheduleImageEditAspectPreview({ immediate: true });
   document.querySelector("#image-edit-manual-tool")?.addEventListener("change", () => {
     persist();
     manualImageEditor.lassoPoints = [];
@@ -5695,7 +6175,7 @@ function bindImageEditor() {
     state.backgroundRemoverVideoResult = null;
     if (state.backgroundRemoverStatus === "idle") {
       checkBackgroundRemoverStatus({ silent: true }).then(() => {
-        if (state.view === "edit") render();
+        if (isImageEditorView()) render();
       });
     }
     render();
@@ -5706,7 +6186,7 @@ function bindImageEditor() {
     render();
   });
   document.querySelector("[data-action='run-backgroundremover-video']")?.addEventListener("click", runBackgroundRemoverVideo);
-  if (normalizedImageEditProvider(state.imageEditProvider) === "manual") {
+  if (normalizedImageEditProvider(forcedProvider || state.imageEditProvider) === "manual") {
     requestAnimationFrame(() => {
       ensureManualImageEditor().catch((error) => toast(error.message));
     });
@@ -9569,6 +10049,7 @@ function bindView() {
   if (state.view === "gallery") bindGallery();
   if (state.view === "image") bindImageAgent();
   if (state.view === "edit") bindImageEditor();
+  if (state.view === "edit-aspect") bindImageEditor({ forcedProvider: "aspect" });
   if (state.view === "edit-gif") bindVideoGifConverter();
   if (state.view === "audio") bindAudioAgent();
   if (state.view === "video") bindVideoAgent();

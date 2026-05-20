@@ -54,6 +54,10 @@ button:disabled {
   opacity: 0.48;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 .ghost {
   background: transparent;
   color: var(--ink);
@@ -1448,6 +1452,60 @@ textarea {
   gap: 8px;
 }
 
+.image-edit-provider-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.image-edit-provider-buttons {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 8px;
+}
+
+.image-edit-provider-button {
+  justify-content: center;
+  min-width: 0;
+  white-space: normal;
+  line-height: 1.2;
+  min-height: 44px;
+}
+
+.image-edit-range-number {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.number-stepper {
+  display: grid;
+  grid-template-columns: 34px minmax(72px, 92px) auto 34px;
+  align-items: center;
+  gap: 6px;
+}
+
+.number-stepper input[type="number"] {
+  min-height: 34px;
+  padding: 6px 8px;
+  text-align: right;
+}
+
+.stepper-button {
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.stepper-unit {
+  min-width: 16px;
+  color: #6a665d;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .transparent-preview {
   width: 100%;
   max-height: 520px;
@@ -1899,6 +1957,7 @@ textarea {
   .comfy-reference-row,
   .image-compare-controls,
   .image-edit-preview-grid,
+  .image-edit-range-number,
   .backgroundremover-video-grid,
   .video-gif-grid,
   .comfy-lora-row,

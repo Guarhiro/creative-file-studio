@@ -863,15 +863,17 @@ async function pruneEmptyUploadDirs(startDir) {
   }
 }
 
-async function serveFile(req, res, filePath) {
+async function serveFile(req, res, filePath, options = {}) {
   try {
     const stat = await fs.stat(filePath);
     if (!stat.isFile()) return false;
     const ext = path.extname(filePath).toLowerCase();
-    res.writeHead(200, {
+    const headers = {
       "content-type": mimeTypes[ext] || "application/octet-stream",
       "content-length": stat.size
-    });
+    };
+    if (options.cacheControl) headers["cache-control"] = options.cacheControl;
+    res.writeHead(200, headers);
     if (req.method === "HEAD") {
       res.end();
       return true;
@@ -3808,7 +3810,7 @@ const server = http.createServer(async (req, res) => {
       const safePath = normalizePublicPath(url.pathname);
       const filePath = path.join(publicDir, safePath);
       if (!filePath.startsWith(publicDir)) return sendText(res, 403, "Forbidden");
-      const served = await serveFile(req, res, filePath);
+      const served = await serveFile(req, res, filePath, { cacheControl: "no-store" });
       if (!served) return sendText(res, 404, "Not found");
       return;
     }
