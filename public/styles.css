@@ -171,6 +171,19 @@ button:disabled {
   font-size: 13px;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.help-button {
+  border-color: rgba(31, 138, 132, 0.38);
+  color: #11655f;
+  font-weight: 800;
+}
+
 .content {
   padding: 24px 28px 34px;
 }
@@ -601,6 +614,59 @@ textarea {
 .modal-footer {
   border-top: 1px solid var(--line);
   border-bottom: 0;
+}
+
+.help-content {
+  display: grid;
+  gap: 16px;
+}
+
+.help-lead {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.help-section-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.help-section {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 14px;
+}
+
+.help-section h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+
+.help-def-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.help-def-list div {
+  display: grid;
+  gap: 3px;
+}
+
+.help-def-list dt {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--coal);
+}
+
+.help-def-list dd {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .drop-zone {
@@ -1718,6 +1784,18 @@ textarea {
   .content {
     padding-left: 16px;
     padding-right: 16px;
+  }
+
+  .topbar {
+    align-items: flex-start;
+  }
+
+  .topbar-actions {
+    gap: 6px;
+  }
+
+  .help-section-grid {
+    grid-template-columns: 1fr;
   }
 
   .layout,

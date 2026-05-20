@@ -139,6 +139,297 @@ const navItems = [
   ["settings", "設定"]
 ];
 
+const screenHelpContent = {
+  studio: {
+    title: "作品とキャラのヘルプ",
+    lead: "作品を起点に、キャラ、作品情報 / 世界観設定、背景や小物などのその他情報を整理する画面です。",
+    sections: [
+      {
+        title: "使い方",
+        items: [
+          { term: "作品を追加", description: "作品ごとの保存先、キャラ、画像、音声、世界観設定をまとめる単位を作ります。" },
+          { term: "作品を選択", description: "左の作品一覧を押すと、その作品に紐づくキャラと設定が右側に表示されます。" },
+          { term: "キャラ追加", description: "名前、立ち絵、ベースプロンプト、ネガティブプロンプト、メモを登録します。" },
+          { term: "その他追加", description: "背景、小物、生物など、キャラ以外の参照素材や生成用の設定を登録します。" }
+        ]
+      },
+      {
+        title: "項目の意味",
+        items: [
+          { term: "作品情報 / 世界観設定", description: "画像シート、Markdown、テキストをAIで読解して、作品の雰囲気、素材、色、ルールを保存します。" },
+          { term: "保存済み設定シート", description: "読解した資料の履歴です。表示、編集、再構造化、削除ができます。" },
+          { term: "ベースプロンプト", description: "キャラやその他情報の固定要素です。Prompt Labや生成案の土台になります。" },
+          { term: "ネガティブプロンプト", description: "崩れ、不要要素、避けたい表現などをまとめます。" },
+          { term: "自然言語 / タグ", description: "プロンプトを文章寄りにするか、カンマ区切りのタグ寄りにするかの形式です。" }
+        ]
+      }
+    ]
+  },
+  import: {
+    title: "画像取込のヘルプ",
+    lead: "複数画像を作品・キャラ・その他情報へ取り込み、必要に応じてAIで自動判別する画面です。",
+    sections: [
+      {
+        title: "使い方",
+        items: [
+          { term: "画像を選択", description: "PNG、JPEG、WebP、GIFをまとめて選択、またはドラッグして追加します。" },
+          { term: "取り込む", description: "選択中の画像をdata/uploads配下へ保存し、画像整理画面に登録します。" },
+          { term: "AI判別ON", description: "取り込み後にキャラ候補へ自動判別し、進行状況は画像整理画面に表示されます。" },
+          { term: "手動指定", description: "取り込み先キャラまたはその他情報を選ぶと、AI判別を挟まず直接そこへ保存します。" }
+        ]
+      },
+      {
+        title: "項目の意味",
+        items: [
+          { term: "作品フォルダ", description: "保存先の作品です。指定するとAI判別の候補もその作品内に絞られます。" },
+          { term: "取り込み先キャラ", description: "画像を特定キャラの画像として直接保存します。" },
+          { term: "取り込み先その他情報", description: "背景、小物、生物など、キャラ以外の情報として直接保存します。" },
+          { term: "未割当時の分析形式", description: "AIが抽出する生成プロンプトを自然言語またはタグ形式にします。" },
+          { term: "取り込み元ファイル", description: "取り込み後に元ファイルを残すか、条件が合う場合にゴミ箱へ移動するかを選びます。" },
+          { term: "取り込み元フォルダ", description: "ブラウザが元パスを渡せない場合に、同名・同サイズ・同内容の元ファイルを探す範囲です。" }
+        ]
+      }
+    ]
+  },
+  gallery: {
+    title: "画像一覧のヘルプ",
+    lead: "保存済み画像を作品や割当先ごとに閲覧し、Finder表示、詳細確認、完全削除を行う画面です。",
+    sections: [
+      {
+        title: "使い方",
+        items: [
+          { term: "表示条件", description: "作品と割当先で表示する画像を絞り込みます。" },
+          { term: "画面内を全選択", description: "現在表示されている画像だけをまとめて選択します。" },
+          { term: "選択を完全削除", description: "選択した登録と、他から参照されていない画像ファイル本体を削除します。" },
+          { term: "詳細", description: "AI抽出プロンプト、判別形式、理由などを確認・編集できます。" }
+        ]
+      },
+      {
+        title: "項目の意味",
+        items: [
+          { term: "全作品 / 作品指定", description: "すべての作品を見るか、1作品だけを見るかを切り替えます。" },
+          { term: "割当先", description: "キャラ、その他情報、未割当など、画像の紐づき先です。" },
+          { term: "Finder", description: "保存済み画像の場所をFinderで開きます。" },
+          { term: "完全削除", description: "履歴だけでなく、参照が残らない画像ファイル本体も削除対象にします。" }
+        ]
+      }
+    ]
+  },
+  image: {
+    title: "画像生成のヘルプ",
+    lead: "ComfyUIへ生成指示を送り、生成画像を作品フォルダと画像一覧へ保存する画面です。",
+    sections: [
+      {
+        title: "使い方",
+        items: [
+          { term: "エージェント", description: "作りたい構図や雰囲気を会話で伝え、Comfy送信用プロンプトの案を作ります。" },
+          { term: "Comfy送信用プロンプト", description: "手動編集できます。生成開始時にComfyUIのworkflowへ差し込まれます。" },
+          { term: "参照画像", description: "LoadImage系NodeのIDと入力名を指定し、選択した画像でworkflowの画像入力を差し替えます。" },
+          { term: "生成履歴", description: "進行中ステータス、完成画像、保存先、再利用用のプロンプトを確認できます。" }
+        ]
+      },
+      {
+        title: "設定値の意味",
+        items: [
+          { term: "GPU", description: "ローカルGPUまたはクラウドGPUのComfyUI URLを選びます。URLは設定画面で管理します。" },
+          { term: "幅 / 高さ", description: "生成画像のピクセルサイズです。大きいほど重くなります。" },
+          { term: "Steps", description: "生成の反復回数です。増やすと時間がかかりますが、細部が安定しやすくなります。" },
+          { term: "CFG", description: "プロンプトにどれだけ強く従うかの値です。高すぎると硬い絵になりやすいです。" },
+          { term: "Sampler / Scheduler", description: "ComfyUI側の生成方式です。workflowとモデルに合う名前を指定します。" },
+          { term: "Batch", description: "一度に生成する枚数です。" },
+          { term: "Seed", description: "同じ条件で再現したい時の乱数です。空欄ならランダムになります。" },
+          { term: "Checkpoint / LoRA", description: "使うモデルと追加学習モデルです。モデル一覧取得後は候補から選べます。" },
+          { term: "生成比較モード", description: "枚数や比較軸を指定して、複数パターンを並べて試します。" }
+        ]
+      }
+    ]
+  },
+  edit: {
+    title: "画像編集のヘルプ",
+    lead: "画像や動画/GIFの背景除去、透過PNG作成、処理結果の保存を行う画面です。",
+    sections: [
+      {
+        title: "使い方",
+        items: [
+          { term: "編集元", description: "作品内の保存済み画像、または追加した画像ファイルから処理対象を選びます。" },
+          { term: "透過PNGを作成", description: "選択した処理方式で背景を抜いたPNGを作ります。" },
+          { term: "画像一覧へ保存", description: "処理後のPNGを作品の画像一覧へ登録します。" },
+          { term: "動画/GIFを選択", description: "動画背景除去で処理する元ファイルを追加します。" },
+          { term: "動画背景除去を開始", description: "選択した動画またはGIFをbackgroundremoverで処理し、結果を動画生成の参照素材にも登録します。" }
+        ]
+      },
+      {
+        title: "設定値の意味",
+        items: [
+          { term: "作品", description: "編集結果を保存する作品です。保存先フォルダと画像一覧への登録先になります。" },
+          { term: "保存時のキャラ", description: "処理後の画像を画像一覧へ保存する時に紐づけるキャラです。指定なしでも保存できます。" },
+          { term: "対象画像", description: "背景除去に使う元画像です。保存済み画像または追加画像から選びます。" },
+          { term: "処理", description: "背景除去に使う方式です。軽い確認、ローカルAI、クラウドAPIを用途に応じて切り替えます。" },
+          { term: "簡易ローカル", description: "ブラウザ内で背景色を推定して透過します。軽い確認向きです。" },
+          { term: "ローカルAI rembg", description: "rembgを使う高精度な背景除去です。初回セットアップが必要です。" },
+          { term: "ローカルAI backgroundremover", description: "静止画に加えて動画/GIF背景除去にも使うローカル処理です。" },
+          { term: "クラウド remove.bg", description: "remove.bg APIキーを使ってクラウドで背景除去します。" },
+          { term: "remove.bg APIキー", description: "クラウド remove.bg を使う時に必要なAPIキーです。ブラウザ内に保存されます。" },
+          { term: "rembgモデル", description: "rembgで使う切り抜きモデルです。汎用、アニメ向け、人物向けなどから選びます。" },
+          { term: "backgroundremoverモデル", description: "backgroundremoverで使うモデルです。U2-Netは汎用、U2-Net Pは軽量、U2-Net Humanは人物向けです。" },
+          { term: "マスク後処理", description: "rembgで作ったマスクの穴やノイズを整える補助処理です。" },
+          { term: "背景", description: "簡易ローカル処理で抜く色の決め方です。自動、白、黒、指定色から選びます。" },
+          { term: "指定色", description: "背景を指定色で抜く時の色です。背景が単色に近い画像で使います。" },
+          { term: "許容値", description: "背景色として扱う色の幅です。0-160で、高いほど広く抜けます。" },
+          { term: "境界ぼかし", description: "切り抜き境界をなじませる量です。0-80で、上げるほど境界がやわらかくなります。" },
+          { term: "Alpha matting", description: "髪や半透明部分などの境界を補正する処理です。" },
+          { term: "エッジ調整", description: "backgroundremoverのAlpha matting時に、境界をどれだけ内側へ削るかの値です。1-25で指定します。" },
+          { term: "モデル（動画背景除去）", description: "動画/GIF処理で使うbackgroundremoverモデルです。静止画側のbackgroundremoverモデルと同じ候補です。" },
+          { term: "出力", description: "透過GIF、透過MOV、マット動画MP4から選びます。透過が必要ならGIFまたはMOV、白黒マスク確認ならマット動画を使います。" },
+          { term: "FPS", description: "動画処理で扱う1秒あたりのフレーム数です。1-60で、高いほど滑らかですが処理時間と出力サイズが増えます。" },
+          { term: "フレーム上限", description: "-1で全体処理、1-20000で処理する最大フレーム数です。長い動画は少ない値で試すと安全です。" },
+          { term: "GPU batch", description: "一度にまとめて処理するフレーム数です。1-8で、大きいほど高速化しやすい一方、GPU/メモリ使用量が増えます。" },
+          { term: "Workers", description: "動画処理の並列ワーカー数です。1-4で、多いほど速くなる場合がありますが、CPU負荷とメモリ使用量も増えます。" }
+        ]
+      }
+    ]
+  },
+  audio: {
+    title: "音声生成のヘルプ",
+    lead: "台詞やナレーションを、OpenRouter TTS、ElevenLabs、Voicebox、Irodori-TTSで生成する画面です。",
+    sections: [
+      {
+        title: "使い方",
+        items: [
+          { term: "作品 / キャラ指定", description: "生成音声の保存先と、キャラへの紐づけを選びます。" },
+          { term: "エージェント", description: "声の雰囲気や台詞の意図を伝え、読み上げテキスト案を作ります。" },
+          { term: "読み上げテキスト", description: "実際に音声化する本文です。手動編集できます。" },
+          { term: "生成履歴", description: "生成済み音声の再生、保存先、キャラ紐づけを確認できます。" }
+        ]
+      },
+      {
+        title: "設定値の意味",
+        items: [
+          { term: "生成方式", description: "使う音声プロバイダーです。必要なAPIキーやローカル連携は設定画面で管理します。" },
+          { term: "モデル", description: "OpenRouter TTSまたはElevenLabsで使う音声生成モデルです。" },
+          { term: "ボイス / Voice ID / プロファイル", description: "声の種類です。プロバイダーごとに指定方法が異なります。" },
+          { term: "出力形式", description: "mp3、wavなど、保存される音声ファイルの形式です。" },
+          { term: "演技指示", description: "声色、感情、間、距離感など、読み方に関する指示です。" },
+          { term: "Stability / Similarity / Style / Speed", description: "ElevenLabsの安定度、声の近さ、表現量、速度です。" },
+          { term: "Steps / Candidates / Seed", description: "Irodori-TTSの生成回数、候補数、再現用の乱数です。" }
+        ]
+      }
+    ]
+  },
+  video: {
+    title: "動画生成のヘルプ",
+    lead: "選択した動画モデルへ指示を送り、参照素材つきの動画生成と履歴管理を行う画面です。",
+    sections: [
+      {
+        title: "使い方",
+        items: [
+          { term: "生成設定", description: "作品、動画モデル、秒数、比率、解像度、音声有無などを選びます。" },
+          { term: "参照素材", description: "画像、動画、音声を追加・選択し、モデルが対応する範囲で生成に使います。" },
+          { term: "エージェント", description: "構成、タイムライン、カメラ、エフェクトなどを会話で整理し、API送信用プロンプト案を作ります。" },
+          { term: "生成履歴", description: "送信後のステータス、進行率、保存動画、エラー、最終フレーム保存を確認します。" }
+        ]
+      },
+      {
+        title: "設定値の意味",
+        items: [
+          { term: "今月の動画コスト", description: "履歴と現在の単価から概算した当月コストです。取得できない単価は未計上になることがあります。" },
+          { term: "モード", description: "テキスト生成、参照画像/動画付き生成など、モデルが対応する入力形式です。" },
+          { term: "秒数", description: "出力動画の長さです。モデルごとに選べる値が異なります。" },
+          { term: "アスペクト比", description: "16:9、9:16など画面比率です。" },
+          { term: "解像度", description: "720pなど出力サイズの目安です。高いほど時間とコストが増えやすくなります。" },
+          { term: "音声", description: "対応モデルで動画内音声も生成するかを選びます。" },
+          { term: "カメラ固定", description: "カメラ移動を抑えたい時にONにします。" },
+          { term: "透かし", description: "対応プロバイダーでウォーターマークを付けるかを選びます。" },
+          { term: "最終フレーム返却", description: "完了後に最後のフレームを保存し、参照素材として再利用しやすくします。" },
+          { term: "Seed", description: "-1はランダムです。同じ値を入れると近い条件の再現に使えます。" }
+        ]
+      }
+    ]
+  },
+  library: {
+    title: "画像整理のヘルプ",
+    lead: "取り込んだ画像の判別状態、割当先、AI抽出プロンプトを確認・修正する画面です。",
+    sections: [
+      {
+        title: "使い方",
+        items: [
+          { term: "絞り込み", description: "作品、判別状態、割当先、並び順で表示する画像を絞ります。" },
+          { term: "割当先変更", description: "画像カード内のセレクトでキャラ、その他情報、未割当を手動変更できます。" },
+          { term: "AIキャラ判定", description: "選択した画像だけをAIへ送り、候補キャラとプロンプトを抽出します。" },
+          { term: "このページをAI判別", description: "現在のページに表示されている画像をまとめて判別します。" },
+          { term: "履歴削除", description: "画像一覧の登録を消します。別用途から参照されている画像ファイル本体は残します。" }
+        ]
+      },
+      {
+        title: "項目の意味",
+        items: [
+          { term: "判別済み", description: "AIまたは手動でキャラ/その他情報に割り当てられた状態です。" },
+          { term: "AI判別中", description: "送信準備、API返答待ち、保存中など、判別処理が進行中の状態です。" },
+          { term: "未設定", description: "まだ割当先が決まっていない状態です。" },
+          { term: "判別失敗", description: "APIエラーや候補不足などで自動判別できなかった状態です。" },
+          { term: "confidence", description: "AIが候補にどれくらい自信を持ったかの目安です。" },
+          { term: "1ページの表示数", description: "大量画像で画面が重くならないよう、ページあたりのカード数を調整します。" }
+        ]
+      }
+    ]
+  },
+  prompt: {
+    title: "Prompt Labのヘルプ",
+    lead: "キャラの固定要素と作品情報 / 世界観設定を使い、差分ごとの生成プロンプトをまとめて作る画面です。",
+    sections: [
+      {
+        title: "使い方",
+        items: [
+          { term: "作品 / キャラ", description: "生成プロンプトの対象キャラを選びます。" },
+          { term: "差分・イベント指定", description: "表情差分、衣装差分、シーン案などを1行ずつ入力します。" },
+          { term: "補足", description: "絵柄、構図、NG要素、衣装統一など、全案に反映したい条件を書きます。" },
+          { term: "一括生成", description: "入力した差分ごとにプロンプトとネガティブプロンプトを生成します。" },
+          { term: "全コピー / コピー", description: "生成結果をまとめて、または1件ずつクリップボードへコピーします。" }
+        ]
+      },
+      {
+        title: "項目の意味",
+        items: [
+          { term: "キャラメモを加味", description: "ONにするとキャラのメモも参照します。固定要素が強すぎる時はOFFで軽くできます。" },
+          { term: "作品情報 / 世界観設定", description: "素材、配色、背景、小物、社会的役割、光や気候などを自然に反映する文脈です。" },
+          { term: "ベースプロンプト", description: "キャラの同一性を守るための土台です。" },
+          { term: "Negative", description: "避けたい要素や品質低下を抑えるためのプロンプトです。" }
+        ]
+      }
+    ]
+  },
+  settings: {
+    title: "設定のヘルプ",
+    lead: "外部API、ローカル連携、ComfyUI workflow、動画生成プロバイダーの接続情報を管理する画面です。",
+    sections: [
+      {
+        title: "使い方",
+        items: [
+          { term: "設定を保存", description: "入力したAPIキー、モデル、URL、既定値を保存します。" },
+          { term: "接続テスト", description: "OpenRouterのキーとモデル接続を確認します。" },
+          { term: "モデル一覧を再取得", description: "OpenRouter、ComfyUI、ElevenLabsなどの候補を最新状態で読み込みます。" },
+          { term: "事前チェック", description: "ComfyUI workflowのNode IDや参照画像設定が生成時に使えるか確認します。" }
+        ]
+      },
+      {
+        title: "設定値の意味",
+        items: [
+          { term: "OpenRouter APIキー", description: "画像判別、テキスト生成、世界観読解、エージェント、OpenRouter TTSで使います。" },
+          { term: "画像判別モデル", description: "取り込み画像をキャラ候補へ分類するモデルです。" },
+          { term: "テキスト生成モデル", description: "Prompt Labなど、文章生成に使う既定モデルです。" },
+          { term: "世界観読み込みモデル", description: "設定シート画像や資料テキストを作品情報へ構造化するモデルです。" },
+          { term: "画像 / 動画 / 音声エージェントモデル", description: "各生成画面の会話型アシスタントがプロンプト案を作るためのモデルです。" },
+          { term: "ElevenLabs", description: "APIキー、Voice ID、モデル、出力形式、声質パラメータを管理します。" },
+          { term: "Voicebox", description: "ローカルVoicebox APIのURLと既定プロファイルを管理します。" },
+          { term: "Irodori-TTS連携", description: "ローカルIrodori-TTSの場所確認やセットアップを行います。" },
+          { term: "ComfyUI", description: "ローカル/クラウドURL、workflow JSON、差し替えるNode ID、既定生成値を管理します。" },
+          { term: "Seedance", description: "BytePlus、OpenRouter、Replicateなどの動画生成API接続と既定モデルを管理します。" }
+        ]
+      }
+    ]
+  }
+};
+
 const defaultOpenRouterTtsModel = "google/gemini-3.1-flash-tts-preview";
 const grokOpenRouterTtsModel = "x-ai/grok-voice-tts-1.0";
 
@@ -2947,7 +3238,10 @@ function render(options = {}) {
             <h1>${title}</h1>
             <p>${sub}</p>
           </div>
-          <button class="ghost" data-action="save-now">保存</button>
+          <div class="topbar-actions">
+            <button class="ghost" data-action="save-now">保存</button>
+            <button class="ghost icon-button help-button" data-action="open-help" aria-label="${escapeHtml(title)}のヘルプを表示" title="ヘルプ">?</button>
+          </div>
         </header>
         <section class="content">${renderView()}</section>
       </main>
@@ -2968,6 +3262,47 @@ function currentTitle() {
   if (state.view === "library") return ["画像整理", "取り込んだ画像を作品・キャラ・状態で確認します。"];
   if (state.view === "prompt") return ["Prompt Lab", "差分やシーン案から生成プロンプトをまとめて作ります。"];
   return ["設定", "OpenRouter の接続情報とモデルを設定します。"];
+}
+
+function currentHelpContent() {
+  return screenHelpContent[state.view] || screenHelpContent.settings;
+}
+
+function renderHelpContent(help) {
+  return `
+    <div class="help-content">
+      <p class="help-lead">${escapeHtml(help.lead || "")}</p>
+      <div class="help-section-grid">
+        ${(help.sections || []).map(renderHelpSection).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderHelpSection(section) {
+  return `
+    <section class="help-section">
+      <h3>${escapeHtml(section.title || "")}</h3>
+      <dl class="help-def-list">
+        ${(section.items || []).map((item) => `
+          <div>
+            <dt>${escapeHtml(item.term || "")}</dt>
+            <dd>${escapeHtml(item.description || "")}</dd>
+          </div>
+        `).join("")}
+      </dl>
+    </section>
+  `;
+}
+
+function openCurrentHelpModal() {
+  const help = currentHelpContent();
+  openModal(
+    help.title || "ヘルプ",
+    renderHelpContent(help),
+    `<span aria-hidden="true"></span><button class="accent" data-action="close-modal">閉じる</button>`,
+    () => {}
+  );
 }
 
 function renderView() {
@@ -8376,6 +8711,7 @@ function bindCommon() {
     await saveDb();
     toast("保存しました。");
   });
+  document.querySelector("[data-action='open-help']")?.addEventListener("click", openCurrentHelpModal);
 }
 
 function bindView() {
@@ -9874,7 +10210,7 @@ function bindSettings() {
   document.querySelector("[data-action='reload-openrouter-models']")?.addEventListener("click", () => loadOpenRouterModels({ force: true }));
 }
 
-function openModal(title, bodyHtml, footerHtml, onBind) {
+function openModal(title, bodyHtml, footerHtml, onBind = () => {}) {
   const fragment = modalTemplate.content.cloneNode(true);
   const backdrop = fragment.querySelector(".modal-backdrop");
   const modal = fragment.querySelector(".modal");
@@ -9888,7 +10224,9 @@ function openModal(title, bodyHtml, footerHtml, onBind) {
   `;
   document.body.append(backdrop);
   const close = () => backdrop.remove();
-  modal.querySelector("[data-action='close-modal']").addEventListener("click", close);
+  modal.querySelectorAll("[data-action='close-modal']").forEach((button) => {
+    button.addEventListener("click", close);
+  });
   onBind(modal, close);
 }
 
