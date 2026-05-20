@@ -45,12 +45,27 @@ const state = {
   imageEditRembgModel: "isnet-general-use",
   imageEditRembgAlphaMatting: false,
   imageEditRembgPostProcess: true,
+  imageEditBackgroundRemoverModel: "u2net",
+  imageEditBackgroundRemoverAlphaMatting: false,
+  imageEditBackgroundRemoverErodeSize: 10,
   imageEditInputFile: null,
   imageEditResult: null,
   imageEditIsRunning: false,
   rembgStatus: "idle",
   rembgInfo: null,
   rembgError: "",
+  backgroundRemoverStatus: "idle",
+  backgroundRemoverInfo: null,
+  backgroundRemoverError: "",
+  backgroundRemoverVideoFile: null,
+  backgroundRemoverVideoModel: "u2net",
+  backgroundRemoverVideoMode: "transparent-gif",
+  backgroundRemoverVideoFrameRate: 30,
+  backgroundRemoverVideoFrameLimit: -1,
+  backgroundRemoverVideoGpuBatchSize: 1,
+  backgroundRemoverVideoWorkerCount: 1,
+  backgroundRemoverVideoResult: null,
+  backgroundRemoverVideoIsRunning: false,
   videoWorkId: null,
   videoCharacterId: "",
   videoReferenceKind: "all",
@@ -137,7 +152,20 @@ const audioProviders = [
 const imageEditProviders = [
   ["local", "簡易ローカル"],
   ["rembg", "ローカルAI rembg"],
+  ["backgroundremover", "ローカルAI backgroundremover"],
   ["removebg", "クラウド remove.bg"]
+];
+
+const backgroundRemoverModelOptions = [
+  ["u2net", "U2-Net（汎用）"],
+  ["u2netp", "U2-Net P（軽量）"],
+  ["u2net_human_seg", "U2-Net Human（人物向け）"]
+];
+
+const backgroundRemoverVideoModeOptions = [
+  ["transparent-gif", "透過GIF"],
+  ["transparent-mov", "透過MOV"],
+  ["matte", "マット動画 MP4"]
 ];
 
 const rembgModelOptions = [
@@ -2496,6 +2524,9 @@ async function postJson(url, body, method = "POST") {
 	    if (url.startsWith("/api/rembg/") && /Method not allowed|Not found/i.test(text)) {
 	      throw new Error("rembg APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
 	    }
+	    if (url.startsWith("/api/backgroundremover/") && /Method not allowed|Not found/i.test(text)) {
+	      throw new Error("backgroundremover APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
+	    }
 	    const error = new Error(readableError(payload.error) || readableError(payload) || text || `${response.status} ${response.statusText}`);
 	    error.payload = payload;
 	    error.responseText = text;
@@ -3603,6 +3634,16 @@ function normalizedRembgModel(value) {
   return rembgModelOptions.some(([model]) => model === text) ? text : "isnet-general-use";
 }
 
+function normalizedBackgroundRemoverModel(value) {
+  const text = String(value || "").trim();
+  return backgroundRemoverModelOptions.some(([model]) => model === text) ? text : "u2net";
+}
+
+function normalizedBackgroundRemoverVideoMode(value) {
+  const text = String(value || "").trim();
+  return backgroundRemoverVideoModeOptions.some(([mode]) => mode === text) ? text : "transparent-gif";
+}
+
 function normalizedImageEditBackgroundMode(value) {
   return imageEditBackgroundModes.some(([mode]) => mode === value) ? value : "auto";
 }
@@ -3613,6 +3654,34 @@ function imageEditToleranceValue(value) {
 
 function imageEditFeatherValue(value) {
   return boundedSettingNumber(value, 18, 0, 80, true);
+}
+
+function backgroundRemoverErodeSizeValue(value) {
+  return boundedSettingNumber(value, 10, 1, 25, true);
+}
+
+function backgroundRemoverFrameRateValue(value) {
+  return boundedSettingNumber(value, 30, 1, 60, true);
+}
+
+function backgroundRemoverFrameLimitValue(value) {
+  return boundedSettingNumber(value, -1, -1, 20000, true);
+}
+
+function backgroundRemoverGpuBatchSizeValue(value) {
+  return boundedSettingNumber(value, 1, 1, 8, true);
+}
+
+function backgroundRemoverWorkerCountValue(value) {
+  return boundedSettingNumber(value, 1, 1, 4, true);
+}
+
+function formatBytes(value) {
+  const bytes = Number(value) || 0;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
 function transparentPngName(name = "image", suffix = "transparent") {
@@ -3723,6 +3792,35 @@ function renderRembgModelOptions(selectedValue) {
     .join("");
 }
 
+function backgroundRemoverStatusText() {
+  if (state.backgroundRemoverStatus === "loading") return "backgroundremoverの状態を確認中です。";
+  if (state.backgroundRemoverStatus === "installing") return "backgroundremoverをセットアップ中です。PyTorchを含むため初回は時間がかかります。";
+  if (state.backgroundRemoverInfo?.found) {
+    const ffmpegText = state.backgroundRemoverInfo.ffmpegFound ? "ffmpegあり" : "ffmpeg未検出";
+    return `backgroundremover使用可能: Python ${state.backgroundRemoverInfo.pythonVersion || ""} / ${ffmpegText}`;
+  }
+  return state.backgroundRemoverError || "backgroundremoverは未確認です。初回は状態確認またはセットアップを実行してください。動画処理にはffmpegが必要です。";
+}
+
+function renderBackgroundRemoverModelOptions(selectedValue) {
+  const selected = normalizedBackgroundRemoverModel(selectedValue);
+  return backgroundRemoverModelOptions
+    .map(([value, label]) => `<option value="${escapeHtml(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(label)}</option>`)
+    .join("");
+}
+
+function renderBackgroundRemoverVideoModeOptions(selectedValue) {
+  const selected = normalizedBackgroundRemoverVideoMode(selectedValue);
+  return backgroundRemoverVideoModeOptions
+    .map(([value, label]) => `<option value="${escapeHtml(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(label)}</option>`)
+    .join("");
+}
+
+function backgroundRemoverVideoModeLabel(value) {
+  const mode = normalizedBackgroundRemoverVideoMode(value);
+  return backgroundRemoverVideoModeOptions.find(([option]) => option === mode)?.[1] || "透過GIF";
+}
+
 function renderImageEditor() {
   const work = byId(state.db.works, state.imageEditWorkId) || byId(state.db.works, state.selectedWorkId) || state.db.works[0] || null;
   if (!state.imageEditWorkId && work) state.imageEditWorkId = work.id;
@@ -3738,7 +3836,9 @@ function renderImageEditor() {
   const mode = normalizedImageEditBackgroundMode(state.imageEditBackgroundMode);
   const result = state.imageEditResult;
   const isRembgBusy = state.rembgStatus === "loading" || state.rembgStatus === "installing";
+  const isBackgroundRemoverBusy = state.backgroundRemoverStatus === "loading" || state.backgroundRemoverStatus === "installing";
   return `
+    <div class="image-edit-stack">
     <div class="video-layout image-edit-layout">
       <section class="panel">
         <div class="panel-header"><h2>編集元</h2></div>
@@ -3785,6 +3885,22 @@ function renderImageEditor() {
               <button class="ghost" data-action="setup-rembg" ${isRembgBusy ? "disabled" : ""}>rembgをセットアップ</button>
             </div>
             <div class="full meta">${escapeHtml(rembgStatusText())}</div>
+          ` : provider === "backgroundremover" ? `
+            <label class="full">backgroundremoverモデル
+              <select id="image-edit-backgroundremover-model">${renderBackgroundRemoverModelOptions(state.imageEditBackgroundRemoverModel)}</select>
+            </label>
+            <label class="check-row">
+              <input id="image-edit-backgroundremover-alpha-matting" type="checkbox" ${state.imageEditBackgroundRemoverAlphaMatting ? "checked" : ""}>
+              <span>Alpha matting</span>
+            </label>
+            <label>エッジ調整
+              <input id="image-edit-backgroundremover-erode-size" type="number" min="1" max="25" value="${escapeHtml(state.imageEditBackgroundRemoverErodeSize)}" ${state.imageEditBackgroundRemoverAlphaMatting ? "" : "disabled"}>
+            </label>
+            <div class="full toolbar">
+              <button class="ghost" data-action="check-backgroundremover" ${isBackgroundRemoverBusy ? "disabled" : ""}>backgroundremover確認</button>
+              <button class="ghost" data-action="setup-backgroundremover" ${isBackgroundRemoverBusy ? "disabled" : ""}>backgroundremoverをセットアップ</button>
+            </div>
+            <div class="full meta">${escapeHtml(backgroundRemoverStatusText())}</div>
           ` : `
             <label>背景
               <select id="image-edit-background-mode">
@@ -3825,6 +3941,72 @@ function renderImageEditor() {
         </div>
       </section>
     </div>
+    ${renderBackgroundRemoverVideoPanel(work)}
+    </div>
+  `;
+}
+
+function renderBackgroundRemoverVideoPanel(work) {
+  const busy = state.backgroundRemoverVideoIsRunning;
+  const statusBusy = state.backgroundRemoverStatus === "loading" || state.backgroundRemoverStatus === "installing";
+  const file = state.backgroundRemoverVideoFile;
+  const result = state.backgroundRemoverVideoResult;
+  const isGifResult = result?.mimeType === "image/gif";
+  return `
+    <section class="panel backgroundremover-video-panel">
+      <div class="panel-header">
+        <div>
+          <h2>動画背景除去</h2>
+          <p>backgroundremoverで透過GIF、透過MOV、マット動画を作成します。</p>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="backgroundremover-video-grid">
+          <div class="form-grid">
+            <input id="backgroundremover-video-input" type="file" accept="video/*,.gif" hidden>
+            <div class="full toolbar">
+              <button class="ghost" data-action="choose-backgroundremover-video">動画/GIFを選択</button>
+              <button class="ghost" data-action="clear-backgroundremover-video" ${file ? "" : "disabled"}>選択を解除</button>
+            </div>
+            <div class="full meta">${file ? `${escapeHtml(file.name)} / ${escapeHtml(formatBytes(file.size || 0))}` : "動画またはGIFを選択してください。"}</div>
+            <label>モデル
+              <select id="backgroundremover-video-model">${renderBackgroundRemoverModelOptions(state.backgroundRemoverVideoModel)}</select>
+            </label>
+            <label>出力
+              <select id="backgroundremover-video-mode">${renderBackgroundRemoverVideoModeOptions(state.backgroundRemoverVideoMode)}</select>
+            </label>
+            <label>FPS
+              <input id="backgroundremover-video-frame-rate" type="number" min="1" max="60" value="${escapeHtml(state.backgroundRemoverVideoFrameRate)}">
+            </label>
+            <label>フレーム上限
+              <input id="backgroundremover-video-frame-limit" type="number" min="-1" max="20000" value="${escapeHtml(state.backgroundRemoverVideoFrameLimit)}">
+            </label>
+            <label>GPU batch
+              <input id="backgroundremover-video-gpu-batch-size" type="number" min="1" max="8" value="${escapeHtml(state.backgroundRemoverVideoGpuBatchSize)}">
+            </label>
+            <label>Workers
+              <input id="backgroundremover-video-worker-count" type="number" min="1" max="4" value="${escapeHtml(state.backgroundRemoverVideoWorkerCount)}">
+            </label>
+            <div class="full meta">フレーム上限は -1 で全体処理。まず短い動画や少ないフレームで試すと安全です。</div>
+            <div class="full toolbar">
+              <button class="ghost" data-action="check-backgroundremover" ${statusBusy ? "disabled" : ""}>backgroundremover確認</button>
+              <button class="ghost" data-action="setup-backgroundremover" ${statusBusy ? "disabled" : ""}>backgroundremoverをセットアップ</button>
+              <button class="accent" data-action="run-backgroundremover-video" ${busy || !file ? "disabled" : ""}>動画背景除去を開始</button>
+            </div>
+            <div class="full meta">${escapeHtml(backgroundRemoverStatusText())}</div>
+          </div>
+          <div class="backgroundremover-video-preview">
+            ${busy ? `<div class="empty compact">動画を処理中です。長い動画はかなり時間がかかります。</div>` : result ? `
+              <div class="meta">${escapeHtml(result.name || "")} / ${escapeHtml(backgroundRemoverVideoModeLabel(result.mode))} / ${escapeHtml(formatBytes(result.size || 0))}</div>
+              ${isGifResult
+                ? `<img class="transparent-preview" src="${escapeHtml(result.url)}" alt="">`
+                : `<video class="generated-video" controls src="${escapeHtml(result.url)}"></video>`}
+              <div class="meta">動画生成の参照素材にも登録済みです。</div>
+            ` : `<div class="empty compact">まだ動画処理結果がありません。</div>`}
+          </div>
+        </div>
+      </div>
+    </section>
   `;
 }
 
@@ -3841,6 +4023,9 @@ function imageEditControlsFromDom() {
     rembgModel: normalizedRembgModel(document.querySelector("#image-edit-rembg-model")?.value || state.imageEditRembgModel),
     rembgAlphaMatting: document.querySelector("#image-edit-rembg-alpha-matting")?.checked ?? state.imageEditRembgAlphaMatting,
     rembgPostProcess: document.querySelector("#image-edit-rembg-post-process")?.checked ?? state.imageEditRembgPostProcess,
+    backgroundRemoverModel: normalizedBackgroundRemoverModel(document.querySelector("#image-edit-backgroundremover-model")?.value || state.imageEditBackgroundRemoverModel),
+    backgroundRemoverAlphaMatting: document.querySelector("#image-edit-backgroundremover-alpha-matting")?.checked ?? state.imageEditBackgroundRemoverAlphaMatting,
+    backgroundRemoverErodeSize: backgroundRemoverErodeSizeValue(document.querySelector("#image-edit-backgroundremover-erode-size")?.value || state.imageEditBackgroundRemoverErodeSize),
     removeBgKey: document.querySelector("#image-edit-removebg-key")?.value.trim() || removeBgApiKey()
   };
 }
@@ -3857,7 +4042,30 @@ function rememberImageEditControls(controls = imageEditControlsFromDom()) {
   state.imageEditRembgModel = normalizedRembgModel(controls.rembgModel);
   state.imageEditRembgAlphaMatting = Boolean(controls.rembgAlphaMatting);
   state.imageEditRembgPostProcess = Boolean(controls.rembgPostProcess);
+  state.imageEditBackgroundRemoverModel = normalizedBackgroundRemoverModel(controls.backgroundRemoverModel);
+  state.imageEditBackgroundRemoverAlphaMatting = Boolean(controls.backgroundRemoverAlphaMatting);
+  state.imageEditBackgroundRemoverErodeSize = backgroundRemoverErodeSizeValue(controls.backgroundRemoverErodeSize);
   if (controls.removeBgKey) localStorage.setItem("removebg_api_key", controls.removeBgKey);
+}
+
+function backgroundRemoverVideoControlsFromDom() {
+  return {
+    model: normalizedBackgroundRemoverModel(document.querySelector("#backgroundremover-video-model")?.value || state.backgroundRemoverVideoModel),
+    mode: normalizedBackgroundRemoverVideoMode(document.querySelector("#backgroundremover-video-mode")?.value || state.backgroundRemoverVideoMode),
+    frameRate: backgroundRemoverFrameRateValue(document.querySelector("#backgroundremover-video-frame-rate")?.value || state.backgroundRemoverVideoFrameRate),
+    frameLimit: backgroundRemoverFrameLimitValue(document.querySelector("#backgroundremover-video-frame-limit")?.value ?? state.backgroundRemoverVideoFrameLimit),
+    gpuBatchSize: backgroundRemoverGpuBatchSizeValue(document.querySelector("#backgroundremover-video-gpu-batch-size")?.value || state.backgroundRemoverVideoGpuBatchSize),
+    workerCount: backgroundRemoverWorkerCountValue(document.querySelector("#backgroundremover-video-worker-count")?.value || state.backgroundRemoverVideoWorkerCount)
+  };
+}
+
+function rememberBackgroundRemoverVideoControls(controls = backgroundRemoverVideoControlsFromDom()) {
+  state.backgroundRemoverVideoModel = normalizedBackgroundRemoverModel(controls.model);
+  state.backgroundRemoverVideoMode = normalizedBackgroundRemoverVideoMode(controls.mode);
+  state.backgroundRemoverVideoFrameRate = backgroundRemoverFrameRateValue(controls.frameRate);
+  state.backgroundRemoverVideoFrameLimit = backgroundRemoverFrameLimitValue(controls.frameLimit);
+  state.backgroundRemoverVideoGpuBatchSize = backgroundRemoverGpuBatchSizeValue(controls.gpuBatchSize);
+  state.backgroundRemoverVideoWorkerCount = backgroundRemoverWorkerCountValue(controls.workerCount);
 }
 
 function parseHexColor(value) {
@@ -4032,13 +4240,23 @@ async function runImageEdit() {
         postProcessMask: controls.rembgPostProcess
       });
       providerLabel = `rembg / ${output.model || controls.rembgModel}`;
+    } else if (controls.provider === "backgroundremover") {
+      toastApiSubmitted("backgroundremoverでローカルAI背景除去を開始しました。初回モデル読み込み時は時間がかかります。");
+      output = await postJson("/api/backgroundremover/image", {
+        dataUrl,
+        name: source.name || "image.png",
+        model: controls.backgroundRemoverModel,
+        alphaMatting: controls.backgroundRemoverAlphaMatting,
+        erodeSize: controls.backgroundRemoverErodeSize
+      });
+      providerLabel = `backgroundremover / ${output.model || controls.backgroundRemoverModel}`;
     } else {
       output = await removeBackgroundLocally(dataUrl, controls);
     }
     const info = await getImageInfo(output.dataUrl);
     state.imageEditResult = {
       dataUrl: output.dataUrl,
-      name: transparentPngName(source.name, controls.provider === "removebg" ? "removebg" : controls.provider === "rembg" ? "rembg" : "transparent"),
+      name: transparentPngName(source.name, controls.provider === "removebg" ? "removebg" : controls.provider === "rembg" ? "rembg" : controls.provider === "backgroundremover" ? "backgroundremover" : "transparent"),
       sourceName: source.name || "",
       provider: controls.provider,
       providerLabel,
@@ -4145,6 +4363,102 @@ async function setupRembg() {
   }
 }
 
+async function checkBackgroundRemoverStatus({ silent = false } = {}) {
+  state.backgroundRemoverStatus = "loading";
+  state.backgroundRemoverError = "";
+  if (!silent) render();
+  try {
+    const result = await postJson("/api/backgroundremover/status", {});
+    state.backgroundRemoverInfo = result;
+    state.backgroundRemoverStatus = result.found ? "ready" : "missing";
+    state.backgroundRemoverError = result.found ? "" : (result.installHint || "backgroundremoverが見つかりません。");
+    if (!silent) {
+      render();
+      toast(result.found ? "backgroundremoverを利用できます。" : "backgroundremoverはまだセットアップされていません。");
+    }
+    return result;
+  } catch (error) {
+    state.backgroundRemoverStatus = "failed";
+    state.backgroundRemoverError = error.message;
+    if (!silent) {
+      render();
+      toast(error.message);
+    }
+    return null;
+  }
+}
+
+async function setupBackgroundRemover() {
+  const ok = window.confirm("backgroundremoverを vendor/backgroundremover-venv にセットアップします。PyTorchを含むため、初回はかなり時間がかかることがあります。");
+  if (!ok) return;
+  state.backgroundRemoverStatus = "installing";
+  state.backgroundRemoverError = "";
+  render();
+  try {
+    const result = await postJson("/api/backgroundremover/setup", {});
+    state.backgroundRemoverInfo = result.status || result;
+    state.backgroundRemoverStatus = state.backgroundRemoverInfo?.found ? "ready" : "missing";
+    state.backgroundRemoverError = result.error || "";
+    render();
+    toast(state.backgroundRemoverInfo?.found ? "backgroundremoverセットアップが完了しました。" : (result.error || "backgroundremoverセットアップを確認できませんでした。"));
+  } catch (error) {
+    state.backgroundRemoverStatus = "failed";
+    state.backgroundRemoverError = error.message;
+    render();
+    toast(error.message);
+  }
+}
+
+function backgroundRemoverResultKind(result) {
+  return String(result?.mimeType || "").startsWith("image/") ? "image" : "video";
+}
+
+async function runBackgroundRemoverVideo() {
+  const file = state.backgroundRemoverVideoFile;
+  if (!file?.dataUrl) return toast("動画またはGIFを選択してください。");
+  const controls = backgroundRemoverVideoControlsFromDom();
+  rememberBackgroundRemoverVideoControls(controls);
+  state.backgroundRemoverVideoIsRunning = true;
+  state.backgroundRemoverVideoResult = null;
+  render();
+  try {
+    toastApiSubmitted("backgroundremoverで動画背景除去を開始しました。長い動画は時間がかかります。");
+    const result = await postJson("/api/backgroundremover/video", {
+      dataUrl: file.dataUrl,
+      name: file.name || "video.mp4",
+      model: controls.model,
+      mode: controls.mode,
+      frameRate: controls.frameRate,
+      frameLimit: controls.frameLimit,
+      gpuBatchSize: controls.gpuBatchSize,
+      workerCount: controls.workerCount
+    });
+    state.backgroundRemoverVideoResult = result;
+    const selectedChar = byId(state.db.characters, state.imageEditCharacterId);
+    const work = byId(state.db.works, selectedChar?.workId || state.imageEditWorkId || state.selectedWorkId);
+    state.db.videoMedia.unshift({
+      id: uid(),
+      workId: work?.id || null,
+      characterId: selectedChar?.id || null,
+      kind: backgroundRemoverResultKind(result),
+      name: result.name || file.name || "backgroundremover output",
+      url: result.url,
+      localPath: result.path,
+      mimeType: result.mimeType || "",
+      subject: "backgroundremover 動画背景除去",
+      memo: `${backgroundRemoverVideoModeLabel(result.mode)} / ${result.model || controls.model}`,
+      createdAt: new Date().toISOString()
+    });
+    await saveDb();
+    toast("動画背景除去の結果を保存しました。");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    state.backgroundRemoverVideoIsRunning = false;
+    render();
+  }
+}
+
 function bindImageEditor() {
   const persist = () => rememberImageEditControls();
   document.querySelector("#image-edit-work")?.addEventListener("change", (event) => {
@@ -4179,10 +4493,22 @@ function bindImageEditor() {
         if (state.view === "edit") render();
       });
     }
+    if (state.imageEditProvider === "backgroundremover" && state.backgroundRemoverStatus === "idle") {
+      checkBackgroundRemoverStatus({ silent: true }).then(() => {
+        if (state.view === "edit") render();
+      });
+    }
     render();
   });
   ["#image-edit-rembg-model", "#image-edit-rembg-alpha-matting", "#image-edit-rembg-post-process"].forEach((selector) => {
     document.querySelector(selector)?.addEventListener("change", persist);
+  });
+  ["#image-edit-backgroundremover-model", "#image-edit-backgroundremover-alpha-matting", "#image-edit-backgroundremover-erode-size"].forEach((selector) => {
+    document.querySelector(selector)?.addEventListener("input", persist);
+    document.querySelector(selector)?.addEventListener("change", () => {
+      persist();
+      if (selector === "#image-edit-backgroundremover-alpha-matting") render();
+    });
   });
   ["#image-edit-background-mode", "#image-edit-tolerance", "#image-edit-feather", "#image-edit-chroma-color"].forEach((selector) => {
     document.querySelector(selector)?.addEventListener("input", persist);
@@ -4223,6 +4549,47 @@ function bindImageEditor() {
   document.querySelector("[data-action='save-image-edit-result']")?.addEventListener("click", saveImageEditResult);
   document.querySelector("[data-action='check-rembg']")?.addEventListener("click", () => checkRembgStatus());
   document.querySelector("[data-action='setup-rembg']")?.addEventListener("click", setupRembg);
+  document.querySelectorAll("[data-action='check-backgroundremover']").forEach((button) => {
+    button.addEventListener("click", () => checkBackgroundRemoverStatus());
+  });
+  document.querySelectorAll("[data-action='setup-backgroundremover']").forEach((button) => {
+    button.addEventListener("click", setupBackgroundRemover);
+  });
+  ["#backgroundremover-video-model", "#backgroundremover-video-mode", "#backgroundremover-video-frame-rate", "#backgroundremover-video-frame-limit", "#backgroundremover-video-gpu-batch-size", "#backgroundremover-video-worker-count"].forEach((selector) => {
+    document.querySelector(selector)?.addEventListener("input", () => rememberBackgroundRemoverVideoControls());
+    document.querySelector(selector)?.addEventListener("change", () => rememberBackgroundRemoverVideoControls());
+  });
+  document.querySelector("[data-action='choose-backgroundremover-video']")?.addEventListener("click", () => {
+    document.querySelector("#backgroundremover-video-input")?.click();
+  });
+  document.querySelector("#backgroundremover-video-input")?.addEventListener("change", async (event) => {
+    const file = [...(event.target.files || [])].find((item) => item.type.startsWith("video/") || item.type === "image/gif" || /\.gif$/i.test(item.name));
+    if (!file) return;
+    if (file.size > 180 * 1024 * 1024) {
+      event.target.value = "";
+      return toast("動画/GIFは180MB以下を選択してください。長い素材は短く切ってから試すと安定します。");
+    }
+    state.backgroundRemoverVideoFile = {
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      dataUrl: await fileToDataUrl(file),
+      createdAt: new Date().toISOString()
+    };
+    state.backgroundRemoverVideoResult = null;
+    if (state.backgroundRemoverStatus === "idle") {
+      checkBackgroundRemoverStatus({ silent: true }).then(() => {
+        if (state.view === "edit") render();
+      });
+    }
+    render();
+  });
+  document.querySelector("[data-action='clear-backgroundremover-video']")?.addEventListener("click", () => {
+    state.backgroundRemoverVideoFile = null;
+    state.backgroundRemoverVideoResult = null;
+    render();
+  });
+  document.querySelector("[data-action='run-backgroundremover-video']")?.addEventListener("click", runBackgroundRemoverVideo);
 }
 
 function mediaKindFromFile(file) {

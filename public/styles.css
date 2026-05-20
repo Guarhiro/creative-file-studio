@@ -1334,6 +1334,11 @@ textarea {
   align-content: start;
 }
 
+.image-edit-stack {
+  display: grid;
+  gap: 18px;
+}
+
 .image-edit-preview-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1359,6 +1364,19 @@ textarea {
     linear-gradient(-45deg, transparent 75%, #d8d2c8 75%);
   background-position: 0 0, 0 10px, 10px -10px, -10px 0;
   background-size: 20px 20px;
+}
+
+.backgroundremover-video-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 430px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.backgroundremover-video-preview {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
 }
 
 .negative-prompt-field {
@@ -1714,6 +1732,7 @@ textarea {
   .comfy-reference-row,
   .image-compare-controls,
   .image-edit-preview-grid,
+  .backgroundremover-video-grid,
   .comfy-lora-row,
   .irodori-settings,
   .elevenlabs-settings,

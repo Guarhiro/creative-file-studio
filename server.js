@@ -20,9 +20,14 @@ const seedanceGuidePath = path.join(__dirname, "Seedance2.0_Prompt_Guide_v2.md")
 const irodoriSetupScriptPath = path.join(__dirname, "scripts", "setup-irodori.sh");
 const rembgSetupScriptPath = path.join(__dirname, "scripts", "setup-rembg.sh");
 const rembgRemoveScriptPath = path.join(__dirname, "scripts", "rembg-remove.py");
+const backgroundRemoverSetupScriptPath = path.join(__dirname, "scripts", "setup-backgroundremover.sh");
+const backgroundRemoverRunScriptPath = path.join(__dirname, "scripts", "backgroundremover-run.py");
+const backgroundRemoverSitecustomizeDir = path.join(__dirname, "scripts", "backgroundremover_sitecustomize");
 const irodoriVendorDir = path.join(__dirname, "vendor", "Irodori-TTS");
 const rembgVenvDir = path.join(__dirname, "vendor", "rembg-venv");
 const rembgModelsDir = path.join(dataDir, "rembg-models");
+const backgroundRemoverVenvDir = path.join(__dirname, "vendor", "backgroundremover-venv");
+const backgroundRemoverHomeDir = path.join(dataDir, "backgroundremover-home");
 const localIrodoriAppDir = "/Users/guarhiro/Documents/irodori TTSアプリ";
 const port = Number(process.env.PORT || 4173);
 
@@ -136,6 +141,7 @@ await fs.mkdir(uploadDir, { recursive: true });
 await fs.mkdir(videoDir, { recursive: true });
 await fs.mkdir(audioDir, { recursive: true });
 await fs.mkdir(rembgModelsDir, { recursive: true });
+await fs.mkdir(path.join(backgroundRemoverHomeDir, ".u2net"), { recursive: true });
 
 async function readDb() {
   try {
@@ -530,6 +536,140 @@ async function resolveRembgPython(configuredPath = "") {
     venvDir: rembgVenvDir,
     modelsDir: rembgModelsDir,
     installHint: "画像編集画面の「rembgをセットアップ」を押すか、ターミナルで scripts/setup-rembg.sh を実行してください。"
+  };
+}
+
+function backgroundRemoverVenvPythonPath() {
+  return process.platform === "win32"
+    ? path.join(backgroundRemoverVenvDir, "Scripts", "python.exe")
+    : path.join(backgroundRemoverVenvDir, "bin", "python");
+}
+
+function backgroundRemoverVenvBinDir() {
+  return process.platform === "win32"
+    ? path.join(backgroundRemoverVenvDir, "Scripts")
+    : path.join(backgroundRemoverVenvDir, "bin");
+}
+
+function backgroundRemoverPythonCandidates(configuredPath = "") {
+  const candidates = [
+    configuredPath,
+    process.env.BACKGROUNDREMOVER_PYTHON,
+    backgroundRemoverVenvPythonPath(),
+    "python3",
+    "python"
+  ]
+    .map((candidate) => String(candidate || "").trim())
+    .filter(Boolean);
+  const seen = new Set();
+  return candidates.filter((candidate) => {
+    if (seen.has(candidate)) return false;
+    seen.add(candidate);
+    return true;
+  });
+}
+
+function backgroundRemoverEnv(extra = {}) {
+  const forceCpu = extra.CFS_BACKGROUNDREMOVER_FORCE_CPU === "1";
+  const pythonPath = forceCpu
+    ? [backgroundRemoverSitecustomizeDir, process.env.PYTHONPATH || ""].filter(Boolean).join(path.delimiter)
+    : process.env.PYTHONPATH;
+  return {
+    HOME: backgroundRemoverHomeDir,
+    PATH: `${backgroundRemoverVenvBinDir()}${path.delimiter}${process.env.PATH || ""}`,
+    ...(pythonPath ? { PYTHONPATH: pythonPath } : {}),
+    PYTHONUNBUFFERED: "1",
+    ...extra
+  };
+}
+
+async function checkFfmpeg() {
+  const ffmpeg = await runProcess(["ffmpeg", "-version"], {
+    timeoutMs: 10000,
+    env: backgroundRemoverEnv()
+  });
+  const ffprobe = await runProcess(["ffprobe", "-version"], {
+    timeoutMs: 10000,
+    env: backgroundRemoverEnv()
+  });
+  return {
+    found: ffmpeg.ok && ffprobe.ok,
+    version: ffmpeg.ok ? (ffmpeg.stdout.split("\n")[0] || "").trim() : "",
+    probeVersion: ffprobe.ok ? (ffprobe.stdout.split("\n")[0] || "").trim() : "",
+    error: ffmpeg.ok && ffprobe.ok
+      ? ""
+      : [
+        ffmpeg.ok ? "" : (ffmpeg.stderr || ffmpeg.stdout || ffmpeg.error || "ffmpeg が見つかりません。"),
+        ffprobe.ok ? "" : (ffprobe.stderr || ffprobe.stdout || ffprobe.error || "ffprobe が見つかりません。")
+      ].filter(Boolean).join(" / "),
+    result: { ffmpeg, ffprobe }
+  };
+}
+
+async function checkBackgroundRemoverPython(candidate) {
+  const result = await runProcess([
+    candidate,
+    "-c",
+    "import sys, backgroundremover, torch; print(sys.version.split()[0]); print(getattr(torch, '__version__', 'torch'))"
+  ], {
+    timeoutMs: 30000,
+    env: backgroundRemoverEnv()
+  });
+  if (!result.ok) {
+    return {
+      ok: false,
+      pythonPath: candidate,
+      error: result.stderr || result.stdout || result.error || "backgroundremover を読み込めませんでした。",
+      result
+    };
+  }
+  const lines = result.stdout.trim().split("\n").filter(Boolean);
+  return {
+    ok: true,
+    pythonPath: candidate,
+    pythonVersion: lines.at(-2) || lines[0] || "",
+    torchVersion: lines.at(-1) || "",
+    result
+  };
+}
+
+async function resolveBackgroundRemoverPython(configuredPath = "") {
+  const attempts = [];
+  const ffmpeg = await checkFfmpeg();
+  for (const candidate of backgroundRemoverPythonCandidates(configuredPath)) {
+    const checked = await checkBackgroundRemoverPython(candidate);
+    attempts.push(checked);
+    if (checked.ok) {
+      return {
+        found: true,
+        pythonPath: checked.pythonPath,
+        pythonVersion: checked.pythonVersion,
+        torchVersion: checked.torchVersion,
+        ffmpegFound: ffmpeg.found,
+        ffmpegVersion: ffmpeg.version,
+        ffprobeVersion: ffmpeg.probeVersion,
+        ffmpegError: ffmpeg.error,
+        attempts,
+        setupScript: backgroundRemoverSetupScriptPath,
+        venvDir: backgroundRemoverVenvDir,
+        homeDir: backgroundRemoverHomeDir,
+        modelDir: path.join(backgroundRemoverHomeDir, ".u2net")
+      };
+    }
+  }
+  return {
+    found: false,
+    pythonPath: "",
+    ffmpegFound: ffmpeg.found,
+    ffmpegVersion: ffmpeg.version,
+    ffprobeVersion: ffmpeg.probeVersion,
+    ffmpegError: ffmpeg.error,
+    attempts,
+    setupScript: backgroundRemoverSetupScriptPath,
+    venvDir: backgroundRemoverVenvDir,
+    homeDir: backgroundRemoverHomeDir,
+    modelDir: path.join(backgroundRemoverHomeDir, ".u2net"),
+    installHint: "画像編集画面の「backgroundremoverをセットアップ」を押すか、ターミナルで scripts/setup-backgroundremover.sh を実行してください。動画処理にはffmpegも必要です。"
   };
 }
 
@@ -929,6 +1069,226 @@ async function handleRembgRemove(req, res) {
     });
   } catch (error) {
     sendJson(res, 502, { error: `rembg 背景除去に失敗しました: ${error.message}` });
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+function normalizedBackgroundRemoverModel(value) {
+  const model = String(value || "").trim();
+  return ["u2net", "u2netp", "u2net_human_seg"].includes(model) ? model : "u2net";
+}
+
+function normalizedBackgroundRemoverVideoMode(value) {
+  const mode = String(value || "").trim();
+  return ["transparent-mov", "transparent-gif", "matte"].includes(mode) ? mode : "transparent-gif";
+}
+
+function backgroundRemoverVideoOutput(mode) {
+  if (mode === "transparent-mov") return { flag: "-tv", ext: ".mov", mimeType: "video/quicktime", suffix: "transparent" };
+  if (mode === "matte") return { flag: "-mk", ext: ".mp4", mimeType: "video/mp4", suffix: "matte" };
+  return { flag: "-tg", ext: ".gif", mimeType: "image/gif", suffix: "transparent" };
+}
+
+function backgroundRemoverOutputName(name, suffix, ext) {
+  const parsed = path.parse(path.basename(String(name || "media")));
+  const base = cleanFileNamePart(parsed.name, "media", 80);
+  return `${Date.now()}-${crypto.randomUUID()}-${base}-${suffix}${ext}`;
+}
+
+async function handleBackgroundRemoverStatus(req, res) {
+  const { pythonPath = "" } = await readJson(req, 256 * 1024).catch(() => ({}));
+  sendJson(res, 200, await resolveBackgroundRemoverPython(pythonPath));
+}
+
+async function handleBackgroundRemoverSetup(req, res) {
+  const before = await resolveBackgroundRemoverPython(backgroundRemoverVenvPythonPath());
+  if (before.found) {
+    return sendJson(res, 200, {
+      ok: true,
+      skipped: true,
+      status: before,
+      result: null,
+      message: "backgroundremover はすでにセットアップ済みです。"
+    });
+  }
+  const exists = await isFile(backgroundRemoverSetupScriptPath);
+  if (!exists) return sendJson(res, 404, { error: "backgroundremover セットアップスクリプトが見つかりません。" });
+  const result = await runProcess(["bash", backgroundRemoverSetupScriptPath], {
+    cwd: __dirname,
+    timeoutMs: 60 * 60 * 1000,
+    env: backgroundRemoverEnv()
+  });
+  const status = await resolveBackgroundRemoverPython(backgroundRemoverVenvPythonPath());
+  const detail = result.stderr || result.stdout || result.error || status.attempts?.[0]?.error || "unknown error";
+  sendJson(res, result.ok && status.found ? 200 : 500, {
+    ok: result.ok && status.found,
+    error: result.ok && status.found ? "" : `backgroundremover セットアップに失敗しました: ${detail}`,
+    status,
+    result
+  });
+}
+
+async function handleBackgroundRemoverImage(req, res) {
+  const body = await readJson(req, 64 * 1024 * 1024);
+  let parsed;
+  try {
+    parsed = parseDataUrl(body.dataUrl, ["image"]);
+  } catch {
+    return sendJson(res, 400, { error: "背景除去する画像の data URL が必要です。" });
+  }
+  const status = await resolveBackgroundRemoverPython(body.pythonPath || "");
+  if (!status.found) {
+    return sendJson(res, 400, {
+      error: "backgroundremover が見つかりません。先に「backgroundremoverをセットアップ」を実行してください。",
+      status
+    });
+  }
+
+  const model = normalizedBackgroundRemoverModel(body.model);
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "creative-file-studio-backgroundremover-"));
+  const inputPath = path.join(tempDir, safeOriginalFileName(body.name, parsed.ext, "input"));
+  const outputPath = path.join(tempDir, "output.png");
+  try {
+    await fs.writeFile(inputPath, Buffer.from(parsed.base64, "base64"));
+    const args = [
+      status.pythonPath,
+      backgroundRemoverRunScriptPath,
+      "-i",
+      inputPath,
+      "-m",
+      model
+    ];
+    if (body.alphaMatting) {
+      args.push("-a", "-ae", String(boundedNumber(body.erodeSize, 10, 1, 25, true)));
+    }
+    args.push("-o", outputPath);
+    const result = await runProcess(args, {
+      cwd: __dirname,
+      timeoutMs: 25 * 60 * 1000,
+      env: backgroundRemoverEnv()
+    });
+    if (!result.ok) {
+      return sendJson(res, 500, {
+        error: `backgroundremover 画像背景除去に失敗しました: ${result.stderr || result.stdout || result.error}`,
+        result,
+        status
+      });
+    }
+    if (!await isFile(outputPath)) {
+      return sendJson(res, 500, { error: "backgroundremover の出力PNGが見つかりません。", result, status });
+    }
+    const outputBuffer = await fs.readFile(outputPath);
+    sendJson(res, 200, {
+      dataUrl: `data:image/png;base64,${outputBuffer.toString("base64")}`,
+      mimeType: "image/png",
+      provider: "backgroundremover",
+      model,
+      size: outputBuffer.length,
+      result: {
+        stdout: result.stdout,
+        stderr: result.stderr,
+        command: result.command
+      }
+    });
+  } catch (error) {
+    sendJson(res, 502, { error: `backgroundremover 画像背景除去に失敗しました: ${error.message}` });
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function handleBackgroundRemoverVideo(req, res) {
+  const body = await readJson(req, 260 * 1024 * 1024);
+  let parsed;
+  try {
+    parsed = parseDataUrl(body.dataUrl, ["video", "image"]);
+    if (parsed.kind === "image" && parsed.subtype !== "gif") throw new Error("動画またはGIFの data URL が必要です。");
+  } catch (error) {
+    return sendJson(res, 400, { error: error.message || "動画またはGIFの data URL が必要です。" });
+  }
+  const status = await resolveBackgroundRemoverPython(body.pythonPath || "");
+  if (!status.found) {
+    return sendJson(res, 400, {
+      error: "backgroundremover が見つかりません。先に「backgroundremoverをセットアップ」を実行してください。",
+      status
+    });
+  }
+  if (!status.ffmpegFound) {
+    return sendJson(res, 400, {
+      error: `動画処理にはffmpegが必要です。${status.ffmpegError || ""}`.trim(),
+      status
+    });
+  }
+
+  const model = normalizedBackgroundRemoverModel(body.model);
+  const mode = normalizedBackgroundRemoverVideoMode(body.mode);
+  const output = backgroundRemoverVideoOutput(mode);
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "creative-file-studio-backgroundremover-video-"));
+  const inputPath = path.join(tempDir, safeOriginalFileName(body.name, parsed.ext, "video"));
+  const outputPath = path.join(tempDir, `output${output.ext}`);
+  try {
+    await fs.writeFile(inputPath, Buffer.from(parsed.base64, "base64"));
+    const args = [
+      status.pythonPath,
+      backgroundRemoverRunScriptPath,
+      "-i",
+      inputPath,
+      "-m",
+      model
+    ];
+    const frameRate = boundedNumber(body.frameRate, 30, 1, 60, true);
+    const frameLimit = boundedNumber(body.frameLimit, -1, -1, 20000, true);
+    const gpuBatchSize = boundedNumber(body.gpuBatchSize, 1, 1, 8, true);
+    const workerCount = boundedNumber(body.workerCount, 1, 1, 4, true);
+    if (frameRate) args.push("-fr", String(frameRate));
+    if (frameLimit > 0) args.push("-fl", String(frameLimit));
+    args.push("-gb", String(gpuBatchSize), "-wn", String(workerCount), output.flag, "-o", outputPath);
+    const result = await runProcess(args, {
+      cwd: __dirname,
+      timeoutMs: 90 * 60 * 1000,
+      env: backgroundRemoverEnv({ CFS_BACKGROUNDREMOVER_FORCE_CPU: "1" })
+    });
+    if (!result.ok) {
+      return sendJson(res, 500, {
+        error: `backgroundremover 動画背景除去に失敗しました: ${result.stderr || result.stdout || result.error}`,
+        result,
+        status
+      });
+    }
+    if (/Output file is empty|Conversion failed/i.test(`${result.stderr}\n${result.stdout}`)) {
+      return sendJson(res, 500, {
+        error: "backgroundremover の動画変換が空出力で終了しました。短すぎる動画、単純すぎる素材、またはGIF/MOV変換との相性で失敗する場合があります。マット動画MP4でも試してください。",
+        result,
+        status
+      });
+    }
+    if (!await isFile(outputPath)) {
+      return sendJson(res, 500, { error: "backgroundremover の出力ファイルが見つかりません。", result, status });
+    }
+    const outputStat = await fs.stat(outputPath);
+    if (!outputStat.size) {
+      return sendJson(res, 500, { error: "backgroundremover の出力ファイルが空です。短すぎる動画/GIFでは失敗する場合があります。", result, status });
+    }
+    const destination = await uniqueFilePath(videoDir, backgroundRemoverOutputName(body.name, output.suffix, output.ext));
+    await fs.copyFile(outputPath, destination);
+    sendJson(res, 200, {
+      url: `/videos/${encodeURIComponent(path.basename(destination))}`,
+      path: destination,
+      name: path.basename(destination),
+      mimeType: output.mimeType,
+      provider: "backgroundremover",
+      mode,
+      model,
+      size: outputStat.size,
+      result: {
+        stdout: result.stdout,
+        stderr: result.stderr,
+        command: result.command
+      }
+    });
+  } catch (error) {
+    sendJson(res, 502, { error: `backgroundremover 動画背景除去に失敗しました: ${error.message}` });
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -3152,6 +3512,22 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/rembg/remove") {
       return await handleRembgRemove(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/backgroundremover/status") {
+      return await handleBackgroundRemoverStatus(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/backgroundremover/setup") {
+      return await handleBackgroundRemoverSetup(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/backgroundremover/image") {
+      return await handleBackgroundRemoverImage(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/backgroundremover/video") {
+      return await handleBackgroundRemoverVideo(req, res);
     }
 
     if (req.method === "POST" && url.pathname === "/api/trash-import-source") {
