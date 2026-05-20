@@ -3,7 +3,32 @@
 ローカル環境で動く、創作支援向けのファイル管理アプリです。作品、キャラ設定、取り込み画像、世界観資料、生成プロンプト、画像生成、画像編集、音声、動画をまとめて扱えます。
 画像生成はComfyUI互換APIでローカルGPUとクラウドGPUを切り替え、画像編集は簡易ローカル処理、アスペクト比変換、手動フリーモード、ローカルAI rembg、ローカルAI backgroundremover、remove.bgクラウドAPIを切り替え、動画背景除去と動画GIF化も扱えます。動画生成は公式Seedance APIまたはOpenRouterの動画モデル、音声生成はOpenRouter TTS、ElevenLabs、Voicebox、ローカル Irodori-TTS を切り替えて使えます。
 
+## 初回セットアップ
+
+Node.js v18以上をインストールしてから、アプリのフォルダで依存関係を準備します。
+
+GitHubから取得する場合:
+
+```bash
+git clone https://github.com/Guarhiro/creative-file-studio.git
+cd creative-file-studio
+npm install
+npm start
+```
+
+Release ZIPを展開して使う場合:
+
+```bash
+cd creative-file-studio
+npm install
+npm start
+```
+
+現在の版では外部npmパッケージを使っていないため、`npm install` は短時間で完了します。依存関係が追加された版でも同じ手順で起動できます。
+
 ## 起動
+
+2回目以降は、アプリのフォルダで以下を実行します。
 
 ```bash
 npm start
@@ -83,6 +108,7 @@ ZIPに含めるもの:
 
 - `.gitignore`
 - `.env.example`
+- `LICENSE`
 - `README.md`
 - `package.json`
 - `server.js`
@@ -253,17 +279,9 @@ ZIPに含めないもの:
 
 画像一覧の「完全削除」は取り込み記録と画像ファイル本体を削除します。選択した画像をまとめて完全削除することもできます。ただし同じ画像ファイルが別の履歴、キャラ立ち絵、作品情報、その他情報で使われている場合、ファイル本体は残して登録だけ削除します。
 
-## GitHub 公開時の注意
+## 公開リポジトリに含めないデータ
 
-`.gitignore` で以下を公開対象から外しています。
-
-- `data/*`
-- `node_modules/`
-- `vendor/`
-- `.env`
-- `.DS_Store`
-
-`data/.gitkeep` だけを含めることで、空の `data/` フォルダはリポジトリに残ります。作品データ、キャラ設定、プロンプト、取り込み画像は公開されません。
+`data/` 配下の作品データ、キャラ設定、プロンプト、取り込み画像、生成物は公開対象から外しています。リポジトリには空フォルダ維持用の `data/.gitkeep` だけを含めます。
 
 ## OpenRouter
 
