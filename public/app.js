@@ -7420,7 +7420,7 @@ function renderImageAgent() {
           <label>Scheduler<input id="image-scheduler" value="${escapeHtml(controls.scheduler || settings.scheduler)}"></label>
           <label>Batch<input id="image-batch-size" type="number" min="1" max="8" value="${escapeHtml(controls.batchSize || settings.batchSize)}"></label>
           <label>Seed<input id="image-seed" type="number" placeholder="空欄でランダム" value="${escapeHtml(controls.seed ?? settings.seed)}"></label>
-          <label class="full">Checkpoint<input id="image-checkpoint" list="comfy-checkpoint-options" placeholder="workflow側の既定値を使う場合は空欄" value="${escapeHtml(controls.checkpoint || settings.checkpoint)}"></label>
+          <label class="full">モデル（Checkpoint）<input id="image-checkpoint" list="comfy-checkpoint-options" placeholder="workflow側の既定値を使う場合は空欄" value="${escapeHtml(controls.checkpoint || settings.checkpoint)}"></label>
           <div class="full comfy-lora-list">
             <div class="field-label">LoRA</div>
             ${renderComfyLoraRows("image", controls.loras || settings.loras)}
@@ -9653,9 +9653,9 @@ function renderComfyModelStatus() {
   const loras = Array.isArray(state.comfyModels?.loras) ? state.comfyModels.loras : [];
   if (state.comfyModelStatus === "loading") return `<div class="full meta">ComfyUIのモデル一覧を取得中です。</div>`;
   if (state.comfyModelStatus === "failed") return `<div class="full meta danger-text">${escapeHtml(state.comfyModelError || "ComfyUIのモデル一覧を取得できませんでした。")}</div>`;
-  if (!checkpoints.length && !loras.length) return `<div class="full meta">モデル一覧を取得すると、CheckpointとLoRA名を候補から選べます。</div>`;
+  if (!checkpoints.length && !loras.length) return `<div class="full meta">モデル一覧を取得すると、モデル（Checkpoint）とLoRA名を候補から選べます。</div>`;
   const updated = state.comfyModels?.updatedAt ? ` / ${new Date(state.comfyModels.updatedAt).toLocaleString("ja-JP")}` : "";
-  return `<div class="full meta">ComfyUIモデル一覧: Checkpoint ${checkpoints.length}件 / LoRA ${loras.length}件${escapeHtml(updated)}</div>`;
+  return `<div class="full meta">ComfyUIモデル一覧: モデル（Checkpoint） ${checkpoints.length}件 / LoRA ${loras.length}件${escapeHtml(updated)}</div>`;
 }
 
 function renderComfyValidationResult() {
@@ -9829,7 +9829,7 @@ function renderComfySettings() {
         <label>既定Seed
           <input id="setting-comfy-seed" type="number" placeholder="空欄でランダム" value="${escapeHtml(settings.seed)}">
         </label>
-        <label class="full">既定Checkpoint
+        <label class="full">既定モデル（Checkpoint）
           <input id="setting-comfy-checkpoint" list="comfy-checkpoint-options" placeholder="例: animagineXL.safetensors" value="${escapeHtml(settings.checkpoint)}">
         </label>
         <div class="full comfy-lora-list">

@@ -156,12 +156,12 @@ ZIPに含めないもの:
 
 - 作品情報、世界観、キャラ情報を読んだ画像生成エージェント
 - ComfyUI互換APIに送信し、ローカルGPUまたはクラウドGPUを生成ごとに選択
-- API Format workflow JSONを設定し、Positive、Negative、Seed、Size、Steps、CFG、Sampler、CheckpointのNode IDを指定
+- API Format workflow JSONを設定し、Positive、Negative、Seed、Size、Steps、CFG、Sampler、モデル（Checkpoint）のNode IDを指定
 - workflow JSONはJSON編集とビジュアル確認を切り替え、Node IDの差し替え対象や接続を確認
-- 幅、高さ、Steps、CFG、Sampler、Scheduler、Batch、Seed、Checkpointを画面から指定
+- 幅、高さ、Steps、CFG、Sampler、Scheduler、Batch、Seed、モデル（Checkpoint）を画面から指定
 - LoRA名、Model強度、CLIP強度を指定し、生成時にComfyUIのLoraLoaderとして読み込み
-- ComfyUIのCheckpoint / LoRA一覧を取得し、入力候補として表示
-- 生成前にworkflowのNode ID、LoRA接続、Checkpoint / LoRA名を事前チェック
+- ComfyUIのモデル（Checkpoint） / LoRA一覧を取得し、入力候補として表示
+- 生成前にworkflowのNode ID、LoRA接続、モデル（Checkpoint） / LoRA名を事前チェック
 - Comfy設定をプリセットとして保存し、立ち絵、背景、表情差分など用途別に呼び出し
 - 画像一覧、キャラ立ち絵、その他情報、追加アップロード画像をComfy参照画像として選択
 - 選択した参照画像をComfyUIへアップロードし、指定したLoadImage系Nodeの入力へ差し替え
@@ -287,9 +287,9 @@ ZIPに含めないもの:
 - クラウドComfyUI URL: ComfyUI互換の `/prompt`、`/history/{prompt_id}`、`/view`、`/system_stats` を公開しているURLを指定します。
 - クラウドAPIキー: 必要な場合だけ保存します。送信時は `Authorization: Bearer` と `x-api-key` の両方に入ります。
 - Workflow JSON: ComfyUIの `Save (API Format)` で保存したJSONを貼り付けます。
-- Node ID: Positive、Negative、Seed、Size、Steps、CFG、Sampler、Checkpointの入力を書き換えるノード番号を指定します。
+- Node ID: Positive、Negative、Seed、Size、Steps、CFG、Sampler、モデル（Checkpoint）の入力を書き換えるノード番号を指定します。
 
-画像生成画面では、作品、キャラ、GPU、幅、高さ、Steps、CFG、Sampler、Scheduler、Batch、Seed、Checkpointを指定できます。エージェントに相談してプロンプト案を作ることも、プロンプト欄へ直接入力することもできます。生成比較モードをONにすると、Seed、CFG、Stepsのいずれかを軸に複数ジョブを投入し、比較結果から採用した案を生成設定へ戻せます。
+画像生成画面では、作品、キャラ、GPU、幅、高さ、Steps、CFG、Sampler、Scheduler、Batch、Seed、モデル（Checkpoint）を指定できます。エージェントに相談してプロンプト案を作ることも、プロンプト欄へ直接入力することもできます。生成比較モードをONにすると、Seed、CFG、Stepsのいずれかを軸に複数ジョブを投入し、比較結果から採用した案を生成設定へ戻せます。
 
 生成が完了すると、画像は `data/uploads/<作品名>/_画像生成/` に保存され、画像一覧と画像整理に自動登録されます。キャラ指定ありで生成した場合は、そのキャラの画像として登録されます。
 
