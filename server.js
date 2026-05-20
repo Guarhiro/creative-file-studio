@@ -2825,15 +2825,33 @@ function comfyInputChoiceList(payload = {}, classNames = [], inputName = "") {
 }
 
 async function fetchComfyObjectInfo(baseUrl, apiKey) {
-  const response = await fetch(comfyEndpoint(baseUrl, "/object_info"), {
-    headers: comfyHeaders(apiKey, { accept: "application/json" }),
-    signal: AbortSignal.timeout(20000)
-  });
+  let response;
+  try {
+    response = await fetch(comfyEndpoint(baseUrl, "/object_info"), {
+      headers: comfyHeaders(apiKey, { accept: "application/json" }),
+      signal: AbortSignal.timeout(20000)
+    });
+  } catch (error) {
+    throw new Error(comfyConnectionErrorMessage(baseUrl, error));
+  }
   const payload = await comfyJson(response);
   if (!response.ok) {
     throw new Error(readableProviderError(payload) || `ComfyUI object_info が ${response.status} を返しました。`);
   }
   return payload;
+}
+
+function comfyConnectionErrorMessage(baseUrl, error) {
+  const urlText = String(baseUrl || "").trim() || "未設定のURL";
+  const detail = error?.cause?.code
+    ? ` (${error.cause.code})`
+    : error?.message && error.message !== "fetch failed"
+      ? ` (${error.message})`
+      : "";
+  if (error?.name === "AbortError" || error?.name === "TimeoutError") {
+    return `ComfyUIへの接続がタイムアウトしました。設定URL ${urlText} でComfyUIが起動しているか、ポート番号が正しいか確認してください${detail}。`;
+  }
+  return `ComfyUIに接続できませんでした。設定URL ${urlText} でComfyUIが起動しているか、ポート番号が正しいか確認してください。ローカル利用の場合はComfyUIを起動してから再度お試しください${detail}。`;
 }
 
 function extractComfyModels(payload = {}) {
@@ -3262,10 +3280,15 @@ async function saveComfyImage({ baseUrl, apiKey, image, promptId, workName, titl
 async function handleComfyCheck(req, res) {
   const { baseUrl, apiKey } = await readJson(req, 1024 * 1024);
   try {
-    const response = await fetch(comfyEndpoint(baseUrl, "/system_stats"), {
-      headers: comfyHeaders(apiKey, { accept: "application/json" }),
-      signal: AbortSignal.timeout(15000)
-    });
+    let response;
+    try {
+      response = await fetch(comfyEndpoint(baseUrl, "/system_stats"), {
+        headers: comfyHeaders(apiKey, { accept: "application/json" }),
+        signal: AbortSignal.timeout(15000)
+      });
+    } catch (error) {
+      throw new Error(comfyConnectionErrorMessage(baseUrl, error));
+    }
     const payload = await comfyJson(response);
     if (!response.ok) return sendJson(res, response.status, payload);
     sendJson(res, 200, {

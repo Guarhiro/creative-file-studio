@@ -9796,8 +9796,9 @@ function renderComfySettings() {
           </select>
         </label>
         <label class="full">ローカルComfyUI URL
-          <input id="setting-comfy-local-url" placeholder="http://127.0.0.1:8188" value="${escapeHtml(settings.localBaseUrl)}">
+          <input id="setting-comfy-local-url" placeholder="http://127.0.0.1:8000" value="${escapeHtml(settings.localBaseUrl)}">
         </label>
+        <div class="full meta">Comfyアプリ内の「設定」→「サーバー設定」でホストとポートを確認し、<code>http://(ホスト):(ポート)</code> の形式で入力してください。例: <code>http://127.0.0.1:8000</code></div>
         <label class="full">クラウドComfyUI URL
           <input id="setting-comfy-cloud-url" placeholder="https://your-comfy.example.com" value="${escapeHtml(settings.cloudBaseUrl)}">
         </label>
