@@ -48,6 +48,8 @@ const state = {
   imageEditBackgroundRemoverModel: "u2net",
   imageEditBackgroundRemoverAlphaMatting: false,
   imageEditBackgroundRemoverErodeSize: 10,
+  imageEditManualTool: "erase",
+  imageEditManualBrushSize: 42,
   imageEditInputFile: null,
   imageEditResult: null,
   imageEditIsRunning: false,
@@ -66,6 +68,16 @@ const state = {
   backgroundRemoverVideoWorkerCount: 1,
   backgroundRemoverVideoResult: null,
   backgroundRemoverVideoIsRunning: false,
+  videoGifFile: null,
+  videoGifFrameRate: 12,
+  videoGifWidth: 640,
+  videoGifStartTime: 0,
+  videoGifDuration: 6,
+  videoGifResult: null,
+  videoGifIsRunning: false,
+  videoGifStatus: "idle",
+  videoGifInfo: null,
+  videoGifError: "",
   videoWorkId: null,
   videoCharacterId: "",
   videoReferenceKind: "all",
@@ -127,16 +139,24 @@ const state = {
 };
 
 const navItems = [
-  ["studio", "作品とキャラ"],
-  ["import", "画像取込"],
-  ["gallery", "画像一覧"],
-  ["image", "画像生成"],
-  ["edit", "画像編集"],
-  ["audio", "音声生成"],
-  ["video", "動画生成"],
-  ["library", "画像整理"],
-  ["prompt", "Prompt Lab"],
-  ["settings", "設定"]
+  { id: "studio", label: "作品とキャラ" },
+  { id: "import", label: "画像取込" },
+  { id: "gallery", label: "画像一覧" },
+  { id: "image", label: "画像生成" },
+  {
+    id: "edit",
+    label: "画像編集",
+    defaultView: "edit",
+    children: [
+      { id: "edit", label: "背景除去" },
+      { id: "edit-gif", label: "動画GIF化" }
+    ]
+  },
+  { id: "audio", label: "音声生成" },
+  { id: "video", label: "動画生成" },
+  { id: "library", label: "画像整理" },
+  { id: "prompt", label: "Prompt Lab" },
+  { id: "settings", label: "設定" }
 ];
 
 const screenHelpContent = {
@@ -246,7 +266,7 @@ const screenHelpContent = {
   },
   edit: {
     title: "画像編集のヘルプ",
-    lead: "画像や動画/GIFの背景除去、透過PNG作成、処理結果の保存を行う画面です。",
+    lead: "画像や動画/GIFの背景除去、透過PNG作成、動画のGIF化、処理結果の保存を行う画面です。",
     sections: [
       {
         title: "使い方",
@@ -255,7 +275,8 @@ const screenHelpContent = {
           { term: "透過PNGを作成", description: "選択した処理方式で背景を抜いたPNGを作ります。" },
           { term: "画像一覧へ保存", description: "処理後のPNGを作品の画像一覧へ登録します。" },
           { term: "動画/GIFを選択", description: "動画背景除去で処理する元ファイルを追加します。" },
-          { term: "動画背景除去を開始", description: "選択した動画またはGIFをbackgroundremoverで処理し、結果を動画生成の参照素材にも登録します。" }
+          { term: "動画背景除去を開始", description: "選択した動画またはGIFをbackgroundremoverで処理し、結果を動画生成の参照素材にも登録します。" },
+          { term: "動画GIF化", description: "動画ファイルからGIFを作成し、画像一覧と動画生成の参照素材へ登録します。" }
         ]
       },
       {
@@ -266,6 +287,7 @@ const screenHelpContent = {
           { term: "対象画像", description: "背景除去に使う元画像です。保存済み画像または追加画像から選びます。" },
           { term: "処理", description: "背景除去に使う方式です。軽い確認、ローカルAI、クラウドAPIを用途に応じて切り替えます。" },
           { term: "簡易ローカル", description: "ブラウザ内で背景色を推定して透過します。軽い確認向きです。" },
+          { term: "手動フリーモード", description: "境界指定、ペン除去、復元ペンで透過PNGを手動調整します。" },
           { term: "ローカルAI rembg", description: "rembgを使う高精度な背景除去です。初回セットアップが必要です。" },
           { term: "ローカルAI backgroundremover", description: "静止画に加えて動画/GIF背景除去にも使うローカル処理です。" },
           { term: "クラウド remove.bg", description: "remove.bg APIキーを使ってクラウドで背景除去します。" },
@@ -277,6 +299,8 @@ const screenHelpContent = {
           { term: "指定色", description: "背景を指定色で抜く時の色です。背景が単色に近い画像で使います。" },
           { term: "許容値", description: "背景色として扱う色の幅です。0-160で、高いほど広く抜けます。" },
           { term: "境界ぼかし", description: "切り抜き境界をなじませる量です。0-80で、上げるほど境界がやわらかくなります。" },
+          { term: "手動ツール", description: "ペン除去、復元ペン、境界指定を切り替えます。" },
+          { term: "ペンサイズ", description: "手動フリーモードで使うブラシの太さです。" },
           { term: "Alpha matting", description: "髪や半透明部分などの境界を補正する処理です。" },
           { term: "エッジ調整", description: "backgroundremoverのAlpha matting時に、境界をどれだけ内側へ削るかの値です。1-25で指定します。" },
           { term: "モデル（動画背景除去）", description: "動画/GIF処理で使うbackgroundremoverモデルです。静止画側のbackgroundremoverモデルと同じ候補です。" },
@@ -284,7 +308,23 @@ const screenHelpContent = {
           { term: "FPS", description: "動画処理で扱う1秒あたりのフレーム数です。1-60で、高いほど滑らかですが処理時間と出力サイズが増えます。" },
           { term: "フレーム上限", description: "-1で全体処理、1-20000で処理する最大フレーム数です。長い動画は少ない値で試すと安全です。" },
           { term: "GPU batch", description: "一度にまとめて処理するフレーム数です。1-8で、大きいほど高速化しやすい一方、GPU/メモリ使用量が増えます。" },
-          { term: "Workers", description: "動画処理の並列ワーカー数です。1-4で、多いほど速くなる場合がありますが、CPU負荷とメモリ使用量も増えます。" }
+          { term: "Workers", description: "動画処理の並列ワーカー数です。1-4で、多いほど速くなる場合がありますが、CPU負荷とメモリ使用量も増えます。" },
+          { term: "最大幅（GIF化）", description: "GIF化時の横幅です。縦横比は維持され、値を下げるほど軽くなります。" },
+          { term: "開始秒 / 長さ", description: "動画のどこから何秒GIF化するかを指定します。長さ0なら末尾まで変換します。" }
+        ]
+      }
+    ]
+  },
+  "edit-gif": {
+    title: "動画GIF化のヘルプ",
+    lead: "動画をGIFに変換し、作品の画像一覧と動画生成用の参照素材に保存する画面です。",
+    sections: [
+      {
+        title: "使い方",
+        items: [
+          { term: "動画を選択", description: "MP4、MOV、WebMなどの動画、またはGIFを選択します。" },
+          { term: "GIF化を開始", description: "FPS、最大幅、開始秒、長さに従ってGIFを書き出します。" },
+          { term: "保存先", description: "保存時のキャラを選ぶとキャラの画像フォルダへ、紐づけなしなら作品の _画像編集 へ保存されます。" }
         ]
       }
     ]
@@ -442,6 +482,7 @@ const audioProviders = [
 
 const imageEditProviders = [
   ["local", "簡易ローカル"],
+  ["manual", "手動フリーモード"],
   ["rembg", "ローカルAI rembg"],
   ["backgroundremover", "ローカルAI backgroundremover"],
   ["removebg", "クラウド remove.bg"]
@@ -475,6 +516,12 @@ const imageEditBackgroundModes = [
   ["white", "白背景"],
   ["black", "黒背景"],
   ["chroma", "指定色"]
+];
+
+const manualImageEditTools = [
+  ["erase", "ペンで除去"],
+  ["restore", "復元ペン"],
+  ["boundary", "境界指定"]
 ];
 
 const voiceboxDefaultSettings = {
@@ -2818,6 +2865,9 @@ async function postJson(url, body, method = "POST") {
 	    if (url.startsWith("/api/backgroundremover/") && /Method not allowed|Not found/i.test(text)) {
 	      throw new Error("backgroundremover APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
 	    }
+	    if (url.startsWith("/api/image-edit/") && /Method not allowed|Not found/i.test(text)) {
+	      throw new Error("画像編集APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
+	    }
 	    const error = new Error(readableError(payload.error) || readableError(payload) || text || `${response.status} ${response.statusText}`);
 	    error.payload = payload;
 	    error.responseText = text;
@@ -3226,7 +3276,7 @@ function render(options = {}) {
           <span>local creator archive</span>
         </div>
         <nav class="nav">
-          ${navItems.map(([id, label]) => `<button class="${state.view === id ? "active" : ""}" data-view="${id}">${label}</button>`).join("")}
+          ${navItems.map(renderNavItem).join("")}
         </nav>
         <div class="sidebar-meta">
           ${state.db.works.length} 作品 / ${state.db.characters.length} キャラ / ${state.db.worldItems?.length || 0} その他 / ${state.db.assets.length} 画像 / ${state.db.imageJobs?.length || 0} 画像生成 / ${state.db.audioItems?.length || 0} 音声 / ${state.db.videoJobs?.length || 0} 動画
@@ -3251,12 +3301,47 @@ function render(options = {}) {
   bindView();
 }
 
+function navItemIsActive(item) {
+  if (state.view === item.id) return true;
+  return (item.children || []).some((child) => child.id === state.view);
+}
+
+function navItemIsExpanded(item) {
+  return Boolean(item.children?.length && navItemIsActive(item));
+}
+
+function renderNavButton(item, className = "", extraAttrs = "") {
+  const active = state.view === item.id;
+  const classes = `${className} ${active ? "active" : ""}`.trim();
+  return `<button class="${escapeHtml(classes)}" data-view="${escapeHtml(item.id)}" ${extraAttrs}>${escapeHtml(item.label)}</button>`;
+}
+
+function renderNavItem(item) {
+  if (!item.children?.length) {
+    return renderNavButton(item, "nav-button");
+  }
+  const expanded = navItemIsExpanded(item);
+  const active = navItemIsActive(item);
+  const defaultView = item.defaultView || item.children[0].id;
+  return `
+    <div class="nav-group ${expanded ? "expanded" : ""}">
+      <button class="nav-button nav-parent ${active ? "active" : ""}" data-nav-parent="${escapeHtml(item.id)}" data-default-view="${escapeHtml(defaultView)}" aria-expanded="${expanded ? "true" : "false"}">
+        <span>${escapeHtml(item.label)}</span>
+      </button>
+      <div class="nav-children" ${expanded ? "" : "hidden"}>
+        ${item.children.map((child) => renderNavButton(child, "nav-button nav-child")).join("")}
+      </div>
+    </div>
+  `;
+}
+
 function currentTitle() {
   if (state.view === "studio") return ["作品とキャラ", "作品単位でキャラ設定と立ち絵を管理します。"];
   if (state.view === "import") return ["画像取込", "複数画像を取り込み、AIでキャラ別に振り分けます。"];
   if (state.view === "gallery") return ["画像一覧", "作品ごと、キャラごとに保存済み画像を閲覧します。"];
   if (state.view === "image") return ["画像生成", "ComfyUIでローカルGPUまたはクラウドGPUに生成を投げます。"];
   if (state.view === "edit") return ["画像編集", "背景除去と透過PNG変換を行います。"];
+  if (state.view === "edit-gif") return ["動画GIF化", "動画をGIFに変換して画像一覧へ保存します。"];
   if (state.view === "audio") return ["音声生成", "OpenRouter、ElevenLabs、Voicebox、Irodori-TTSでキャラ音声やナレーションを作ります。"];
   if (state.view === "video") return ["動画生成", "選択した動画モデル向けの指示書作成と生成を行います。"];
   if (state.view === "library") return ["画像整理", "取り込んだ画像を作品・キャラ・状態で確認します。"];
@@ -3311,6 +3396,7 @@ function renderView() {
   if (state.view === "gallery") return renderGallery();
   if (state.view === "image") return renderImageAgent();
   if (state.view === "edit") return renderImageEditor();
+  if (state.view === "edit-gif") return renderVideoGifConverter();
   if (state.view === "audio") return renderAudioAgent();
   if (state.view === "video") return renderVideoAgent();
   if (state.view === "library") return renderLibrary();
@@ -3983,12 +4069,20 @@ function normalizedImageEditBackgroundMode(value) {
   return imageEditBackgroundModes.some(([mode]) => mode === value) ? value : "auto";
 }
 
+function normalizedManualImageEditTool(value) {
+  return manualImageEditTools.some(([tool]) => tool === value) ? value : "erase";
+}
+
 function imageEditToleranceValue(value) {
   return boundedSettingNumber(value, 42, 0, 160, true);
 }
 
 function imageEditFeatherValue(value) {
   return boundedSettingNumber(value, 18, 0, 80, true);
+}
+
+function imageEditManualBrushSizeValue(value) {
+  return boundedSettingNumber(value, 42, 4, 220, true);
 }
 
 function backgroundRemoverErodeSizeValue(value) {
@@ -4009,6 +4103,22 @@ function backgroundRemoverGpuBatchSizeValue(value) {
 
 function backgroundRemoverWorkerCountValue(value) {
   return boundedSettingNumber(value, 1, 1, 4, true);
+}
+
+function videoGifFrameRateValue(value) {
+  return boundedSettingNumber(value, 12, 1, 30, true);
+}
+
+function videoGifWidthValue(value) {
+  return boundedSettingNumber(value, 640, 160, 1920, true);
+}
+
+function videoGifStartTimeValue(value) {
+  return boundedSettingNumber(value, 0, 0, 36000, false);
+}
+
+function videoGifDurationValue(value) {
+  return boundedSettingNumber(value, 6, 0, 600, false);
 }
 
 function formatBytes(value) {
@@ -4172,6 +4282,7 @@ function renderImageEditor() {
   const result = state.imageEditResult;
   const isRembgBusy = state.rembgStatus === "loading" || state.rembgStatus === "installing";
   const isBackgroundRemoverBusy = state.backgroundRemoverStatus === "loading" || state.backgroundRemoverStatus === "installing";
+  const runButtonLabel = provider === "manual" ? "手動編集を結果に反映" : "透過PNGを作成";
   return `
     <div class="image-edit-stack">
     <div class="video-layout image-edit-layout">
@@ -4199,7 +4310,25 @@ function renderImageEditor() {
               ${imageEditProviders.map(([value, label]) => `<option value="${value}" ${provider === value ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
             </select>
           </label>
-          ${provider === "removebg" ? `
+          ${provider === "manual" ? `
+            <label>手動ツール
+              <select id="image-edit-manual-tool">
+                ${manualImageEditTools.map(([value, label]) => `<option value="${value}" ${state.imageEditManualTool === value ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
+              </select>
+            </label>
+            <label>ペンサイズ
+              <input id="image-edit-manual-brush-size" type="range" min="4" max="220" value="${escapeHtml(state.imageEditManualBrushSize)}">
+            </label>
+            <div class="full toolbar">
+              <button class="ghost" data-action="manual-image-edit-undo" ${selectedSource ? "" : "disabled"}>戻す</button>
+              <button class="ghost" data-action="manual-image-edit-reset" ${selectedSource ? "" : "disabled"}>リセット</button>
+              <button class="ghost" data-action="manual-image-edit-clear-boundary" ${selectedSource ? "" : "disabled"}>境界を消去</button>
+            </div>
+            <div class="full toolbar">
+              <button class="ghost" data-action="manual-image-edit-keep-inside" ${selectedSource ? "" : "disabled"}>境界の外側を除去</button>
+              <button class="ghost" data-action="manual-image-edit-remove-inside" ${selectedSource ? "" : "disabled"}>境界の内側を除去</button>
+            </div>
+          ` : provider === "removebg" ? `
             <label>remove.bg APIキー
               <input id="image-edit-removebg-key" type="password" value="${escapeHtml(removeBgApiKey())}" placeholder="remove.bg API key">
             </label>
@@ -4253,7 +4382,7 @@ function renderImageEditor() {
             </label>
           `}
           <div class="full toolbar">
-            <button class="accent" data-action="run-image-edit" ${state.imageEditIsRunning || !selectedSource ? "disabled" : ""}>透過PNGを作成</button>
+            <button class="accent" data-action="run-image-edit" ${state.imageEditIsRunning || !selectedSource ? "disabled" : ""}>${runButtonLabel}</button>
             <button class="ghost" data-action="save-image-edit-result" ${result ? "" : "disabled"}>画像一覧へ保存</button>
           </div>
         </div>
@@ -4269,8 +4398,14 @@ function renderImageEditor() {
             </article>
             <article class="image-edit-preview-card">
               <div class="meta">処理後</div>
-              ${state.imageEditIsRunning ? `<div class="empty compact">処理中です。</div>` : result ? `<img class="transparent-preview" src="${escapeHtml(result.dataUrl)}" alt="">` : `<div class="empty compact">まだ結果がありません。</div>`}
-              ${result ? `<div class="meta">${escapeHtml(result.name || "")}${result.width ? ` / ${escapeHtml(`${result.width}x${result.height}`)}` : ""} / ${escapeHtml(result.providerLabel || "")}</div>` : ""}
+              ${provider === "manual" && selectedSource ? `
+                <div class="manual-editor-stage">
+                  <canvas id="image-edit-manual-canvas" class="manual-editor-canvas"></canvas>
+                  <canvas id="image-edit-manual-overlay" class="manual-editor-overlay"></canvas>
+                </div>
+                <div class="meta">${escapeHtml(result?.provider === "manual" ? `${result.name || ""}${result.width ? ` / ${result.width}x${result.height}` : ""} / ${result.providerLabel || ""}` : "手動編集中")}</div>
+              ` : state.imageEditIsRunning ? `<div class="empty compact">処理中です。</div>` : result ? `<img class="transparent-preview" src="${escapeHtml(result.dataUrl)}" alt="">` : `<div class="empty compact">まだ結果がありません。</div>`}
+              ${provider !== "manual" && result ? `<div class="meta">${escapeHtml(result.name || "")}${result.width ? ` / ${escapeHtml(`${result.width}x${result.height}`)}` : ""} / ${escapeHtml(result.providerLabel || "")}</div>` : ""}
             </article>
           </div>
         </div>
@@ -4345,6 +4480,94 @@ function renderBackgroundRemoverVideoPanel(work) {
   `;
 }
 
+function videoGifStatusText() {
+  if (state.videoGifStatus === "loading") return "ffmpegの状態を確認中です。";
+  if (state.videoGifInfo?.found) return `ffmpeg使用可能: ${state.videoGifInfo.version || ""}`;
+  return state.videoGifError || "ffmpegは未確認です。動画GIF化にはffmpegが必要です。";
+}
+
+function renderVideoGifInputPreview(file) {
+  if (!file?.dataUrl) return `<div class="empty compact">動画を選択してください。</div>`;
+  const isGif = file.type === "image/gif" || /\.gif$/i.test(file.name || "");
+  return isGif
+    ? `<img class="transparent-preview" src="${escapeHtml(file.dataUrl)}" alt="">`
+    : `<video class="generated-video" controls src="${escapeHtml(file.dataUrl)}"></video>`;
+}
+
+function renderVideoGifConverter() {
+  const work = byId(state.db.works, state.imageEditWorkId) || byId(state.db.works, state.selectedWorkId) || state.db.works[0] || null;
+  if (!state.imageEditWorkId && work) state.imageEditWorkId = work.id;
+  if (state.imageEditCharacterId && !charactersForWork(state.imageEditWorkId).some((char) => char.id === state.imageEditCharacterId)) {
+    state.imageEditCharacterId = "";
+  }
+  const file = state.videoGifFile;
+  const result = state.videoGifResult;
+  const busy = state.videoGifIsRunning;
+  const selectedChar = byId(state.db.characters, state.imageEditCharacterId);
+  const saveTargetText = selectedChar ? `保存先: ${selectedChar.name} の画像フォルダ` : "保存先: 作品の _画像編集";
+  return `
+    <div class="video-layout image-edit-layout">
+      <section class="panel">
+        <div class="panel-header"><h2>GIF化設定</h2></div>
+        <div class="panel-body form-grid">
+          <label>作品
+            <select id="video-gif-work">
+              ${state.db.works.map((item) => `<option value="${escapeHtml(item.id)}" ${state.imageEditWorkId === item.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label>保存時のキャラ
+            <select id="video-gif-character">${imageEditCharacterOptions(state.imageEditWorkId, state.imageEditCharacterId)}</select>
+          </label>
+          <input id="video-gif-input" type="file" accept="video/*,.gif" hidden>
+          <div class="full toolbar">
+            <button class="ghost" data-action="choose-video-gif-file">動画を選択</button>
+            <button class="ghost" data-action="clear-video-gif-file" ${file ? "" : "disabled"}>選択を解除</button>
+          </div>
+          <div class="full meta">${file ? `${escapeHtml(file.name)} / ${escapeHtml(formatBytes(file.size || 0))}` : "MP4、MOV、WebMなどの動画を選択してください。"}</div>
+          <div class="full meta">${escapeHtml(saveTargetText)}。元動画は保存せず、作成したGIFだけを保存します。</div>
+          <label>FPS
+            <input id="video-gif-frame-rate" type="number" min="1" max="30" value="${escapeHtml(state.videoGifFrameRate)}">
+          </label>
+          <label>最大幅
+            <input id="video-gif-width" type="number" min="160" max="1920" step="10" value="${escapeHtml(state.videoGifWidth)}">
+          </label>
+          <label>開始秒
+            <input id="video-gif-start-time" type="number" min="0" max="36000" step="0.1" value="${escapeHtml(state.videoGifStartTime)}">
+          </label>
+          <label>長さ（秒）
+            <input id="video-gif-duration" type="number" min="0" max="600" step="0.1" value="${escapeHtml(state.videoGifDuration)}">
+          </label>
+          <div class="full meta">長さは0で開始秒から末尾まで。GIFは大きくなりやすいので、まず短めの秒数と低めのFPSで試すと扱いやすくなります。</div>
+          <div class="full toolbar">
+            <button class="ghost" data-action="check-video-gif-ffmpeg" ${state.videoGifStatus === "loading" ? "disabled" : ""}>ffmpeg確認</button>
+            <button class="accent" data-action="run-video-gif-conversion" ${busy || !file ? "disabled" : ""}>GIF化を開始</button>
+          </div>
+          <div class="full meta">${escapeHtml(videoGifStatusText())}</div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-header"><h2>プレビュー</h2></div>
+        <div class="panel-body">
+          <div class="video-gif-grid">
+            <article class="image-edit-preview-card">
+              <div class="meta">元動画</div>
+              ${renderVideoGifInputPreview(file)}
+            </article>
+            <article class="image-edit-preview-card">
+              <div class="meta">GIF</div>
+              ${busy ? `<div class="empty compact">GIF化しています。動画の長さによって時間がかかります。</div>` : result ? `
+                <img class="transparent-preview" src="${escapeHtml(result.url)}" alt="">
+                <div class="meta">${escapeHtml(result.name || "")} / ${escapeHtml(formatBytes(result.size || 0))}</div>
+                <div class="meta">${escapeHtml(result.saveTargetLabel || "画像一覧と動画生成の参照素材に登録済みです。")}</div>
+              ` : `<div class="empty compact">まだGIFがありません。</div>`}
+            </article>
+          </div>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
 function imageEditControlsFromDom() {
   return {
     workId: document.querySelector("#image-edit-work")?.value || state.imageEditWorkId || "",
@@ -4361,6 +4584,8 @@ function imageEditControlsFromDom() {
     backgroundRemoverModel: normalizedBackgroundRemoverModel(document.querySelector("#image-edit-backgroundremover-model")?.value || state.imageEditBackgroundRemoverModel),
     backgroundRemoverAlphaMatting: document.querySelector("#image-edit-backgroundremover-alpha-matting")?.checked ?? state.imageEditBackgroundRemoverAlphaMatting,
     backgroundRemoverErodeSize: backgroundRemoverErodeSizeValue(document.querySelector("#image-edit-backgroundremover-erode-size")?.value || state.imageEditBackgroundRemoverErodeSize),
+    manualTool: normalizedManualImageEditTool(document.querySelector("#image-edit-manual-tool")?.value || state.imageEditManualTool),
+    manualBrushSize: imageEditManualBrushSizeValue(document.querySelector("#image-edit-manual-brush-size")?.value || state.imageEditManualBrushSize),
     removeBgKey: document.querySelector("#image-edit-removebg-key")?.value.trim() || removeBgApiKey()
   };
 }
@@ -4380,6 +4605,8 @@ function rememberImageEditControls(controls = imageEditControlsFromDom()) {
   state.imageEditBackgroundRemoverModel = normalizedBackgroundRemoverModel(controls.backgroundRemoverModel);
   state.imageEditBackgroundRemoverAlphaMatting = Boolean(controls.backgroundRemoverAlphaMatting);
   state.imageEditBackgroundRemoverErodeSize = backgroundRemoverErodeSizeValue(controls.backgroundRemoverErodeSize);
+  state.imageEditManualTool = normalizedManualImageEditTool(controls.manualTool);
+  state.imageEditManualBrushSize = imageEditManualBrushSizeValue(controls.manualBrushSize);
   if (controls.removeBgKey) localStorage.setItem("removebg_api_key", controls.removeBgKey);
 }
 
@@ -4403,6 +4630,26 @@ function rememberBackgroundRemoverVideoControls(controls = backgroundRemoverVide
   state.backgroundRemoverVideoWorkerCount = backgroundRemoverWorkerCountValue(controls.workerCount);
 }
 
+function videoGifControlsFromDom() {
+  return {
+    workId: document.querySelector("#video-gif-work")?.value || state.imageEditWorkId || "",
+    characterId: document.querySelector("#video-gif-character")?.value || "",
+    frameRate: videoGifFrameRateValue(document.querySelector("#video-gif-frame-rate")?.value || state.videoGifFrameRate),
+    width: videoGifWidthValue(document.querySelector("#video-gif-width")?.value || state.videoGifWidth),
+    startTime: videoGifStartTimeValue(document.querySelector("#video-gif-start-time")?.value ?? state.videoGifStartTime),
+    duration: videoGifDurationValue(document.querySelector("#video-gif-duration")?.value ?? state.videoGifDuration)
+  };
+}
+
+function rememberVideoGifControls(controls = videoGifControlsFromDom()) {
+  state.imageEditWorkId = controls.workId || null;
+  state.imageEditCharacterId = controls.characterId || "";
+  state.videoGifFrameRate = videoGifFrameRateValue(controls.frameRate);
+  state.videoGifWidth = videoGifWidthValue(controls.width);
+  state.videoGifStartTime = videoGifStartTimeValue(controls.startTime);
+  state.videoGifDuration = videoGifDurationValue(controls.duration);
+}
+
 function parseHexColor(value) {
   const match = String(value || "").trim().match(/^#?([0-9a-f]{6})$/i);
   if (!match) return [255, 255, 255];
@@ -4421,6 +4668,399 @@ function imageFromDataUrl(dataUrl) {
     image.onerror = () => reject(new Error("画像を読み込めませんでした。"));
     image.src = dataUrl;
   });
+}
+
+const manualImageEditor = {
+  sourceKey: "",
+  sourceName: "",
+  sourceDataUrl: "",
+  width: 0,
+  height: 0,
+  canvas: null,
+  context: null,
+  overlay: null,
+  overlayContext: null,
+  originalImage: null,
+  originalImageData: null,
+  currentImageData: null,
+  undoStack: [],
+  lassoPoints: [],
+  hoverPoint: null,
+  isDrawing: false,
+  pointerId: null,
+  lastPoint: null,
+  loadToken: 0
+};
+
+function manualImageEditSourceKey(source) {
+  return [source?.key, source?.name, source?.createdAt, source?.url].filter(Boolean).join("|");
+}
+
+function manualImageEditorReady() {
+  return Boolean(manualImageEditor.canvas && manualImageEditor.context && manualImageEditor.width && manualImageEditor.height);
+}
+
+function manualImageEditorAttach(canvas, overlay) {
+  manualImageEditor.canvas = canvas;
+  manualImageEditor.context = canvas.getContext("2d", { willReadFrequently: true });
+  manualImageEditor.overlay = overlay;
+  manualImageEditor.overlayContext = overlay.getContext("2d");
+  const width = manualImageEditor.width || 1;
+  const height = manualImageEditor.height || 1;
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  if (overlay.width !== width || overlay.height !== height) {
+    overlay.width = width;
+    overlay.height = height;
+  }
+}
+
+function manualImageEditorRedraw() {
+  if (!manualImageEditorReady()) return;
+  const context = manualImageEditor.context;
+  context.clearRect(0, 0, manualImageEditor.width, manualImageEditor.height);
+  if (manualImageEditor.currentImageData) {
+    context.putImageData(manualImageEditor.currentImageData, 0, 0);
+  } else if (manualImageEditor.originalImage) {
+    context.drawImage(manualImageEditor.originalImage, 0, 0, manualImageEditor.width, manualImageEditor.height);
+    manualImageEditor.currentImageData = context.getImageData(0, 0, manualImageEditor.width, manualImageEditor.height);
+  }
+  manualImageEditorDrawOverlay();
+}
+
+async function ensureManualImageEditor() {
+  const canvas = document.querySelector("#image-edit-manual-canvas");
+  const overlay = document.querySelector("#image-edit-manual-overlay");
+  const source = selectedImageEditSource();
+  if (!canvas || !overlay || !source) return false;
+  const sourceKey = manualImageEditSourceKey(source);
+  if (manualImageEditor.sourceKey === sourceKey && manualImageEditor.currentImageData) {
+    manualImageEditorAttach(canvas, overlay);
+    manualImageEditorRedraw();
+    bindManualImageEditorCanvas();
+    return true;
+  }
+  const loadToken = manualImageEditor.loadToken + 1;
+  manualImageEditor.loadToken = loadToken;
+  const dataUrl = await sourceDataUrlForImageEdit(source);
+  const image = await imageFromDataUrl(dataUrl);
+  if (manualImageEditor.loadToken !== loadToken || state.view !== "edit" || normalizedImageEditProvider(state.imageEditProvider) !== "manual") {
+    return false;
+  }
+  const width = image.naturalWidth || image.width;
+  const height = image.naturalHeight || image.height;
+  manualImageEditor.sourceKey = sourceKey;
+  manualImageEditor.sourceName = source.name || "image.png";
+  manualImageEditor.sourceDataUrl = dataUrl;
+  manualImageEditor.width = width;
+  manualImageEditor.height = height;
+  manualImageEditor.originalImage = image;
+  manualImageEditor.undoStack = [];
+  manualImageEditor.lassoPoints = [];
+  manualImageEditor.hoverPoint = null;
+  manualImageEditor.isDrawing = false;
+  manualImageEditor.pointerId = null;
+  manualImageEditor.lastPoint = null;
+  manualImageEditorAttach(canvas, overlay);
+  const context = manualImageEditor.context;
+  context.clearRect(0, 0, width, height);
+  context.drawImage(image, 0, 0, width, height);
+  manualImageEditor.originalImageData = context.getImageData(0, 0, width, height);
+  manualImageEditor.currentImageData = context.getImageData(0, 0, width, height);
+  bindManualImageEditorCanvas();
+  manualImageEditorDrawOverlay();
+  return true;
+}
+
+function manualImageEditorPoint(event) {
+  const canvas = manualImageEditor.canvas;
+  const rect = canvas?.getBoundingClientRect();
+  if (!canvas || !rect?.width || !rect?.height) return null;
+  return {
+    x: Math.max(0, Math.min(canvas.width, (event.clientX - rect.left) * (canvas.width / rect.width))),
+    y: Math.max(0, Math.min(canvas.height, (event.clientY - rect.top) * (canvas.height / rect.height)))
+  };
+}
+
+function manualImageEditorDistance(a, b) {
+  const dx = (a?.x || 0) - (b?.x || 0);
+  const dy = (a?.y || 0) - (b?.y || 0);
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function manualImageEditorDrawOverlay() {
+  const context = manualImageEditor.overlayContext;
+  if (!context || !manualImageEditor.overlay) return;
+  const width = manualImageEditor.overlay.width;
+  const height = manualImageEditor.overlay.height;
+  context.clearRect(0, 0, width, height);
+  const points = manualImageEditor.lassoPoints;
+  if (points.length) {
+    context.save();
+    context.lineWidth = Math.max(2, Math.min(width, height) / 220);
+    context.strokeStyle = "rgba(31, 138, 132, 0.95)";
+    context.fillStyle = "rgba(31, 138, 132, 0.12)";
+    context.setLineDash([10, 8]);
+    context.beginPath();
+    context.moveTo(points[0].x, points[0].y);
+    points.slice(1).forEach((point) => context.lineTo(point.x, point.y));
+    if (!manualImageEditor.isDrawing && points.length > 2) context.closePath();
+    context.stroke();
+    if (!manualImageEditor.isDrawing && points.length > 2) context.fill();
+    context.restore();
+  }
+  const tool = normalizedManualImageEditTool(state.imageEditManualTool);
+  if (manualImageEditor.hoverPoint && tool !== "boundary") {
+    const radius = imageEditManualBrushSizeValue(state.imageEditManualBrushSize) / 2;
+    context.save();
+    context.lineWidth = Math.max(2, radius / 10);
+    context.strokeStyle = tool === "restore" ? "rgba(103, 122, 47, 0.95)" : "rgba(210, 82, 82, 0.95)";
+    context.fillStyle = tool === "restore" ? "rgba(103, 122, 47, 0.12)" : "rgba(210, 82, 82, 0.12)";
+    context.beginPath();
+    context.arc(manualImageEditor.hoverPoint.x, manualImageEditor.hoverPoint.y, radius, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+    context.restore();
+  }
+}
+
+function manualImageEditorPushUndo() {
+  if (!manualImageEditorReady()) return;
+  manualImageEditor.undoStack.push(manualImageEditor.context.getImageData(0, 0, manualImageEditor.width, manualImageEditor.height));
+  if (manualImageEditor.undoStack.length > 12) manualImageEditor.undoStack.shift();
+}
+
+function manualImageEditorInvalidateResult() {
+  if (state.imageEditResult) state.imageEditResult = null;
+  const saveButton = document.querySelector("[data-action='save-image-edit-result']");
+  if (saveButton) saveButton.disabled = true;
+}
+
+function manualImageEditorCaptureCurrent() {
+  if (!manualImageEditorReady()) return;
+  manualImageEditor.currentImageData = manualImageEditor.context.getImageData(0, 0, manualImageEditor.width, manualImageEditor.height);
+}
+
+function manualImageEditorCommitEdit() {
+  manualImageEditorCaptureCurrent();
+  manualImageEditorInvalidateResult();
+}
+
+function manualImageEditorRestoreCircle(x, y, radius) {
+  const context = manualImageEditor.context;
+  const original = manualImageEditor.originalImageData;
+  if (!context || !original) return;
+  const left = Math.max(0, Math.floor(x - radius));
+  const top = Math.max(0, Math.floor(y - radius));
+  const right = Math.min(manualImageEditor.width, Math.ceil(x + radius));
+  const bottom = Math.min(manualImageEditor.height, Math.ceil(y + radius));
+  const width = right - left;
+  const height = bottom - top;
+  if (width <= 0 || height <= 0) return;
+  const imageData = context.getImageData(left, top, width, height);
+  const target = imageData.data;
+  const source = original.data;
+  const radiusSq = radius * radius;
+  for (let yy = 0; yy < height; yy += 1) {
+    for (let xx = 0; xx < width; xx += 1) {
+      const px = left + xx;
+      const py = top + yy;
+      const dx = px - x;
+      const dy = py - y;
+      if ((dx * dx) + (dy * dy) > radiusSq) continue;
+      const targetOffset = (yy * width + xx) * 4;
+      const sourceOffset = (py * manualImageEditor.width + px) * 4;
+      target[targetOffset] = source[sourceOffset];
+      target[targetOffset + 1] = source[sourceOffset + 1];
+      target[targetOffset + 2] = source[sourceOffset + 2];
+      target[targetOffset + 3] = source[sourceOffset + 3];
+    }
+  }
+  context.putImageData(imageData, left, top);
+}
+
+function manualImageEditorEraseSegment(from, to, brushSize) {
+  const context = manualImageEditor.context;
+  if (!context) return;
+  context.save();
+  context.globalCompositeOperation = "destination-out";
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  context.lineWidth = brushSize;
+  context.strokeStyle = "rgba(0, 0, 0, 1)";
+  context.fillStyle = "rgba(0, 0, 0, 1)";
+  if (manualImageEditorDistance(from, to) < 0.5) {
+    context.beginPath();
+    context.arc(to.x, to.y, brushSize / 2, 0, Math.PI * 2);
+    context.fill();
+  } else {
+    context.beginPath();
+    context.moveTo(from.x, from.y);
+    context.lineTo(to.x, to.y);
+    context.stroke();
+  }
+  context.restore();
+}
+
+function manualImageEditorRestoreSegment(from, to, brushSize) {
+  const radius = brushSize / 2;
+  const distance = manualImageEditorDistance(from, to);
+  const steps = Math.max(1, Math.ceil(distance / Math.max(1, radius / 3)));
+  for (let index = 0; index <= steps; index += 1) {
+    const ratio = index / steps;
+    manualImageEditorRestoreCircle(
+      from.x + (to.x - from.x) * ratio,
+      from.y + (to.y - from.y) * ratio,
+      radius
+    );
+  }
+}
+
+function manualImageEditorApplyBrush(from, to) {
+  const brushSize = imageEditManualBrushSizeValue(state.imageEditManualBrushSize);
+  const tool = normalizedManualImageEditTool(state.imageEditManualTool);
+  if (tool === "restore") {
+    manualImageEditorRestoreSegment(from, to, brushSize);
+  } else {
+    manualImageEditorEraseSegment(from, to, brushSize);
+  }
+}
+
+function manualImageEditorUndo() {
+  if (!manualImageEditorReady() || !manualImageEditor.undoStack.length) return toast("戻せる手動編集がありません。");
+  const previous = manualImageEditor.undoStack.pop();
+  manualImageEditor.context.putImageData(previous, 0, 0);
+  manualImageEditor.lassoPoints = [];
+  manualImageEditorCommitEdit();
+  manualImageEditorDrawOverlay();
+}
+
+function manualImageEditorReset() {
+  if (!manualImageEditorReady() || !manualImageEditor.originalImage) return;
+  manualImageEditorPushUndo();
+  manualImageEditor.context.clearRect(0, 0, manualImageEditor.width, manualImageEditor.height);
+  manualImageEditor.context.drawImage(manualImageEditor.originalImage, 0, 0, manualImageEditor.width, manualImageEditor.height);
+  manualImageEditor.lassoPoints = [];
+  manualImageEditorCommitEdit();
+  manualImageEditorDrawOverlay();
+}
+
+function manualImageEditorClearBoundary() {
+  manualImageEditor.lassoPoints = [];
+  manualImageEditorDrawOverlay();
+}
+
+function manualImageEditorApplyBoundary(mode) {
+  if (!manualImageEditorReady()) return;
+  const points = manualImageEditor.lassoPoints;
+  if (points.length < 3) return toast("境界指定がありません。");
+  manualImageEditorPushUndo();
+  const context = manualImageEditor.context;
+  context.save();
+  context.beginPath();
+  context.moveTo(points[0].x, points[0].y);
+  points.slice(1).forEach((point) => context.lineTo(point.x, point.y));
+  context.closePath();
+  context.globalCompositeOperation = mode === "keep-inside" ? "destination-in" : "destination-out";
+  context.fillStyle = "rgba(0, 0, 0, 1)";
+  context.fill();
+  context.restore();
+  manualImageEditor.lassoPoints = [];
+  manualImageEditorCommitEdit();
+  manualImageEditorDrawOverlay();
+}
+
+function manualImageEditorPointerDown(event) {
+  if (event.button !== 0 || !manualImageEditorReady()) return;
+  const point = manualImageEditorPoint(event);
+  if (!point) return;
+  event.preventDefault();
+  manualImageEditor.pointerId = event.pointerId;
+  manualImageEditor.isDrawing = true;
+  manualImageEditor.hoverPoint = point;
+  manualImageEditor.overlay?.setPointerCapture?.(event.pointerId);
+  const tool = normalizedManualImageEditTool(state.imageEditManualTool);
+  if (tool === "boundary") {
+    manualImageEditor.lassoPoints = [point];
+  } else {
+    manualImageEditorPushUndo();
+    manualImageEditor.lastPoint = point;
+    manualImageEditorApplyBrush(point, point);
+  }
+  manualImageEditorDrawOverlay();
+}
+
+function manualImageEditorPointerMove(event) {
+  if (!manualImageEditorReady()) return;
+  const point = manualImageEditorPoint(event);
+  if (!point) return;
+  manualImageEditor.hoverPoint = point;
+  if (manualImageEditor.isDrawing && manualImageEditor.pointerId === event.pointerId) {
+    event.preventDefault();
+    const tool = normalizedManualImageEditTool(state.imageEditManualTool);
+    if (tool === "boundary") {
+      const previous = manualImageEditor.lassoPoints.at(-1);
+      if (!previous || manualImageEditorDistance(previous, point) >= 3) manualImageEditor.lassoPoints.push(point);
+    } else if (manualImageEditor.lastPoint) {
+      manualImageEditorApplyBrush(manualImageEditor.lastPoint, point);
+      manualImageEditor.lastPoint = point;
+    }
+  }
+  manualImageEditorDrawOverlay();
+}
+
+function manualImageEditorPointerUp(event) {
+  if (!manualImageEditor.isDrawing || manualImageEditor.pointerId !== event.pointerId) return;
+  const point = manualImageEditorPoint(event);
+  const tool = normalizedManualImageEditTool(state.imageEditManualTool);
+  if (tool === "boundary" && point) {
+    const previous = manualImageEditor.lassoPoints.at(-1);
+    if (!previous || manualImageEditorDistance(previous, point) >= 3) manualImageEditor.lassoPoints.push(point);
+  } else if (tool !== "boundary") {
+    manualImageEditorCommitEdit();
+  }
+  manualImageEditor.isDrawing = false;
+  manualImageEditor.pointerId = null;
+  manualImageEditor.lastPoint = null;
+  manualImageEditor.overlay?.releasePointerCapture?.(event.pointerId);
+  manualImageEditorDrawOverlay();
+}
+
+function bindManualImageEditorCanvas() {
+  const overlay = manualImageEditor.overlay;
+  if (!overlay) return;
+  overlay.onpointerdown = manualImageEditorPointerDown;
+  overlay.onpointermove = manualImageEditorPointerMove;
+  overlay.onpointerup = manualImageEditorPointerUp;
+  overlay.onpointercancel = manualImageEditorPointerUp;
+  overlay.onpointerleave = (event) => {
+    if (manualImageEditor.isDrawing && manualImageEditor.pointerId === event.pointerId) return;
+    manualImageEditor.hoverPoint = null;
+    manualImageEditorDrawOverlay();
+  };
+}
+
+async function createManualImageEditResult(source) {
+  const ready = await ensureManualImageEditor();
+  if (!ready || !manualImageEditorReady()) throw new Error("手動編集キャンバスを準備できませんでした。");
+  manualImageEditorCaptureCurrent();
+  const dataUrl = manualImageEditor.canvas.toDataURL("image/png");
+  const info = await getImageInfo(dataUrl);
+  state.imageEditResult = {
+    dataUrl,
+    name: transparentPngName(source.name, "manual"),
+    sourceName: source.name || "",
+    provider: "manual",
+    providerLabel: "手動フリーモード",
+    width: info.width,
+    height: info.height,
+    aspectRatio: info.aspectRatio,
+    aspectRatioText: info.aspectRatioText,
+    createdAt: new Date().toISOString()
+  };
+  toast("手動編集を透過PNGに反映しました。");
 }
 
 function averageImageColor(data, width, height, startX, startY, sampleSize) {
@@ -4548,6 +5188,15 @@ async function runImageEdit() {
   rememberImageEditControls(controls);
   const source = selectedImageEditSource();
   if (!source) return toast("編集元画像を選択してください。");
+  if (controls.provider === "manual") {
+    try {
+      await createManualImageEditResult(source);
+      render();
+    } catch (error) {
+      toast(error.message);
+    }
+    return;
+  }
   state.imageEditIsRunning = true;
   state.imageEditResult = null;
   render();
@@ -4794,6 +5443,112 @@ async function runBackgroundRemoverVideo() {
   }
 }
 
+async function checkVideoGifStatus({ silent = false } = {}) {
+  state.videoGifStatus = "loading";
+  state.videoGifError = "";
+  if (!silent) render();
+  try {
+    const result = await postJson("/api/image-edit/video-gif/status", {});
+    state.videoGifInfo = result;
+    state.videoGifStatus = result.found ? "ready" : "missing";
+    state.videoGifError = result.found ? "" : (result.installHint || "ffmpegが見つかりません。");
+    if (!silent) {
+      render();
+      toast(result.found ? "ffmpegを利用できます。" : "ffmpegが見つかりません。");
+    }
+    return result;
+  } catch (error) {
+    state.videoGifStatus = "failed";
+    state.videoGifError = error.message;
+    if (!silent) {
+      render();
+      toast(error.message);
+    }
+    return null;
+  }
+}
+
+function videoGifMemo(controls) {
+  const duration = Number(controls.duration) > 0 ? `${controls.duration}秒` : "末尾まで";
+  return `${controls.frameRate}fps / 幅${controls.width}px / ${controls.startTime}秒から${duration}`;
+}
+
+async function runVideoGifConversion() {
+  const file = state.videoGifFile;
+  if (!file?.dataUrl) return toast("GIF化する動画を選択してください。");
+  const controls = videoGifControlsFromDom();
+  rememberVideoGifControls(controls);
+  const selectedChar = byId(state.db.characters, state.imageEditCharacterId);
+  const work = byId(state.db.works, selectedChar?.workId || state.imageEditWorkId || state.selectedWorkId);
+  state.videoGifIsRunning = true;
+  state.videoGifResult = null;
+  render();
+  try {
+    toastApiSubmitted("動画のGIF化を開始しました。完了までお待ちください。");
+    const result = await postJson("/api/image-edit/video-gif", {
+      dataUrl: file.dataUrl,
+      name: file.name || "video.mp4",
+      workName: work?.name,
+      characterName: selectedChar?.name || "",
+      folderName: "_画像編集",
+      frameRate: controls.frameRate,
+      width: controls.width,
+      startTime: controls.startTime,
+      duration: controls.duration
+    });
+    result.saveTargetLabel = selectedChar
+      ? `${selectedChar.name} の画像フォルダに保存し、画像一覧と動画生成の参照素材に登録済みです。`
+      : "作品の _画像編集 に保存し、画像一覧と動画生成の参照素材に登録済みです。";
+    state.videoGifResult = result;
+    const info = await getImageInfo(result.url);
+    const createdAt = new Date().toISOString();
+    const memo = videoGifMemo(controls);
+    state.db.assets.unshift({
+      id: uid(),
+      workId: work?.id || null,
+      characterId: selectedChar?.id || null,
+      worldItemId: null,
+      name: result.name || file.name || "video.gif",
+      url: result.url,
+      localPath: result.path,
+      status: selectedChar ? "matched" : "unassigned",
+      confidence: selectedChar ? 1 : null,
+      aiPrompt: "",
+      aiPromptFormat: selectedChar ? promptFormatOf(selectedChar) : "natural",
+      aiReason: `動画GIF化で作成（${memo}）`,
+      width: info.width,
+      height: info.height,
+      aspectRatio: info.aspectRatio,
+      aspectRatioText: info.aspectRatioText,
+      createdAt
+    });
+    state.db.videoMedia.unshift({
+      id: uid(),
+      workId: work?.id || null,
+      characterId: selectedChar?.id || null,
+      kind: "image",
+      name: result.name || file.name || "video.gif",
+      url: result.url,
+      localPath: result.path,
+      mimeType: "image/gif",
+      width: info.width || null,
+      height: info.height || null,
+      aspectRatio: info.aspectRatio || null,
+      aspectRatioText: info.aspectRatioText || "",
+      subject: "動画GIF化",
+      memo,
+      createdAt
+    });
+    await saveDb();
+    toast(selectedChar ? `GIFを ${selectedChar.name} に保存しました。` : "GIF化した動画を画像一覧へ保存しました。");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    state.videoGifIsRunning = false;
+    render();
+  }
+}
+
 function bindImageEditor() {
   const persist = () => rememberImageEditControls();
   document.querySelector("#image-edit-work")?.addEventListener("change", (event) => {
@@ -4851,6 +5606,32 @@ function bindImageEditor() {
       persist();
       if (selector === "#image-edit-background-mode") render();
     });
+  });
+  document.querySelector("#image-edit-manual-tool")?.addEventListener("change", () => {
+    persist();
+    manualImageEditor.lassoPoints = [];
+    manualImageEditorDrawOverlay();
+  });
+  document.querySelector("#image-edit-manual-brush-size")?.addEventListener("input", () => {
+    persist();
+    manualImageEditorDrawOverlay();
+  });
+  document.querySelector("[data-action='manual-image-edit-undo']")?.addEventListener("click", async () => {
+    await ensureManualImageEditor();
+    manualImageEditorUndo();
+  });
+  document.querySelector("[data-action='manual-image-edit-reset']")?.addEventListener("click", async () => {
+    await ensureManualImageEditor();
+    manualImageEditorReset();
+  });
+  document.querySelector("[data-action='manual-image-edit-clear-boundary']")?.addEventListener("click", () => manualImageEditorClearBoundary());
+  document.querySelector("[data-action='manual-image-edit-keep-inside']")?.addEventListener("click", async () => {
+    await ensureManualImageEditor();
+    manualImageEditorApplyBoundary("keep-inside");
+  });
+  document.querySelector("[data-action='manual-image-edit-remove-inside']")?.addEventListener("click", async () => {
+    await ensureManualImageEditor();
+    manualImageEditorApplyBoundary("remove-inside");
   });
   document.querySelector("#image-edit-removebg-key")?.addEventListener("change", () => {
     const key = document.querySelector("#image-edit-removebg-key")?.value.trim() || "";
@@ -4925,6 +5706,68 @@ function bindImageEditor() {
     render();
   });
   document.querySelector("[data-action='run-backgroundremover-video']")?.addEventListener("click", runBackgroundRemoverVideo);
+  if (normalizedImageEditProvider(state.imageEditProvider) === "manual") {
+    requestAnimationFrame(() => {
+      ensureManualImageEditor().catch((error) => toast(error.message));
+    });
+  }
+}
+
+function bindVideoGifConverter() {
+  const persist = () => rememberVideoGifControls();
+  document.querySelector("#video-gif-work")?.addEventListener("change", (event) => {
+    state.imageEditWorkId = event.target.value || null;
+    state.selectedWorkId = state.imageEditWorkId;
+    if (state.imageEditCharacterId && !charactersForWork(state.imageEditWorkId).some((char) => char.id === state.imageEditCharacterId)) {
+      state.imageEditCharacterId = "";
+    }
+    render();
+  });
+  document.querySelector("#video-gif-character")?.addEventListener("change", (event) => {
+    state.imageEditCharacterId = event.target.value || "";
+    const char = byId(state.db.characters, state.imageEditCharacterId);
+    if (char) {
+      state.imageEditWorkId = char.workId;
+      state.selectedWorkId = char.workId;
+    }
+    render();
+  });
+  ["#video-gif-frame-rate", "#video-gif-width", "#video-gif-start-time", "#video-gif-duration"].forEach((selector) => {
+    document.querySelector(selector)?.addEventListener("input", persist);
+    document.querySelector(selector)?.addEventListener("change", persist);
+  });
+  document.querySelector("[data-action='choose-video-gif-file']")?.addEventListener("click", () => {
+    document.querySelector("#video-gif-input")?.click();
+  });
+  document.querySelector("#video-gif-input")?.addEventListener("change", async (event) => {
+    const file = [...(event.target.files || [])].find((item) => item.type.startsWith("video/") || item.type === "image/gif" || /\.gif$/i.test(item.name));
+    if (!file) return;
+    if (file.size > 180 * 1024 * 1024) {
+      event.target.value = "";
+      return toast("動画は180MB以下を選択してください。長い素材は短く切ってからGIF化すると安定します。");
+    }
+    state.videoGifFile = {
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      dataUrl: await fileToDataUrl(file),
+      createdAt: new Date().toISOString()
+    };
+    state.videoGifResult = null;
+    if (state.videoGifStatus === "idle") {
+      checkVideoGifStatus({ silent: true }).then(() => {
+        if (state.view === "edit-gif") render();
+      });
+    }
+    render();
+  });
+  document.querySelector("[data-action='clear-video-gif-file']")?.addEventListener("click", () => {
+    state.videoGifFile = null;
+    state.videoGifResult = null;
+    render();
+  });
+  document.querySelector("[data-action='check-video-gif-ffmpeg']")?.addEventListener("click", () => checkVideoGifStatus());
+  document.querySelector("[data-action='run-video-gif-conversion']")?.addEventListener("click", runVideoGifConversion);
 }
 
 function mediaKindFromFile(file) {
@@ -8701,6 +9544,12 @@ function renderSettings() {
 }
 
 function bindCommon() {
+  document.querySelectorAll("[data-nav-parent]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.view = button.dataset.defaultView || button.dataset.navParent;
+      render();
+    });
+  });
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.addEventListener("click", () => {
       state.view = button.dataset.view;
@@ -8720,6 +9569,7 @@ function bindView() {
   if (state.view === "gallery") bindGallery();
   if (state.view === "image") bindImageAgent();
   if (state.view === "edit") bindImageEditor();
+  if (state.view === "edit-gif") bindVideoGifConverter();
   if (state.view === "audio") bindAudioAgent();
   if (state.view === "video") bindVideoAgent();
   if (state.view === "library") bindLibrary();

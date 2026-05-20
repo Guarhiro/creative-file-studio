@@ -1,7 +1,7 @@
 # Creative File Studio
 
 ローカル環境で動く、創作支援向けのファイル管理アプリです。作品、キャラ設定、取り込み画像、世界観資料、生成プロンプト、画像生成、画像編集、音声、動画をまとめて扱えます。
-画像生成はComfyUI互換APIでローカルGPUとクラウドGPUを切り替え、画像編集は簡易ローカル処理、ローカルAI rembg、ローカルAI backgroundremover、remove.bgクラウドAPIを切り替え、動画背景除去はbackgroundremoverで透過GIF/MOV/マット動画を作成できます。動画生成は公式Seedance APIまたはOpenRouterの動画モデル、音声生成はOpenRouter TTS、ElevenLabs、Voicebox、ローカル Irodori-TTS を切り替えて使えます。
+画像生成はComfyUI互換APIでローカルGPUとクラウドGPUを切り替え、画像編集は簡易ローカル処理、手動フリーモード、ローカルAI rembg、ローカルAI backgroundremover、remove.bgクラウドAPIを切り替え、動画背景除去と動画GIF化も扱えます。動画生成は公式Seedance APIまたはOpenRouterの動画モデル、音声生成はOpenRouter TTS、ElevenLabs、Voicebox、ローカル Irodori-TTS を切り替えて使えます。
 
 ## 起動
 
@@ -172,13 +172,16 @@ ZIPに含めないもの:
 
 ### 画像編集
 
+- 左メニューの「画像編集」配下に「背景除去」と「動画GIF化」を表示する階層メニューに対応
 - 画像一覧、キャラ立ち絵、その他情報、生成画像、追加アップロード画像から編集元を選択
 - 背景除去と透過PNG変換に対応
 - 簡易ローカル処理では端末内のCanvasで背景色を推定し、許容値と境界ぼかしを調整
+- 手動フリーモードではCanvas上で境界指定、ペン除去、復元ペンを使って透過PNGを調整
 - ローカルAI rembgでは `isnet-general-use`、`isnet-anime`、`birefnet-general`、`u2net_human_seg` などのモデルを選択
 - rembg未導入環境では画像編集画面から `vendor/rembg-venv` にセットアップ可能
 - ローカルAI backgroundremoverでは `u2net`、`u2netp`、`u2net_human_seg` を選択し、Alpha mattingも試用可能
 - 画像編集画面の動画背景除去ではbackgroundremoverで透過GIF、透過MOV、マット動画MP4を作成
+- 動画GIF化ではffmpegでFPS、最大幅、開始秒、長さを指定してGIFを書き出し、保存時のキャラ指定があれば `data/uploads/<作品名>/<キャラ名>/`、紐づけなしなら `data/uploads/<作品名>/_画像編集/` に保存
 - backgroundremover未導入環境では画像編集画面から `vendor/backgroundremover-venv` にセットアップ可能。動画処理用のffmpeg/ffprobeもアプリ内venvに用意
 - クラウド処理ではremove.bg APIを選択し、透過PNGを取得
 - 編集結果を `data/uploads/<作品名>/_画像編集/` に保存し、画像一覧と画像整理に自動登録

@@ -39,6 +39,13 @@ is_http_up() {
   curl -fsS "http://localhost:$1" >/dev/null 2>&1
 }
 
+is_current_server_up() {
+  curl -fsS -X POST \
+    -H "content-type: application/json" \
+    --data '{}' \
+    "http://localhost:$1/api/image-edit/video-gif/status" >/dev/null 2>&1
+}
+
 is_port_busy() {
   if command -v lsof >/dev/null 2>&1; then
     lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
@@ -48,16 +55,28 @@ is_port_busy() {
 }
 
 if is_http_up "${PORT}"; then
-  echo "すでに ${URL} でサーバーが起動しています。ブラウザを開きます。"
-  open "${URL}"
-  echo
-  read -r -p "Enterキーで閉じます..."
-  exit 0
+  if is_current_server_up "${PORT}"; then
+    echo "すでに ${URL} で最新版サーバーが起動しています。ブラウザを開きます。"
+    open "${URL}"
+    echo
+    read -r -p "Enterキーで閉じます..."
+    exit 0
+  fi
+  echo "${PORT} 番ポートには古いサーバーが起動している可能性があります。空きポートで最新版を起動します。"
 fi
 
 if is_port_busy "${PORT}"; then
   echo "${PORT} 番ポートは別のプロセスが使用中です。空きポートを探します。"
   for candidate in $(seq $((START_PORT + 1)) $((START_PORT + 20))); do
+    if is_current_server_up "${candidate}"; then
+      PORT="${candidate}"
+      URL="http://localhost:${PORT}"
+      echo "すでに ${URL} で最新版サーバーが起動しています。ブラウザを開きます。"
+      open "${URL}"
+      echo
+      read -r -p "Enterキーで閉じます..."
+      exit 0
+    fi
     if ! is_port_busy "${candidate}"; then
       PORT="${candidate}"
       URL="http://localhost:${PORT}"

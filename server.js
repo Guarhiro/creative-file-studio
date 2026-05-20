@@ -606,6 +606,21 @@ async function checkFfmpeg() {
   };
 }
 
+function videoGifFfmpegStatus(tools) {
+  const ffmpeg = tools?.result?.ffmpeg || {};
+  const ffprobe = tools?.result?.ffprobe || {};
+  return {
+    found: Boolean(ffmpeg.ok),
+    version: ffmpeg.ok ? (ffmpeg.stdout?.split("\n")[0] || "").trim() : "",
+    ffmpegFound: Boolean(ffmpeg.ok),
+    ffprobeFound: Boolean(ffprobe.ok),
+    ffprobeVersion: ffprobe.ok ? (ffprobe.stdout?.split("\n")[0] || "").trim() : "",
+    error: ffmpeg.ok ? "" : (ffmpeg.stderr || ffmpeg.stdout || ffmpeg.error || "ffmpeg が見つかりません。"),
+    installHint: "ffmpegをPATHに追加するか、画像編集画面のbackgroundremoverセットアップで同梱ffmpegを用意してください。",
+    result: tools?.result || null
+  };
+}
+
 async function checkBackgroundRemoverPython(candidate) {
   const result = await runProcess([
     candidate,
@@ -1096,6 +1111,28 @@ function backgroundRemoverOutputName(name, suffix, ext) {
   return `${Date.now()}-${crypto.randomUUID()}-${base}-${suffix}${ext}`;
 }
 
+function normalizedVideoGifFrameRate(value) {
+  return boundedNumber(value, 12, 1, 30, true);
+}
+
+function normalizedVideoGifWidth(value) {
+  return boundedNumber(value, 640, 160, 1920, true);
+}
+
+function normalizedVideoGifStartTime(value) {
+  return boundedNumber(value, 0, 0, 36000, false);
+}
+
+function normalizedVideoGifDuration(value) {
+  return boundedNumber(value, 6, 0, 600, false);
+}
+
+function videoGifOutputName(name) {
+  const parsed = path.parse(path.basename(String(name || "video")));
+  const base = cleanFileNamePart(parsed.name, "video", 80);
+  return `${base}-gif.gif`;
+}
+
 async function handleBackgroundRemoverStatus(req, res) {
   const { pythonPath = "" } = await readJson(req, 256 * 1024).catch(() => ({}));
   sendJson(res, 200, await resolveBackgroundRemoverPython(pythonPath));
@@ -1289,6 +1326,105 @@ async function handleBackgroundRemoverVideo(req, res) {
     });
   } catch (error) {
     sendJson(res, 502, { error: `backgroundremover 動画背景除去に失敗しました: ${error.message}` });
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function handleVideoGifStatus(req, res) {
+  const tools = await checkFfmpeg();
+  sendJson(res, 200, videoGifFfmpegStatus(tools));
+}
+
+async function handleVideoGifConvert(req, res) {
+  const body = await readJson(req, 260 * 1024 * 1024);
+  let parsed;
+  try {
+    parsed = parseDataUrl(body.dataUrl, ["video", "image"]);
+    if (parsed.kind === "image" && parsed.subtype !== "gif") throw new Error("動画またはGIFの data URL が必要です。");
+  } catch (error) {
+    return sendJson(res, 400, { error: error.message || "動画またはGIFの data URL が必要です。" });
+  }
+
+  const tools = await checkFfmpeg();
+  const ffmpegStatus = videoGifFfmpegStatus(tools);
+  if (!ffmpegStatus.found) {
+    return sendJson(res, 400, {
+      error: `動画GIF化にはffmpegが必要です。${ffmpegStatus.error || ""}`.trim(),
+      status: ffmpegStatus
+    });
+  }
+
+  const frameRate = normalizedVideoGifFrameRate(body.frameRate);
+  const width = normalizedVideoGifWidth(body.width);
+  const startTime = normalizedVideoGifStartTime(body.startTime);
+  const duration = normalizedVideoGifDuration(body.duration);
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "creative-file-studio-video-gif-"));
+  const inputPath = path.join(tempDir, safeOriginalFileName(body.name, parsed.ext, "video"));
+  const outputPath = path.join(tempDir, "output.gif");
+  try {
+    await fs.writeFile(inputPath, Buffer.from(parsed.base64, "base64"));
+    const filter = [
+      `fps=${frameRate}`,
+      `scale=${width}:-1:flags=lanczos`,
+      "split[s0][s1];[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=sierra2_4a"
+    ].join(",");
+    const args = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning"];
+    if (startTime > 0) args.push("-ss", String(startTime));
+    args.push("-i", inputPath);
+    if (duration > 0) args.push("-t", String(duration));
+    args.push("-filter_complex", filter, "-loop", "0", outputPath);
+    const result = await runProcess(args, {
+      cwd: __dirname,
+      timeoutMs: 30 * 60 * 1000,
+      env: backgroundRemoverEnv()
+    });
+    if (!result.ok) {
+      return sendJson(res, 500, {
+        error: `動画GIF化に失敗しました: ${result.stderr || result.stdout || result.error}`,
+        result,
+        status: ffmpegStatus
+      });
+    }
+    if (/Output file is empty|Conversion failed/i.test(`${result.stderr}\n${result.stdout}`)) {
+      return sendJson(res, 500, {
+        error: "動画GIF化が空出力で終了しました。開始秒、長さ、FPSを下げて試してください。",
+        result,
+        status: ffmpegStatus
+      });
+    }
+    if (!await isFile(outputPath)) {
+      return sendJson(res, 500, { error: "GIFの出力ファイルが見つかりません。", result, status: ffmpegStatus });
+    }
+    const outputStat = await fs.stat(outputPath);
+    if (!outputStat.size) {
+      return sendJson(res, 500, { error: "GIFの出力ファイルが空です。開始秒、長さ、FPSを調整して試してください。", result, status: ffmpegStatus });
+    }
+    const workFolder = safeFolderName(body.workName, "_未分類作品");
+    const folderName = String(body.characterName || "").trim()
+      ? safeFolderName(body.characterName, "_未割当")
+      : safeFolderName(body.folderName || "_画像編集", "_画像編集");
+    const destinationDir = path.join(uploadDir, workFolder, folderName);
+    await fs.mkdir(destinationDir, { recursive: true });
+    const destination = await uniqueFilePath(destinationDir, videoGifOutputName(body.name));
+    await fs.copyFile(outputPath, destination);
+    const savedStat = await fs.stat(destination);
+    sendJson(res, 200, {
+      url: uploadUrlFor(destination),
+      path: destination,
+      name: path.basename(destination),
+      mimeType: "image/gif",
+      provider: "ffmpeg",
+      size: savedStat.size,
+      settings: { frameRate, width, startTime, duration },
+      result: {
+        stdout: result.stdout,
+        stderr: result.stderr,
+        command: result.command
+      }
+    });
+  } catch (error) {
+    sendJson(res, 502, { error: `動画GIF化に失敗しました: ${error.message}` });
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -3528,6 +3664,14 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/backgroundremover/video") {
       return await handleBackgroundRemoverVideo(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/image-edit/video-gif/status") {
+      return await handleVideoGifStatus(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/image-edit/video-gif") {
+      return await handleVideoGifConvert(req, res);
     }
 
     if (req.method === "POST" && url.pathname === "/api/trash-import-source") {
