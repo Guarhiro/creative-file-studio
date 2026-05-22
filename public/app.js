@@ -42,6 +42,7 @@ const state = {
   imageEditTolerance: 42,
   imageEditFeather: 18,
   imageEditChromaColor: "#ffffff",
+  imageEditClickPoints: [],
   imageEditRembgModel: "isnet-general-use",
   imageEditRembgAlphaMatting: false,
   imageEditRembgPostProcess: true,
@@ -325,11 +326,12 @@ const screenHelpContent = {
           { term: "rembgモデル", description: "rembgで使う切り抜きモデルです。汎用、アニメ向け、人物向けなどから選びます。" },
           { term: "backgroundremoverモデル", description: "backgroundremoverで使うモデルです。U2-Netは汎用、U2-Net Pは軽量、U2-Net Humanは人物向けです。" },
           { term: "マスク後処理", description: "rembgで作ったマスクの穴やノイズを整える補助処理です。" },
-          { term: "背景", description: "簡易ローカル処理で抜く色の決め方です。自動、白、黒、指定色から選びます。" },
+          { term: "背景", description: "簡易ローカル処理で抜く色や範囲の決め方です。自動、白、黒、指定色、クリック認識から選びます。" },
+          { term: "クリック認識", description: "元画像をクリックした地点から近い色の連結範囲を自動認識して透過します。" },
           { term: "指定色", description: "背景を指定色で抜く時の色です。背景が単色に近い画像で使います。" },
           { term: "許容値", description: "背景色として扱う色の幅です。0-160で、高いほど広く抜けます。" },
           { term: "境界ぼかし", description: "切り抜き境界をなじませる量です。0-80で、上げるほど境界がやわらかくなります。" },
-          { term: "手動ツール", description: "ペン除去、復元ペン、境界指定を切り替えます。" },
+          { term: "手動ツール", description: "ペン除去、復元ペン、クリック認識、境界指定を切り替えます。" },
           { term: "ペンサイズ", description: "手動フリーモードで使うブラシの太さです。" },
           { term: "Alpha matting", description: "髪や半透明部分などの境界を補正する処理です。" },
           { term: "エッジ調整", description: "backgroundremoverのAlpha matting時に、境界をどれだけ内側へ削るかの値です。1-25で指定します。" },
@@ -593,12 +595,14 @@ const imageEditBackgroundModes = [
   ["auto", "背景色を推定"],
   ["white", "白背景"],
   ["black", "黒背景"],
-  ["chroma", "指定色"]
+  ["chroma", "指定色"],
+  ["click", "クリック認識"]
 ];
 
 const manualImageEditTools = [
   ["erase", "ペンで除去"],
   ["restore", "復元ペン"],
+  ["click", "クリック認識"],
   ["boundary", "境界指定"]
 ];
 
@@ -4786,6 +4790,92 @@ function renderImageEditProviderButtons(selectedProvider) {
     .join("");
 }
 
+function imageEditBackgroundSwatchStyle(value) {
+  const mode = normalizedImageEditBackgroundMode(value);
+  if (mode === "white") return "background:#ffffff;";
+  if (mode === "black") return "background:#111111;";
+  if (mode === "chroma") return `background:${escapeHtml(state.imageEditChromaColor || "#ffffff")};`;
+  if (mode === "click") return "background:radial-gradient(circle at 52% 48%, #1f8a84 0 22%, transparent 23%), conic-gradient(from 45deg, #ffffff 0 25%, #d8d2c8 0 50%, #ffffff 0 75%, #d8d2c8 0);";
+  return "background:linear-gradient(135deg, #f7f2e7 0 48%, #5f7f86 48% 52%, #2d2a25 52% 100%);";
+}
+
+function renderImageEditBackgroundModeButtons(selectedMode) {
+  const selected = normalizedImageEditBackgroundMode(selectedMode);
+  return imageEditBackgroundModes
+    .map(([value, label]) => `
+      <button
+        type="button"
+        class="ghost image-edit-background-button ${value === selected ? "active-toggle" : ""}"
+        data-action="set-image-edit-background-mode"
+        data-mode="${escapeHtml(value)}"
+        aria-pressed="${value === selected ? "true" : "false"}"
+      >
+        <span class="image-edit-background-swatch" style="${imageEditBackgroundSwatchStyle(value)}"></span>
+        <span>${escapeHtml(label)}</span>
+      </button>
+    `)
+    .join("");
+}
+
+function imageEditSourceStamp(source) {
+  return [source?.key, source?.name, source?.createdAt, source?.url].filter(Boolean).join("|");
+}
+
+function normalizedImageEditClickPoint(value) {
+  if (!value) return null;
+  const x = Number(value.x);
+  const y = Number(value.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return {
+    x: Math.max(0, Math.min(1, x)),
+    y: Math.max(0, Math.min(1, y)),
+    sourceKey: String(value.sourceKey || ""),
+    sourceStamp: String(value.sourceStamp || "")
+  };
+}
+
+function normalizedImageEditClickPoints(value) {
+  const rawPoints = Array.isArray(value) ? value : (value ? [value] : []);
+  return rawPoints
+    .map((point) => normalizedImageEditClickPoint(point))
+    .filter(Boolean);
+}
+
+function imageEditClickPointsForSource(source = selectedImageEditSource()) {
+  const points = normalizedImageEditClickPoints(state.imageEditClickPoints || state.imageEditClickPoint);
+  if (!source) return [];
+  return points.filter((point) => {
+    if (point.sourceKey !== source.key) return false;
+    if (point.sourceStamp && point.sourceStamp !== imageEditSourceStamp(source)) return false;
+    return true;
+  });
+}
+
+function clearImageEditClickPoints() {
+  state.imageEditClickPoints = [];
+}
+
+function renderImageEditClickMarkers(points) {
+  return normalizedImageEditClickPoints(points)
+    .map((point, index) => `<span class="image-edit-click-marker" style="left:${escapeHtml(String(point.x * 100))}%; top:${escapeHtml(String(point.y * 100))}%;">${escapeHtml(String(index + 1))}</span>`)
+    .join("");
+}
+
+function renderImageEditSourcePreview(source, provider, mode) {
+  if (!source) return `<div class="empty compact">画像を選択してください。</div>`;
+  const src = escapeHtml(source.url);
+  if (provider === "local" && normalizedImageEditBackgroundMode(mode) === "click") {
+    const points = imageEditClickPointsForSource(source);
+    return `
+      <button type="button" class="image-edit-click-stage" data-action="set-image-edit-click-point">
+        <img id="image-edit-click-source" class="transparent-preview" src="${src}" alt="">
+        ${renderImageEditClickMarkers(points)}
+      </button>
+    `;
+  }
+  return `<img class="transparent-preview" src="${src}" alt="">`;
+}
+
 function allImageEditSources() {
   const items = [];
   const seen = new Set();
@@ -4939,6 +5029,8 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
   const aspectResult = provider === "aspect" && result?.provider === "aspect" ? result : null;
   const isRembgBusy = state.rembgStatus === "loading" || state.rembgStatus === "installing";
   const isBackgroundRemoverBusy = state.backgroundRemoverStatus === "loading" || state.backgroundRemoverStatus === "installing";
+  const clickPointCount = imageEditClickPointsForSource(selectedSource).length;
+  const needsClickPoint = provider === "local" && mode === "click" && clickPointCount === 0;
   const runButtonLabel = imageEditRunButtonLabel(provider);
   return `
     <div class="image-edit-stack">
@@ -5032,6 +5124,15 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
             <label>ペンサイズ
               <input id="image-edit-manual-brush-size" type="range" min="4" max="220" value="${escapeHtml(state.imageEditManualBrushSize)}">
             </label>
+            ${normalizedManualImageEditTool(state.imageEditManualTool) === "click" ? `
+              <label>許容値
+                <input id="image-edit-tolerance" type="range" min="0" max="160" value="${escapeHtml(state.imageEditTolerance)}">
+              </label>
+              <label>境界ぼかし
+                <input id="image-edit-feather" type="range" min="0" max="80" value="${escapeHtml(state.imageEditFeather)}">
+              </label>
+              <div class="full meta">キャンバスをクリックすると、その地点からつながる範囲を透過します。ペン編集や復元ペンへ切り替えても反映済みの結果は残ります。</div>
+            ` : ""}
             <div class="full toolbar">
               <button class="ghost" data-action="manual-image-edit-undo" ${selectedSource ? "" : "disabled"}>戻す</button>
               <button class="ghost" data-action="manual-image-edit-reset" ${selectedSource ? "" : "disabled"}>リセット</button>
@@ -5079,13 +5180,17 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
             </div>
             <div class="full meta">${escapeHtml(backgroundRemoverStatusText())}</div>
           ` : `
-            <label>背景
-              <select id="image-edit-background-mode">
+            <div class="full image-edit-background-panel">
+              <div class="meta">背景</div>
+              <select id="image-edit-background-mode" hidden aria-hidden="true" tabindex="-1">
                 ${imageEditBackgroundModes.map(([value, label]) => `<option value="${value}" ${mode === value ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
               </select>
-            </label>
+              <div class="image-edit-background-buttons">
+                ${renderImageEditBackgroundModeButtons(mode)}
+              </div>
+            </div>
             <label>指定色
-              <input id="image-edit-chroma-color" type="color" value="${escapeHtml(state.imageEditChromaColor || "#ffffff")}" ${mode === "chroma" ? "" : "disabled"}>
+              <input id="image-edit-chroma-color" type="color" value="${escapeHtml(state.imageEditChromaColor || "#ffffff")}">
             </label>
             <label>許容値
               <input id="image-edit-tolerance" type="range" min="0" max="160" value="${escapeHtml(state.imageEditTolerance)}">
@@ -5093,9 +5198,15 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
             <label>境界ぼかし
               <input id="image-edit-feather" type="range" min="0" max="80" value="${escapeHtml(state.imageEditFeather)}">
             </label>
+            ${mode === "click" ? `
+              <div class="full toolbar">
+                <button class="ghost" data-action="undo-image-edit-click-point" ${clickPointCount ? "" : "disabled"}>戻す</button>
+              </div>
+              <div class="full meta">元画像をクリックすると、その地点からつながる背景を自動認識します。現在 ${escapeHtml(String(clickPointCount))} 点。</div>
+            ` : ""}
           `}
           <div class="full toolbar">
-            <button class="accent" data-action="run-image-edit" ${state.imageEditIsRunning || !selectedSource ? "disabled" : ""}>${runButtonLabel}</button>
+            <button class="accent" data-action="run-image-edit" ${state.imageEditIsRunning || !selectedSource || needsClickPoint ? "disabled" : ""}>${runButtonLabel}</button>
             <button class="ghost" data-action="save-image-edit-result" ${result ? "" : "disabled"}>画像一覧へ保存</button>
           </div>
         </div>
@@ -5106,7 +5217,7 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
           <div class="image-edit-preview-grid">
             <article class="image-edit-preview-card">
               <div class="meta">元画像</div>
-              ${selectedSource ? `<img class="transparent-preview" src="${escapeHtml(selectedSource.url)}" alt="">` : `<div class="empty compact">画像を選択してください。</div>`}
+              ${renderImageEditSourcePreview(selectedSource, provider, mode)}
               ${selectedSource ? `<div class="meta">${escapeHtml(selectedSource.name || "")}${selectedSource.dimensions ? ` / ${escapeHtml(selectedSource.dimensions)}` : ""}</div>` : ""}
             </article>
             <article class="image-edit-preview-card">
@@ -5298,6 +5409,7 @@ function imageEditControlsFromDom() {
     tolerance: imageEditToleranceValue(document.querySelector("#image-edit-tolerance")?.value || state.imageEditTolerance),
     feather: imageEditFeatherValue(document.querySelector("#image-edit-feather")?.value || state.imageEditFeather),
     chromaColor: document.querySelector("#image-edit-chroma-color")?.value || state.imageEditChromaColor || "#ffffff",
+    clickPoints: imageEditClickPointsForSource(selectedImageEditSource()),
     rembgModel: normalizedRembgModel(document.querySelector("#image-edit-rembg-model")?.value || state.imageEditRembgModel),
     rembgAlphaMatting: document.querySelector("#image-edit-rembg-alpha-matting")?.checked ?? state.imageEditRembgAlphaMatting,
     rembgPostProcess: document.querySelector("#image-edit-rembg-post-process")?.checked ?? state.imageEditRembgPostProcess,
@@ -5326,6 +5438,7 @@ function rememberImageEditControls(controls = imageEditControlsFromDom()) {
   state.imageEditTolerance = imageEditToleranceValue(controls.tolerance);
   state.imageEditFeather = imageEditFeatherValue(controls.feather);
   state.imageEditChromaColor = controls.chromaColor || "#ffffff";
+  state.imageEditClickPoints = normalizedImageEditClickPoints(controls.clickPoints || controls.clickPoint);
   state.imageEditRembgModel = normalizedRembgModel(controls.rembgModel);
   state.imageEditRembgAlphaMatting = Boolean(controls.rembgAlphaMatting);
   state.imageEditRembgPostProcess = Boolean(controls.rembgPostProcess);
@@ -5662,6 +5775,25 @@ function manualImageEditorApplyBrush(from, to) {
   }
 }
 
+function manualImageEditorApplyClickRecognition(point) {
+  if (!manualImageEditorReady() || !point) return;
+  const seed = {
+    x: Math.max(0, Math.min(manualImageEditor.width - 1, Math.round(point.x))),
+    y: Math.max(0, Math.min(manualImageEditor.height - 1, Math.round(point.y)))
+  };
+  manualImageEditorPushUndo();
+  const imageData = manualImageEditor.context.getImageData(0, 0, manualImageEditor.width, manualImageEditor.height);
+  applyImageEditConnectedTransparency(imageData, {
+    ...imageEditControlsFromDom(),
+    backgroundMode: "click",
+    clickPoints: []
+  }, [seed]);
+  manualImageEditor.context.putImageData(imageData, 0, 0);
+  manualImageEditor.lassoPoints = [];
+  manualImageEditorCommitEdit();
+  manualImageEditorDrawOverlay();
+}
+
 function manualImageEditorUndo() {
   if (!manualImageEditorReady() || !manualImageEditor.undoStack.length) return toast("戻せる手動編集がありません。");
   const previous = manualImageEditor.undoStack.pop();
@@ -5711,11 +5843,16 @@ function manualImageEditorPointerDown(event) {
   const point = manualImageEditorPoint(event);
   if (!point) return;
   event.preventDefault();
+  const tool = normalizedManualImageEditTool(state.imageEditManualTool);
+  if (tool === "click") {
+    manualImageEditor.hoverPoint = point;
+    manualImageEditorApplyClickRecognition(point);
+    return;
+  }
   manualImageEditor.pointerId = event.pointerId;
   manualImageEditor.isDrawing = true;
   manualImageEditor.hoverPoint = point;
   manualImageEditor.overlay?.setPointerCapture?.(event.pointerId);
-  const tool = normalizedManualImageEditTool(state.imageEditManualTool);
   if (tool === "boundary") {
     manualImageEditor.lassoPoints = [point];
   } else {
@@ -5817,11 +5954,35 @@ function averageImageColor(data, width, height, startX, startY, sampleSize) {
   return count ? [Math.round(r / count), Math.round(g / count), Math.round(b / count)] : [255, 255, 255];
 }
 
+function imageEditBackgroundModeLabel(value) {
+  const mode = normalizedImageEditBackgroundMode(value);
+  return imageEditBackgroundModes.find(([option]) => option === mode)?.[1] || "背景色を推定";
+}
+
+function imageEditLocalProviderLabel(controls) {
+  return `簡易ローカル / ${imageEditBackgroundModeLabel(controls.backgroundMode)}`;
+}
+
+function imageEditClickSeedPixels(controls, width, height) {
+  return normalizedImageEditClickPoints(controls.clickPoints || controls.clickPoint)
+    .map((point) => ({
+      x: Math.max(0, Math.min(width - 1, Math.round(point.x * (width - 1)))),
+      y: Math.max(0, Math.min(height - 1, Math.round(point.y * (height - 1))))
+    }));
+}
+
 function imageEditBackgroundColors(data, width, height, controls) {
   const mode = normalizedImageEditBackgroundMode(controls.backgroundMode);
   if (mode === "white") return [[255, 255, 255]];
   if (mode === "black") return [[0, 0, 0]];
   if (mode === "chroma") return [parseHexColor(controls.chromaColor)];
+  if (mode === "click") {
+    const seeds = imageEditClickSeedPixels(controls, width, height);
+    return seeds.map((seed) => {
+      const offset = (seed.y * width + seed.x) * 4;
+      return [data[offset], data[offset + 1], data[offset + 2]];
+    });
+  }
   const sampleSize = Math.max(3, Math.min(18, Math.floor(Math.min(width, height) / 16)));
   return [
     averageImageColor(data, width, height, 0, 0, sampleSize),
@@ -5831,16 +5992,101 @@ function imageEditBackgroundColors(data, width, height, controls) {
   ];
 }
 
-function minColorDistanceSquared(data, offset, colors) {
+function colorDistanceSquared(data, offset, color) {
+  const dr = data[offset] - color[0];
+  const dg = data[offset + 1] - color[1];
+  const db = data[offset + 2] - color[2];
+  return dr * dr + dg * dg + db * db;
+}
+
+function nearestColorIndex(data, offset, colors, allowedIndexes = null) {
   let best = Infinity;
-  for (const color of colors) {
-    const dr = data[offset] - color[0];
-    const dg = data[offset + 1] - color[1];
-    const db = data[offset + 2] - color[2];
-    const distance = dr * dr + dg * dg + db * db;
-    if (distance < best) best = distance;
+  let bestIndex = allowedIndexes?.[0] ?? 0;
+  const indexes = allowedIndexes || colors.map((_, index) => index);
+  for (const index of indexes) {
+    const distance = colorDistanceSquared(data, offset, colors[index]);
+    if (distance < best) {
+      best = distance;
+      bestIndex = index;
+    }
   }
-  return best;
+  return { index: bestIndex, distance: best };
+}
+
+function minColorDistanceSquared(data, offset, colors) {
+  return nearestColorIndex(data, offset, colors).distance;
+}
+
+function applyImageEditConnectedTransparency(imageData, controls, seedPixels = null) {
+  const { data, width, height } = imageData;
+  const mode = normalizedImageEditBackgroundMode(controls.backgroundMode);
+  const clickSeeds = seedPixels || (mode === "click" ? imageEditClickSeedPixels(controls, width, height) : []);
+  if (mode === "click" && !clickSeeds.length) throw new Error("元画像をクリックしてください。");
+  const colors = clickSeeds.length
+    ? clickSeeds.map((seed) => {
+      const offset = (seed.y * width + seed.x) * 4;
+      return [data[offset], data[offset + 1], data[offset + 2]];
+    })
+    : imageEditBackgroundColors(data, width, height, controls);
+  const tolerance = imageEditToleranceValue(controls.tolerance);
+  const feather = imageEditFeatherValue(controls.feather);
+  const maxDistance = tolerance + feather;
+  const maxDistanceSq = maxDistance * maxDistance;
+  const pixelCount = width * height;
+  const mask = new Uint8Array(pixelCount);
+  const maskColorIndexes = new Int16Array(pixelCount);
+  maskColorIndexes.fill(-1);
+  const queue = [];
+  const pushIfBackground = (x, y, allowedColorIndexes = null) => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return;
+    const index = y * width + x;
+    if (mask[index]) return;
+    const offset = index * 4;
+    const nearest = nearestColorIndex(data, offset, colors, allowedColorIndexes);
+    if (data[offset + 3] < 8 || nearest.distance <= maxDistanceSq) {
+      mask[index] = 1;
+      maskColorIndexes[index] = nearest.index;
+      queue.push({ index, colorIndex: nearest.index });
+    }
+  };
+  if (clickSeeds.length) {
+    clickSeeds.forEach((seed, index) => pushIfBackground(seed.x, seed.y, [index]));
+  } else {
+    for (let x = 0; x < width; x += 1) {
+      pushIfBackground(x, 0);
+      pushIfBackground(x, height - 1);
+    }
+    for (let y = 1; y < height - 1; y += 1) {
+      pushIfBackground(0, y);
+      pushIfBackground(width - 1, y);
+    }
+  }
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const { index, colorIndex } = queue[cursor];
+    const x = index % width;
+    const y = Math.floor(index / width);
+    const allowed = clickSeeds.length ? [colorIndex] : null;
+    pushIfBackground(x + 1, y, allowed);
+    pushIfBackground(x - 1, y, allowed);
+    pushIfBackground(x, y + 1, allowed);
+    pushIfBackground(x, y - 1, allowed);
+  }
+  for (let index = 0; index < pixelCount; index += 1) {
+    if (!mask[index]) continue;
+    const offset = index * 4;
+    if (data[offset + 3] < 8) {
+      data[offset + 3] = 0;
+      continue;
+    }
+    const color = colors[Math.max(0, maskColorIndexes[index])] || colors[0] || [255, 255, 255];
+    const distance = Math.sqrt(colorDistanceSquared(data, offset, color));
+    if (distance <= tolerance || feather === 0) {
+      data[offset + 3] = 0;
+    } else {
+      const ratio = Math.max(0, Math.min(1, (distance - tolerance) / feather));
+      data[offset + 3] = Math.round(data[offset + 3] * ratio);
+    }
+  }
 }
 
 async function removeBackgroundLocally(dataUrl, controls) {
@@ -5851,58 +6097,8 @@ async function removeBackgroundLocally(dataUrl, controls) {
   const context = canvas.getContext("2d", { willReadFrequently: true });
   context.drawImage(image, 0, 0, canvas.width, canvas.height);
   const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-  const { data, width, height } = imageData;
-  const colors = imageEditBackgroundColors(data, width, height, controls);
-  const tolerance = imageEditToleranceValue(controls.tolerance);
-  const feather = imageEditFeatherValue(controls.feather);
-  const maxDistance = tolerance + feather;
-  const thresholdSq = tolerance * tolerance;
-  const maxDistanceSq = maxDistance * maxDistance;
-  const pixelCount = width * height;
-  const mask = new Uint8Array(pixelCount);
-  const queue = [];
-  const pushIfBackground = (x, y) => {
-    if (x < 0 || y < 0 || x >= width || y >= height) return;
-    const index = y * width + x;
-    if (mask[index]) return;
-    const offset = index * 4;
-    if (data[offset + 3] < 8 || minColorDistanceSquared(data, offset, colors) <= maxDistanceSq) {
-      mask[index] = 1;
-      queue.push(index);
-    }
-  };
-  for (let x = 0; x < width; x += 1) {
-    pushIfBackground(x, 0);
-    pushIfBackground(x, height - 1);
-  }
-  for (let y = 1; y < height - 1; y += 1) {
-    pushIfBackground(0, y);
-    pushIfBackground(width - 1, y);
-  }
-  for (let cursor = 0; cursor < queue.length; cursor += 1) {
-    const index = queue[cursor];
-    const x = index % width;
-    const y = Math.floor(index / width);
-    pushIfBackground(x + 1, y);
-    pushIfBackground(x - 1, y);
-    pushIfBackground(x, y + 1);
-    pushIfBackground(x, y - 1);
-  }
-  for (let index = 0; index < pixelCount; index += 1) {
-    if (!mask[index]) continue;
-    const offset = index * 4;
-    if (data[offset + 3] < 8) {
-      data[offset + 3] = 0;
-      continue;
-    }
-    const distance = Math.sqrt(minColorDistanceSquared(data, offset, colors));
-    if (distance <= tolerance || feather === 0) {
-      data[offset + 3] = 0;
-    } else {
-      const ratio = Math.max(0, Math.min(1, (distance - tolerance) / feather));
-      data[offset + 3] = Math.round(data[offset + 3] * ratio);
-    }
-  }
+  const { width, height } = imageData;
+  applyImageEditConnectedTransparency(imageData, controls);
   context.putImageData(imageData, 0, 0);
   return {
     dataUrl: canvas.toDataURL("image/png"),
@@ -6031,6 +6227,62 @@ function currentImageEditProviderFromDom() {
   return normalizedImageEditProvider(document.querySelector("#image-edit-provider")?.value || state.imageEditProvider);
 }
 
+function setImageEditBackgroundMode(mode, { rerender = true } = {}) {
+  const nextMode = normalizedImageEditBackgroundMode(mode);
+  const input = document.querySelector("#image-edit-background-mode");
+  if (input) input.value = nextMode;
+  const controls = imageEditControlsFromDom();
+  controls.backgroundMode = nextMode;
+  rememberImageEditControls(controls);
+  if (rerender) state.imageEditResult = null;
+  document.querySelectorAll("[data-action='set-image-edit-background-mode']").forEach((button) => {
+    const isActive = button.dataset.mode === nextMode;
+    button.classList.toggle("active-toggle", isActive);
+    button.setAttribute("aria-pressed", isActive ? "true" : "false");
+    if (button.dataset.mode === "chroma") {
+      button.querySelector(".image-edit-background-swatch")?.style.setProperty("background", state.imageEditChromaColor || "#ffffff");
+    }
+  });
+  if (rerender) render();
+}
+
+async function setImageEditClickPointFromEvent(event) {
+  const source = selectedImageEditSource();
+  const image = document.querySelector("#image-edit-click-source");
+  const rect = image?.getBoundingClientRect();
+  if (!source || !rect?.width || !rect?.height) return;
+  event.preventDefault();
+  const nextPoint = {
+    x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+    y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
+    sourceKey: source.key,
+    sourceStamp: imageEditSourceStamp(source)
+  };
+  state.imageEditClickPoints = [...imageEditClickPointsForSource(source), nextPoint];
+  const input = document.querySelector("#image-edit-background-mode");
+  if (input) input.value = "click";
+  state.imageEditBackgroundMode = "click";
+  state.imageEditResult = null;
+  try {
+    await runImageEdit();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function undoImageEditClickPoint() {
+  const source = selectedImageEditSource();
+  const points = imageEditClickPointsForSource(source);
+  if (!points.length) return toast("戻せるクリック認識がありません。");
+  state.imageEditClickPoints = points.slice(0, -1);
+  state.imageEditResult = null;
+  if (state.imageEditClickPoints.length) {
+    await runImageEdit();
+  } else {
+    render();
+  }
+}
+
 function setImageEditAspectSaveEnabled(enabled) {
   const saveButton = document.querySelector("[data-action='save-image-edit-result']");
   if (saveButton) saveButton.disabled = !enabled;
@@ -6115,7 +6367,7 @@ async function runImageEdit() {
   try {
     const dataUrl = await sourceDataUrlForImageEdit(source);
     let output;
-    let providerLabel = "簡易ローカル";
+    let providerLabel = imageEditLocalProviderLabel(controls);
     if (controls.provider === "removebg") {
       if (!controls.removeBgKey) throw new Error("remove.bg API キーを入力してください。");
       localStorage.setItem("removebg_api_key", controls.removeBgKey);
@@ -6572,6 +6824,7 @@ function bindImageEditor({ forcedProvider = "" } = {}) {
       state.imageEditCharacterId = "";
     }
     state.imageEditSourceKey = state.imageEditInputFile ? "upload" : "";
+    clearImageEditClickPoints();
     state.imageEditResult = null;
     render();
   });
@@ -6583,10 +6836,12 @@ function bindImageEditor({ forcedProvider = "" } = {}) {
       state.selectedWorkId = char.workId;
     }
     state.imageEditResult = null;
+    clearImageEditClickPoints();
     render();
   });
   document.querySelector("#image-edit-source")?.addEventListener("change", (event) => {
     state.imageEditSourceKey = event.target.value;
+    clearImageEditClickPoints();
     state.imageEditResult = null;
     render();
   });
@@ -6615,6 +6870,15 @@ function bindImageEditor({ forcedProvider = "" } = {}) {
       handleProviderChange();
     });
   });
+  document.querySelectorAll("[data-action='set-image-edit-background-mode']").forEach((button) => {
+    button.addEventListener("click", () => {
+      setImageEditBackgroundMode(button.dataset.mode);
+    });
+  });
+  document.querySelector("[data-action='set-image-edit-click-point']")?.addEventListener("click", setImageEditClickPointFromEvent);
+  document.querySelector("[data-action='undo-image-edit-click-point']")?.addEventListener("click", () => {
+    undoImageEditClickPoint().catch((error) => toast(error.message));
+  });
   ["#image-edit-rembg-model", "#image-edit-rembg-alpha-matting", "#image-edit-rembg-post-process"].forEach((selector) => {
     document.querySelector(selector)?.addEventListener("change", persist);
   });
@@ -6626,8 +6890,18 @@ function bindImageEditor({ forcedProvider = "" } = {}) {
     });
   });
   ["#image-edit-background-mode", "#image-edit-tolerance", "#image-edit-feather", "#image-edit-chroma-color"].forEach((selector) => {
-    document.querySelector(selector)?.addEventListener("input", persist);
+    document.querySelector(selector)?.addEventListener("input", () => {
+      if (selector === "#image-edit-chroma-color") {
+        setImageEditBackgroundMode("chroma", { rerender: false });
+        return;
+      }
+      persist();
+    });
     document.querySelector(selector)?.addEventListener("change", () => {
+      if (selector === "#image-edit-chroma-color") {
+        setImageEditBackgroundMode("chroma", { rerender: false });
+        return;
+      }
       persist();
       if (selector === "#image-edit-background-mode") render();
     });
@@ -6688,7 +6962,7 @@ function bindImageEditor({ forcedProvider = "" } = {}) {
   document.querySelector("#image-edit-manual-tool")?.addEventListener("change", () => {
     persist();
     manualImageEditor.lassoPoints = [];
-    manualImageEditorDrawOverlay();
+    render();
   });
   document.querySelector("#image-edit-manual-brush-size")?.addEventListener("input", () => {
     persist();
@@ -6730,12 +7004,14 @@ function bindImageEditor({ forcedProvider = "" } = {}) {
       createdAt: new Date().toISOString()
     };
     state.imageEditSourceKey = "upload";
+    clearImageEditClickPoints();
     state.imageEditResult = null;
     render();
   });
   document.querySelector("[data-action='clear-image-edit-file']")?.addEventListener("click", () => {
     state.imageEditInputFile = null;
     if (state.imageEditSourceKey === "upload") state.imageEditSourceKey = "";
+    clearImageEditClickPoints();
     state.imageEditResult = null;
     render();
   });
