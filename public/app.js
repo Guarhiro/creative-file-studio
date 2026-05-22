@@ -130,6 +130,7 @@ const state = {
   audioEditInfo: null,
   audioEditError: "",
   audioEditResult: null,
+  audioEditProcessError: "",
   lastOpenRouterDebug: null,
   irodoriStatus: "idle",
   irodoriStatusMessage: "",
@@ -4662,6 +4663,7 @@ async function setAudioEditSource(source, options = {}) {
     }
   }
   state.audioEditResult = null;
+  state.audioEditProcessError = "";
   if (state.audioEditStatus === "idle") {
     checkAudioEditStatus({ silent: true }).then(() => {
       if (state.view === "audio-edit") render();
@@ -4821,6 +4823,9 @@ function renderAudioEditOutput(output) {
 function renderAudioEditResult() {
   if (state.audioEditIsRunning) {
     return `<div class="empty compact">音声を処理中です。長い音声や複数分割では少し時間がかかります。</div>`;
+  }
+  if (state.audioEditProcessError) {
+    return `<div class="empty compact danger-text">${escapeHtml(state.audioEditProcessError)}</div>`;
   }
   const outputs = state.audioEditResult?.outputs || [];
   if (!outputs.length) return `<div class="empty compact">まだ編集結果がありません。</div>`;
@@ -6977,6 +6982,7 @@ async function runAudioEdit() {
   const work = byId(state.db.works, selectedChar?.workId || controls.workId || state.selectedWorkId);
   state.audioEditIsRunning = true;
   state.audioEditResult = null;
+  state.audioEditProcessError = "";
   render();
   try {
     toastApiSubmitted(mode === "pitch" ? "音声のピッチ変更を開始しました。" : mode === "volume" ? "音声の音量変更を開始しました。" : mode === "cut" ? "音声の不要範囲カットを開始しました。" : "音声の複数分割を開始しました。");
@@ -6993,6 +6999,7 @@ async function runAudioEdit() {
       ...audioSaveTargetPayload(work, selectedChar)
     });
     state.audioEditResult = result;
+    state.audioEditProcessError = "";
     const memo = audioEditMemo(result, controls);
     const createdAt = new Date().toISOString();
     const created = (result.outputs || []).map((output) => normalizeAudioItem({
@@ -7026,6 +7033,7 @@ async function runAudioEdit() {
     await saveDb();
     toast(result.mode === "split" ? `${created.length} 件に分割して保存しました。` : result.mode === "volume" ? "音量変更した音声を保存しました。" : result.mode === "pitch" ? "ピッチ変更した音声を保存しました。" : "不要部分をカットして保存しました。");
   } catch (error) {
+    state.audioEditProcessError = error.message;
     toast(error.message);
   } finally {
     state.audioEditIsRunning = false;
@@ -12196,6 +12204,7 @@ function bindAudioEditor() {
       persist();
       state.audioEditMode = audioEditModeValue(button.dataset.mode);
       state.audioEditResult = null;
+      state.audioEditProcessError = "";
       render();
     });
   });
@@ -12329,6 +12338,7 @@ function bindAudioEditor() {
   document.querySelector("[data-action='clear-audio-edit-file']")?.addEventListener("click", () => {
     state.audioEditFile = null;
     state.audioEditResult = null;
+    state.audioEditProcessError = "";
     render();
   });
   document.querySelector("[data-action='check-audio-edit-ffmpeg']")?.addEventListener("click", () => checkAudioEditStatus());

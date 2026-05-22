@@ -1723,11 +1723,33 @@ async function runAudioEditPitch(inputPath, outputPath, format, pitchSemitones) 
   });
 }
 
+function isAudioEditMp3FrameEncodeError(output) {
+  const text = String(output || "");
+  return /libmp3lame/i.test(text) && (
+    /inadequate AVFrame plane padding/i.test(text)
+    || /Error submitting audio frame to the encoder/i.test(text)
+    || /Error encoding a frame:\s*Invalid argument/i.test(text)
+    || /Task finished with error code:\s*-22/i.test(text)
+  );
+}
+
+function audioEditMp3FrameEncodeHint(label) {
+  const splitMatch = String(label || "").match(/分割ファイル(\d+)/);
+  const splitHint = splitMatch
+    ? `出力形式をwavに変更して再実行するか、分割ファイル${splitMatch[1]}の前後の分割秒を0.1〜0.5秒ほどずらして試してください。`
+    : "出力形式をwavに変更して再実行するか、該当区間の開始/終了秒を0.1〜0.5秒ほどずらして試してください。";
+  return `${label}に失敗しました。MP3の一部フレームをエンコードできなかった可能性があります。${splitHint}`;
+}
+
 async function ensureAudioEditOutput(result, outputPath, label) {
+  const processOutput = `${result.stderr || ""}\n${result.stdout || ""}\n${result.error || ""}`;
   if (!result.ok) {
+    if (isAudioEditMp3FrameEncodeError(processOutput)) {
+      throw new Error(audioEditMp3FrameEncodeHint(label));
+    }
     throw new Error(`${label}に失敗しました: ${result.stderr || result.stdout || result.error || "unknown error"}`);
   }
-  if (/Output file is empty|Conversion failed/i.test(`${result.stderr}\n${result.stdout}`)) {
+  if (/Output file is empty|Conversion failed/i.test(processOutput)) {
     throw new Error(`${label}が空出力で終了しました。秒数指定を確認してください。`);
   }
   if (!await isFile(outputPath)) throw new Error(`${label}の出力ファイルが見つかりません。`);
