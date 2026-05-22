@@ -9,6 +9,8 @@ const state = {
   galleryCharacterId: "",
   gallerySelectedAssetIds: [],
   galleryFiltersCollapsed: false,
+  galleryPage: 1,
+  galleryPageSize: 48,
   importFiles: [],
   importIsRunning: false,
   importAutoClassify: true,
@@ -1079,6 +1081,7 @@ const replicateSeedanceVideoPricing = {
 };
 
 const libraryPageSizes = [48, 72, 120];
+const galleryPageSizes = libraryPageSizes;
 const maxWorldSheetImages = 5;
 const maxWorldTextChars = 60000;
 
@@ -4058,9 +4061,11 @@ function renderAssetCard(asset) {
 
 function renderGallery() {
   const galleryWorkId = currentGalleryWorkId();
-  const assets = getVisibleGalleryAssets();
-  const selectedAssets = selectedVisibleGalleryAssets(assets);
-  const allVisibleSelected = assets.length > 0 && selectedAssets.length === assets.length;
+  const allAssets = getVisibleGalleryAssets();
+  const { assets, pageInfo } = getPagedGalleryAssets(allAssets);
+  const selectedAssets = selectedVisibleGalleryAssets(allAssets);
+  const selectedPageAssets = selectedVisibleGalleryAssets(assets, { prune: false });
+  const allPageSelected = assets.length > 0 && selectedPageAssets.length === assets.length;
   const grouped = groupAssetsBySubject(assets);
   return `
     <div class="gallery-layout ${state.galleryFiltersCollapsed ? "filters-collapsed" : ""}">
@@ -4088,18 +4093,22 @@ function renderGallery() {
       <section>
         <div class="toolbar">
           <div>
-            <h2 class="section-title">${assets.length} 画像</h2>
+            <h2 class="section-title">${allAssets.length} 画像</h2>
             <div class="meta">${galleryWorkId ? escapeHtml(byId(state.db.works, galleryWorkId)?.name || "") : "全作品"}</div>
           </div>
           <div class="group gallery-selection-actions">
             <span class="meta">${selectedAssets.length ? `${selectedAssets.length} 件選択中` : "未選択"}</span>
-            <button class="ghost" data-action="gallery-select-all" ${assets.length && !allVisibleSelected ? "" : "disabled"}>画面内を全選択</button>
+            <button class="ghost" data-action="gallery-select-all" ${assets.length && !allPageSelected ? "" : "disabled"}>画面内を全選択</button>
             <button class="ghost" data-action="gallery-clear-selection" ${selectedAssets.length ? "" : "disabled"}>選択解除</button>
             <button class="ghost danger-outline" data-action="delete-selected-gallery-assets" ${selectedAssets.length ? "" : "disabled"}>選択を完全削除</button>
           </div>
           ${state.galleryFiltersCollapsed ? `<button class="ghost" data-action="toggle-gallery-filters">表示条件</button>` : ""}
         </div>
-        ${renderImageClassificationSummary(assets)}
+        ${renderImageClassificationSummary(allAssets)}
+        <div class="gallery-resultbar">
+          <div class="meta">${allAssets.length ? `${pageInfo.start + 1}-${pageInfo.end} / ${allAssets.length} 件を表示中` : "0 件"}</div>
+          ${renderGalleryPager(pageInfo, allAssets.length)}
+        </div>
         ${assets.length ? grouped.map(renderGalleryGroup).join("") : `<div class="empty">表示できる画像がありません。</div>`}
       </section>
     </div>
@@ -4117,11 +4126,56 @@ function getVisibleGalleryAssets() {
     .filter((asset) => !state.galleryCharacterId || (state.galleryCharacterId === "unassigned" ? !asset.characterId && !asset.worldItemId : assetSubjectKey(asset) === state.galleryCharacterId || asset.characterId === state.galleryCharacterId));
 }
 
-function selectedVisibleGalleryAssets(assets = getVisibleGalleryAssets()) {
+function resetGalleryPage() {
+  state.galleryPage = 1;
+}
+
+function getGalleryPageInfo(total) {
+  const requestedPageSize = Number(state.galleryPageSize);
+  const pageSize = galleryPageSizes.includes(requestedPageSize) ? requestedPageSize : galleryPageSizes[0];
+  state.galleryPageSize = pageSize;
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const requestedPage = Number(state.galleryPage) || 1;
+  const page = Math.min(Math.max(1, requestedPage), pageCount);
+  state.galleryPage = page;
+  const start = total ? (page - 1) * pageSize : 0;
+  const end = Math.min(start + pageSize, total);
+  return { page, pageSize, pageCount, start, end };
+}
+
+function getPagedGalleryAssets(allAssets = getVisibleGalleryAssets()) {
+  const pageInfo = getGalleryPageInfo(allAssets.length);
+  return {
+    pageInfo,
+    assets: allAssets.slice(pageInfo.start, pageInfo.end)
+  };
+}
+
+function getVisibleGalleryPageAssets() {
+  return getPagedGalleryAssets().assets;
+}
+
+function selectedVisibleGalleryAssets(assets = getVisibleGalleryAssets(), { prune = true } = {}) {
   const visibleIds = new Set(assets.map((asset) => asset.id));
-  state.gallerySelectedAssetIds = (state.gallerySelectedAssetIds || []).filter((id) => visibleIds.has(id));
+  if (prune) {
+    state.gallerySelectedAssetIds = (state.gallerySelectedAssetIds || []).filter((id) => visibleIds.has(id));
+  }
   const selectedIds = new Set(state.gallerySelectedAssetIds);
   return assets.filter((asset) => selectedIds.has(asset.id));
+}
+
+function renderGalleryPager(pageInfo, total) {
+  const disabled = total <= 0;
+  return `
+    <div class="gallery-pager">
+      <button class="ghost" data-action="gallery-page-prev" ${pageInfo.page <= 1 || disabled ? "disabled" : ""}>前へ</button>
+      <span class="meta">${pageInfo.page} / ${pageInfo.pageCount} ページ</span>
+      <button class="ghost" data-action="gallery-page-next" ${pageInfo.page >= pageInfo.pageCount || disabled ? "disabled" : ""}>次へ</button>
+      <select id="gallery-page-size" aria-label="1ページの表示数">
+        ${galleryPageSizes.map((size) => `<option value="${size}" ${pageInfo.pageSize === size ? "selected" : ""}>${size}件ずつ</option>`).join("")}
+      </select>
+    </div>
+  `;
 }
 
 function groupAssetsBySubject(assets) {
@@ -11092,6 +11146,8 @@ function bindStudio() {
       state.selectedWorkId = char.workId;
       state.galleryWorkId = char.workId;
       state.galleryCharacterId = `char:${char.id}`;
+      state.gallerySelectedAssetIds = [];
+      resetGalleryPage();
       state.view = "gallery";
       render();
     });
@@ -11106,6 +11162,8 @@ function bindStudio() {
       state.selectedWorkId = item.workId;
       state.galleryWorkId = item.workId;
       state.galleryCharacterId = `world:${item.id}`;
+      state.gallerySelectedAssetIds = [];
+      resetGalleryPage();
       state.view = "gallery";
       render();
     });
@@ -11577,15 +11635,30 @@ function bindGallery() {
     state.selectedWorkId = state.galleryWorkId;
     state.galleryCharacterId = "";
     state.gallerySelectedAssetIds = [];
+    resetGalleryPage();
     render();
   });
   document.querySelector("#gallery-character")?.addEventListener("change", (event) => {
     state.galleryCharacterId = event.target.value;
     state.gallerySelectedAssetIds = [];
+    resetGalleryPage();
+    render();
+  });
+  document.querySelector("[data-action='gallery-page-prev']")?.addEventListener("click", () => {
+    state.galleryPage -= 1;
+    render();
+  });
+  document.querySelector("[data-action='gallery-page-next']")?.addEventListener("click", () => {
+    state.galleryPage += 1;
+    render();
+  });
+  document.querySelector("#gallery-page-size")?.addEventListener("change", (event) => {
+    state.galleryPageSize = Number(event.target.value);
+    resetGalleryPage();
     render();
   });
   document.querySelector("[data-action='gallery-select-all']")?.addEventListener("click", () => {
-    const ids = getVisibleGalleryAssets().map((asset) => asset.id);
+    const ids = getVisibleGalleryPageAssets().map((asset) => asset.id);
     state.gallerySelectedAssetIds = [...new Set([...(state.gallerySelectedAssetIds || []), ...ids])];
     render();
   });

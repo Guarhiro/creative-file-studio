@@ -240,7 +240,8 @@ button:disabled {
   flex-wrap: wrap;
 }
 
-.library-resultbar {
+.library-resultbar,
+.gallery-resultbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -249,14 +250,16 @@ button:disabled {
   flex-wrap: wrap;
 }
 
-.library-pager {
+.library-pager,
+.gallery-pager {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
 
-.library-pager select {
+.library-pager select,
+.gallery-pager select {
   width: auto;
   min-width: 104px;
 }
