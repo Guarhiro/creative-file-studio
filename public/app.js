@@ -4510,6 +4510,13 @@ function audioEditSignedNumberLabel(value) {
   return rounded > 0 ? `+${label}` : label;
 }
 
+function audioSaveTargetPayload(work, character) {
+  return {
+    workName: work?.name || "",
+    characterName: character?.name || ""
+  };
+}
+
 function renderAudioEditSplitRows() {
   const points = state.audioEditSplitPoints?.length ? state.audioEditSplitPoints : [""];
   return `
@@ -6496,7 +6503,8 @@ async function runAudioEdit() {
       volumePercent: numeric.volumePercent,
       pitchSemitones: numeric.pitchSemitones,
       splitPoints: numeric.splitPoints,
-      cutRanges: numeric.cutRanges
+      cutRanges: numeric.cutRanges,
+      ...audioSaveTargetPayload(work, selectedChar)
     });
     state.audioEditResult = result;
     const memo = audioEditMemo(result, controls);
@@ -9423,7 +9431,8 @@ async function startAudioGeneration() {
         input: composeOpenRouterTtsInput(controls.audioModel, controls.input, controls.actingPrompt),
         voice: controls.voice,
         responseFormat: controls.audioResponseFormat,
-        title: controls.title
+        title: controls.title,
+        ...audioSaveTargetPayload(work, selectedChar)
       });
       const format = payload.format || (String(payload.mimeType || "").includes("wav") ? "wav" : "mp3");
       created = [normalizeAudioItem({
@@ -9457,6 +9466,7 @@ async function startAudioGeneration() {
         title: controls.title,
         languageCode: controls.elevenLabs.languageCode,
         seed: controls.elevenLabs.seed,
+        ...audioSaveTargetPayload(work, selectedChar),
         voiceSettings: {
           stability: controls.elevenLabs.stability,
           similarityBoost: controls.elevenLabs.similarityBoost,
@@ -9495,7 +9505,8 @@ async function startAudioGeneration() {
         seed: controls.voicebox.seed,
         instruct: controls.actingPrompt,
         input: controls.input,
-        title: controls.title
+        title: controls.title,
+        ...audioSaveTargetPayload(work, selectedChar)
       });
       const profile = state.voiceboxProfiles.find((item) => item.id === controls.voicebox.profileId);
       created = [normalizeAudioItem({
@@ -9529,6 +9540,7 @@ async function startAudioGeneration() {
         input: controls.input,
         title: controls.title,
         referenceAudioUrl: state.audioIrodoriReference?.url || "",
+        ...audioSaveTargetPayload(work, selectedChar),
         ...controls.irodori
       });
       const outputs = Array.isArray(payload.outputs) && payload.outputs.length ? payload.outputs : [payload];

@@ -298,6 +298,18 @@ function audioUrlFor(filePath) {
   return `/audios/${relative.split(path.sep).map(encodeURIComponent).join("/")}`;
 }
 
+function audioTargetDirFromBody(body = {}) {
+  const workName = safeFolderName(body.workName || body.work || "", "_未指定作品");
+  const characterName = safeFolderName(body.characterName || body.character || "", "_音声");
+  return path.join(audioDir, workName, characterName);
+}
+
+async function ensureAudioTargetDir(body = {}) {
+  const targetDir = audioTargetDirFromBody(body);
+  await fs.mkdir(targetDir, { recursive: true });
+  return targetDir;
+}
+
 function uploadPathFromUrl(uploadUrl) {
   const parsed = new URL(uploadUrl, "http://localhost");
   if (!parsed.pathname.startsWith("/uploads/")) throw new Error("uploads 配下の画像URLではありません。");
@@ -1757,6 +1769,7 @@ async function handleAudioEditProcess(req, res) {
   const format = normalizedAudioEditOutputFormat(body.outputFormat, inputExt);
   const outputExt = audioEditOutputExt(format);
   const sourceName = body.name || `audio${inputExt}`;
+  const targetDir = await ensureAudioTargetDir(body);
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "creative-file-studio-audio-edit-"));
   const inputPath = path.join(tempDir, safeOriginalFileName(sourceName, inputExt, "audio"));
   const createdOutputPaths = [];
@@ -1768,7 +1781,7 @@ async function handleAudioEditProcess(req, res) {
 
     if (mode === "volume") {
       const volumePercent = normalizedAudioEditVolumePercent(body.volumePercent);
-      const destination = await uniqueFilePath(audioDir, audioEditOutputName(sourceName, `volume-${volumePercent}pct`, outputExt));
+      const destination = await uniqueFilePath(targetDir, audioEditOutputName(sourceName, `volume-${volumePercent}pct`, outputExt));
       createdOutputPaths.push(destination);
       const result = await runAudioEditVolume(inputPath, destination, format, volumePercent);
       await ensureAudioEditOutput(result, destination, "音量変更");
@@ -1792,7 +1805,7 @@ async function handleAudioEditProcess(req, res) {
       const pitchSemitones = normalizedAudioEditPitchSemitones(body.pitchSemitones);
       const pitchLabel = audioEditSignedNumberLabel(pitchSemitones);
       const pitchSuffix = pitchLabel.replace("+", "plus").replace("-", "minus").replace(".", "p");
-      const destination = await uniqueFilePath(audioDir, audioEditOutputName(sourceName, `pitch-${pitchSuffix}st`, outputExt));
+      const destination = await uniqueFilePath(targetDir, audioEditOutputName(sourceName, `pitch-${pitchSuffix}st`, outputExt));
       createdOutputPaths.push(destination);
       const result = await runAudioEditPitch(inputPath, destination, format, pitchSemitones);
       await ensureAudioEditOutput(result, destination, "ピッチ変更");
@@ -1820,7 +1833,7 @@ async function handleAudioEditProcess(req, res) {
       const segments = audioEditSegmentsForSplit(splitPoints, duration);
       for (const [index, segment] of segments.entries()) {
         const suffix = `split-${String(index + 1).padStart(2, "0")}`;
-        const destination = await uniqueFilePath(audioDir, audioEditOutputName(sourceName, suffix, outputExt));
+        const destination = await uniqueFilePath(targetDir, audioEditOutputName(sourceName, suffix, outputExt));
         createdOutputPaths.push(destination);
         const result = await runAudioEditSegment(inputPath, destination, segment, format);
         await ensureAudioEditOutput(result, destination, `分割ファイル${index + 1}の作成`);
@@ -1849,7 +1862,7 @@ async function handleAudioEditProcess(req, res) {
       return sendJson(res, 400, { error: "指定範囲をカットすると残る音声がありません。", duration, status: ffmpegStatus });
     }
 
-    const destination = await uniqueFilePath(audioDir, audioEditOutputName(sourceName, "cut", outputExt));
+    const destination = await uniqueFilePath(targetDir, audioEditOutputName(sourceName, "cut", outputExt));
     createdOutputPaths.push(destination);
     let result;
     if (keepSegments.length === 1) {
@@ -2429,6 +2442,7 @@ function pcmToWavBuffer(pcmBuffer, { sampleRate = 24000, channels = 1, bitDepth 
 }
 
 async function handleOpenRouterSpeech(req, res) {
+  const body = await readJson(req, 2 * 1024 * 1024);
   const {
     apiKey,
     model = "google/gemini-3.1-flash-tts-preview",
@@ -2437,7 +2451,7 @@ async function handleOpenRouterSpeech(req, res) {
     responseFormat = "mp3",
     speed,
     title = "generated-audio"
-  } = await readJson(req, 2 * 1024 * 1024);
+  } = body;
   const cleanInput = String(input || "").trim();
   const cleanFormat = modelRequiresPcmAudio(model) ? "pcm" : responseFormat === "pcm" ? "pcm" : "mp3";
   if (!apiKey) return sendJson(res, 400, { error: "OpenRouter API キーが未設定です。" });
@@ -2487,7 +2501,8 @@ async function handleOpenRouterSpeech(req, res) {
     const ext = extensionFromAudioResponse(contentType, cleanFormat);
     const saveAsWav = cleanFormat === "pcm" || ext === ".pcm";
     const fileName = safeUploadName(title, saveAsWav ? ".wav" : ext);
-    const filePath = path.join(audioDir, fileName);
+    const targetDir = await ensureAudioTargetDir(body);
+    const filePath = path.join(targetDir, fileName);
     if (saveAsWav) {
       const pcmBuffer = Buffer.from(await response.arrayBuffer());
       await fs.writeFile(filePath, pcmToWavBuffer(pcmBuffer));
@@ -2496,7 +2511,7 @@ async function handleOpenRouterSpeech(req, res) {
     }
     const stat = await fs.stat(filePath);
     sendJson(res, 200, {
-      url: `/audios/${encodeURIComponent(fileName)}`,
+      url: audioUrlFor(filePath),
       path: filePath,
       mimeType: saveAsWav ? "audio/wav" : contentType || mimeForExtension(ext),
       format: saveAsWav ? "wav" : ext.replace(".", "") || cleanFormat,
@@ -2597,6 +2612,7 @@ async function handleElevenLabsModels(req, res) {
 }
 
 async function handleElevenLabsSpeech(req, res) {
+  const body = await readJson(req, 2 * 1024 * 1024);
   const {
     apiKey,
     voiceId,
@@ -2607,7 +2623,7 @@ async function handleElevenLabsSpeech(req, res) {
     languageCode = "",
     seed,
     voiceSettings = {}
-  } = await readJson(req, 2 * 1024 * 1024);
+  } = body;
   const cleanInput = String(input || "").trim();
   const cleanVoiceId = String(voiceId || "").trim();
   const cleanModelId = String(modelId || "eleven_multilingual_v2").trim() || "eleven_multilingual_v2";
@@ -2670,7 +2686,8 @@ async function handleElevenLabsSpeech(req, res) {
       : extensionFromAudioResponse(contentType, cleanOutputFormat.startsWith("pcm") ? "pcm" : "mp3");
     const fallbackExt = extensionFromElevenLabsFormat(cleanOutputFormat);
     const fileName = safeUploadName(title, ext === ".mp3" && fallbackExt !== ".mp3" ? fallbackExt : ext);
-    const filePath = path.join(audioDir, fileName);
+    const targetDir = await ensureAudioTargetDir(body);
+    const filePath = path.join(targetDir, fileName);
     if (savePcmAsWav) {
       const pcmBuffer = Buffer.from(await response.arrayBuffer());
       await fs.writeFile(filePath, pcmToWavBuffer(pcmBuffer, { sampleRate: sampleRateFromElevenLabsFormat(cleanOutputFormat) }));
@@ -2679,7 +2696,7 @@ async function handleElevenLabsSpeech(req, res) {
     }
     const stat = await fs.stat(filePath);
     sendJson(res, 200, {
-      url: `/audios/${encodeURIComponent(fileName)}`,
+      url: audioUrlFor(filePath),
       path: filePath,
       mimeType: savePcmAsWav ? "audio/wav" : contentType || mimeForExtension(path.extname(fileName)),
       format: savePcmAsWav ? "wav" : path.extname(fileName).replace(".", "") || cleanOutputFormat,
@@ -2776,12 +2793,13 @@ async function handleVoiceboxProfiles(req, res) {
   }
 }
 
-async function saveVoiceboxAudioResponse(response, title, fallbackFormat = "wav") {
+async function saveVoiceboxAudioResponse(response, title, fallbackFormat = "wav", target = {}) {
   const contentType = response.headers.get("content-type") || "";
   const ext = extensionFromAudioResponse(contentType, fallbackFormat === "pcm" ? "pcm" : "wav");
   const saveAsWav = ext === ".pcm";
   const fileName = safeUploadName(title, saveAsWav ? ".wav" : ext);
-  const filePath = path.join(audioDir, fileName);
+  const targetDir = await ensureAudioTargetDir(target);
+  const filePath = path.join(targetDir, fileName);
   if (saveAsWav) {
     const pcmBuffer = Buffer.from(await response.arrayBuffer());
     await fs.writeFile(filePath, pcmToWavBuffer(pcmBuffer));
@@ -2790,7 +2808,7 @@ async function saveVoiceboxAudioResponse(response, title, fallbackFormat = "wav"
   }
   const stat = await fs.stat(filePath);
   return {
-    url: `/audios/${encodeURIComponent(fileName)}`,
+    url: audioUrlFor(filePath),
     path: filePath,
     mimeType: saveAsWav ? "audio/wav" : contentType || mimeForExtension(ext),
     format: saveAsWav ? "wav" : ext.replace(".", "") || fallbackFormat,
@@ -2798,18 +2816,19 @@ async function saveVoiceboxAudioResponse(response, title, fallbackFormat = "wav"
   };
 }
 
-async function saveVoiceboxLocalAudio(audioPath, title) {
+async function saveVoiceboxLocalAudio(audioPath, title, target = {}) {
   const resolved = path.resolve(String(audioPath || ""));
   if (!await isFile(resolved)) throw new Error("Voiceboxの出力ファイルを読み込めませんでした。");
   const ext = [".mp3", ".m4a", ".wav", ".ogg", ".webm", ".flac"].includes(path.extname(resolved).toLowerCase())
     ? path.extname(resolved).toLowerCase()
     : ".wav";
   const fileName = safeUploadName(title, ext);
-  const filePath = path.join(audioDir, fileName);
+  const targetDir = await ensureAudioTargetDir(target);
+  const filePath = path.join(targetDir, fileName);
   await pipeline(createReadStream(resolved), createWriteStream(filePath));
   const stat = await fs.stat(filePath);
   return {
-    url: `/audios/${encodeURIComponent(fileName)}`,
+    url: audioUrlFor(filePath),
     path: filePath,
     mimeType: mimeForExtension(ext),
     format: ext.replace(".", "") || "wav",
@@ -2828,6 +2847,7 @@ function voiceboxAudioUrlFromPayload(payload, baseUrl) {
 }
 
 async function handleVoiceboxSpeech(req, res) {
+  const body = await readJson(req, 2 * 1024 * 1024);
   const {
     baseUrl,
     profileId,
@@ -2837,7 +2857,7 @@ async function handleVoiceboxSpeech(req, res) {
     modelSize = "1.7B",
     instruct = "",
     title = "voicebox-audio"
-  } = await readJson(req, 2 * 1024 * 1024);
+  } = body;
   const cleanInput = String(input || "").trim();
   const cleanProfileId = String(profileId || "").trim();
   const cleanLanguage = String(language || "ja").trim() || "ja";
@@ -2878,7 +2898,7 @@ async function handleVoiceboxSpeech(req, res) {
       if (!response.ok) {
         return sendJson(res, response.status, { error: `Voicebox generate API が ${response.status} を返しました。` });
       }
-      const saved = await saveVoiceboxAudioResponse(response, title, "wav");
+      const saved = await saveVoiceboxAudioResponse(response, title, "wav", body);
       return sendJson(res, 200, {
         ...saved,
         generationId: response.headers.get("x-generation-id") || "",
@@ -2911,7 +2931,7 @@ async function handleVoiceboxSpeech(req, res) {
         const audioPayload = await jsonFromProviderResponse(audioResponse, `Voicebox audio API が ${audioResponse.status} を返しました。`);
         throw new Error(readableProviderError(audioPayload.error) || readableProviderError(audioPayload) || `Voicebox audio API が ${audioResponse.status} を返しました。`);
       }
-      saved = await saveVoiceboxAudioResponse(audioResponse, title, "wav");
+      saved = await saveVoiceboxAudioResponse(audioResponse, title, "wav", body);
     } else if (generationId) {
       const audioResponse = await fetch(voiceboxEndpoint(normalizedBaseUrl, `/audio/${encodeURIComponent(generationId)}`), {
         headers: { "accept": "audio/*,*/*" },
@@ -2921,9 +2941,9 @@ async function handleVoiceboxSpeech(req, res) {
         const audioPayload = await jsonFromProviderResponse(audioResponse, `Voicebox audio API が ${audioResponse.status} を返しました。`);
         throw new Error(readableProviderError(audioPayload.error) || readableProviderError(audioPayload) || `Voicebox audio API が ${audioResponse.status} を返しました。`);
       }
-      saved = await saveVoiceboxAudioResponse(audioResponse, title, "wav");
+      saved = await saveVoiceboxAudioResponse(audioResponse, title, "wav", body);
     } else if (payload.audio_path || payload.audioPath) {
-      saved = await saveVoiceboxLocalAudio(payload.audio_path || payload.audioPath, title);
+      saved = await saveVoiceboxLocalAudio(payload.audio_path || payload.audioPath, title, body);
     } else {
       throw new Error("Voiceboxの生成結果に音声IDまたは音声ファイル情報がありません。");
     }
@@ -3031,8 +3051,9 @@ async function handleIrodoriSpeech(req, res) {
   const codecPrecision = irodoriPrecision(body.codecPrecision, codecDevice);
   const caption = String(body.caption || "").trim();
   const customCheckpoint = String(body.customCheckpoint || "").trim();
+  const targetDir = await ensureAudioTargetDir(body);
   const outputName = safeUploadName(title, ".wav");
-  const outputPath = path.join(audioDir, outputName);
+  const outputPath = path.join(targetDir, outputName);
   const args = [
     ...uv.command,
     "run",
