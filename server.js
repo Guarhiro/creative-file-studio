@@ -320,6 +320,16 @@ function uploadPathFromUrl(uploadUrl) {
   return filePath;
 }
 
+function audioPathFromUrl(audioUrl) {
+  const parsed = new URL(audioUrl, "http://localhost");
+  if (!parsed.pathname.startsWith("/audios/")) throw new Error("audios 配下の音声URLではありません。");
+  const relative = path.normalize(decodeURIComponent(parsed.pathname.slice("/audios/".length)));
+  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("音声パスが不正です。");
+  const filePath = path.join(audioDir, relative);
+  if (!filePath.startsWith(audioDir)) throw new Error("音声パスが不正です。");
+  return filePath;
+}
+
 function localMediaPathFromUrl(mediaUrl) {
   const parsed = new URL(mediaUrl, "http://localhost");
   const roots = [
@@ -1505,6 +1515,9 @@ function audioEditSecond(value) {
   return Math.max(0, Math.round(number * 1000) / 1000);
 }
 
+const audioEditMinSegmentSeconds = 0.05;
+const audioEditTailSnapSeconds = 0.15;
+
 function normalizedAudioEditVolumePercent(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return 100;
@@ -1549,8 +1562,10 @@ function normalizedAudioEditCutRanges(ranges, duration) {
     const start = audioEditSecond(range?.start);
     const end = audioEditSecond(range?.end);
     if (start === null || end === null) return null;
-    const boundedStart = max === null ? start : Math.min(start, max);
-    const boundedEnd = max === null ? end : Math.min(end, max);
+    let boundedStart = max === null ? start : Math.min(start, max);
+    let boundedEnd = max === null ? end : Math.min(end, max);
+    if (boundedStart <= audioEditMinSegmentSeconds) boundedStart = 0;
+    if (max !== null && max - boundedEnd <= audioEditTailSnapSeconds) boundedEnd = max;
     if (boundedEnd <= boundedStart + 0.01) return null;
     return { start: boundedStart, end: boundedEnd };
   }).filter(Boolean).sort((a, b) => a.start - b.start || a.end - b.end);
@@ -1586,11 +1601,11 @@ function audioEditSegmentsForCut(ranges, duration) {
   const segments = [];
   let cursor = 0;
   for (const range of ranges) {
-    if (range.start > cursor + 0.01) segments.push({ start: cursor, end: range.start });
+    if (range.start > cursor + audioEditMinSegmentSeconds) segments.push({ start: cursor, end: range.start });
     cursor = Math.max(cursor, range.end);
   }
   if (Number.isFinite(duration) && duration > 0) {
-    if (duration > cursor + 0.01) segments.push({ start: cursor, end: duration });
+    if (duration > cursor + audioEditMinSegmentSeconds) segments.push({ start: cursor, end: duration });
   } else {
     segments.push({ start: cursor, end: null });
   }
@@ -1933,6 +1948,28 @@ async function handleRevealUpload(req, res) {
   } catch (error) {
     if (error.code === "ENOENT") {
       return sendJson(res, 404, { error: "画像ファイルが見つかりません。", missing: true, path: filePath });
+    }
+    throw error;
+  }
+  if (process.platform === "darwin") {
+    spawn("open", ["-R", filePath], { detached: true, stdio: "ignore" }).unref();
+  } else if (process.platform === "win32") {
+    spawn("explorer.exe", ["/select,", filePath], { detached: true, stdio: "ignore" }).unref();
+  } else {
+    spawn("xdg-open", [path.dirname(filePath)], { detached: true, stdio: "ignore" }).unref();
+  }
+  sendJson(res, 200, { ok: true, path: filePath });
+}
+
+async function handleRevealAudio(req, res) {
+  const { url } = await readJson(req);
+  if (!url) return sendJson(res, 400, { error: "音声URLが必要です。" });
+  const filePath = audioPathFromUrl(url);
+  try {
+    await fs.access(filePath);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return sendJson(res, 404, { error: "音声ファイルが見つかりません。", missing: true, path: filePath });
     }
     throw error;
   }
@@ -4194,6 +4231,10 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/reveal-upload") {
       return await handleRevealUpload(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/reveal-audio") {
+      return await handleRevealAudio(req, res);
     }
 
     if (req.method === "POST" && url.pathname === "/api/delete-upload") {

@@ -384,6 +384,19 @@ button:disabled {
   line-height: 1.45;
 }
 
+.audio-file-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.inline-finder-button {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));

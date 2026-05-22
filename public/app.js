@@ -3055,6 +3055,15 @@ async function revealUpload(asset) {
   toast(`Finderで表示しました: ${result.path}`);
 }
 
+async function revealAudio(url) {
+  const result = await postJson("/api/reveal-audio", { url });
+  toast(`Finderで表示しました: ${result.path}`);
+}
+
+function renderAudioFinderButton(url) {
+  return url ? `<button type="button" class="ghost inline-finder-button" data-action="reveal-audio" data-url="${escapeHtml(url)}">Finder</button>` : "";
+}
+
 function isUploadUrlReferenced(url, excludingAssetId = null) {
   return isUploadUrlReferencedOutsideAssetIds(url, excludingAssetId ? new Set([excludingAssetId]) : new Set());
 }
@@ -4594,7 +4603,10 @@ function renderAudioEditOutput(output) {
   return `
     <article class="audio-job audio-edit-output">
       <div>
-        <div class="char-name">${escapeHtml(output.name || "編集音声")}</div>
+        <div class="audio-file-heading">
+          <span class="char-name">${escapeHtml(output.name || "編集音声")}</span>
+          ${renderAudioFinderButton(output.url)}
+        </div>
         <div class="meta">${escapeHtml(output.label || "")}${output.size ? ` / ${escapeHtml(formatBytes(output.size))}` : ""}</div>
       </div>
       ${renderAudioWaveformPlayer(output.url, { preload: "metadata" })}
@@ -9595,7 +9607,10 @@ function renderAudioItem(audio) {
   return `
     <article class="audio-job">
       <div>
-        <div class="char-name">${escapeHtml(audio.title || "生成音声")}</div>
+        <div class="audio-file-heading">
+          <span class="char-name">${escapeHtml(audio.title || "生成音声")}</span>
+          ${renderAudioFinderButton(audio.url)}
+        </div>
         <div class="meta">${escapeHtml(audioCharacterLabel(audio))} / ${escapeHtml(providerLabel)} / ${escapeHtml(voiceLabel)} / ${audio.createdAt ? escapeHtml(new Date(audio.createdAt).toLocaleString("ja-JP")) : ""}</div>
       </div>
       ${renderAudioWaveformPlayer(audio.url, { preload: "metadata" })}
@@ -10710,6 +10725,15 @@ function bindCommon() {
     });
   });
   document.querySelector("[data-action='open-help']")?.addEventListener("click", openCurrentHelpModal);
+  document.querySelectorAll("[data-action='reveal-audio']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        await revealAudio(button.dataset.url || "");
+      } catch (error) {
+        toast(error.message);
+      }
+    });
+  });
 }
 
 function bindView() {
