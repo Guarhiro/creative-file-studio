@@ -1549,11 +1549,15 @@ textarea {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
+  min-width: 0;
 }
 
 .image-edit-preview-card {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
+  min-width: 0;
+  align-content: start;
 }
 
 .image-edit-provider-panel {
@@ -1585,6 +1589,10 @@ textarea {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(116px, 1fr));
   gap: 8px;
+}
+
+.image-edit-region-buttons {
+  grid-template-columns: minmax(180px, 1fr);
 }
 
 .image-edit-background-button {
@@ -1638,7 +1646,9 @@ textarea {
 }
 
 .transparent-preview {
+  display: block;
   width: 100%;
+  max-width: 100%;
   max-height: 520px;
   object-fit: contain;
   border: 1px solid var(--line);
@@ -1696,6 +1706,8 @@ textarea {
 .manual-editor-stage {
   position: relative;
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1712,6 +1724,7 @@ textarea {
 .manual-editor-canvas {
   display: block;
   width: 100%;
+  max-width: 100%;
   height: auto;
 }
 

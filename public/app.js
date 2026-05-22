@@ -317,7 +317,7 @@ const screenHelpContent = {
           { term: "保存時のキャラ", description: "処理後の画像を画像一覧へ保存する時に紐づけるキャラです。指定なしでも保存できます。" },
           { term: "対象画像", description: "処理に使う元画像です。保存済み画像または追加画像から選びます。" },
           { term: "処理", description: "背景除去、手動編集、ローカルAI、クラウドAPIなどの方式を切り替えます。" },
-          { term: "簡易ローカル", description: "ブラウザ内で背景色を推定して透過します。軽い確認向きです。" },
+          { term: "簡易ローカル", description: "ブラウザ内で外周につながる余白色を推定して透過します。軽い確認向きです。" },
           { term: "手動フリーモード", description: "境界指定、ペン除去、復元ペンで透過PNGを手動調整します。" },
           { term: "ローカルAI rembg", description: "rembgを使う高精度な背景除去です。初回セットアップが必要です。" },
           { term: "ローカルAI backgroundremover", description: "静止画に加えて動画/GIF背景除去にも使うローカル処理です。" },
@@ -326,10 +326,10 @@ const screenHelpContent = {
           { term: "rembgモデル", description: "rembgで使う切り抜きモデルです。汎用、アニメ向け、人物向けなどから選びます。" },
           { term: "backgroundremoverモデル", description: "backgroundremoverで使うモデルです。U2-Netは汎用、U2-Net Pは軽量、U2-Net Humanは人物向けです。" },
           { term: "マスク後処理", description: "rembgで作ったマスクの穴やノイズを整える補助処理です。" },
-          { term: "背景", description: "簡易ローカル処理で抜く色や範囲の決め方です。自動、白、黒、指定色、クリック認識から選びます。" },
-          { term: "クリック認識", description: "元画像をクリックした地点から近い色の連結範囲を自動認識して透過します。" },
-          { term: "指定色", description: "背景を指定色で抜く時の色です。背景が単色に近い画像で使います。" },
-          { term: "許容値", description: "背景色として扱う色の幅です。0-160で、高いほど広く抜けます。" },
+          { term: "外周から消す色", description: "簡易ローカル処理で外周からつながる余白を透明化する色です。自動、白、黒、指定色から選びます。" },
+          { term: "クリック領域", description: "元画像をクリックした地点から近い色の連結範囲を自動認識して透過します。" },
+          { term: "指定した余白色", description: "外周からつながる余白を指定色で抜く時の色です。余白が単色に近い画像で使います。" },
+          { term: "許容値", description: "余白色やクリック領域として扱う色の幅です。0-160で、高いほど広く抜けます。" },
           { term: "境界ぼかし", description: "切り抜き境界をなじませる量です。0-80で、上げるほど境界がやわらかくなります。" },
           { term: "手動ツール", description: "ペン除去、復元ペン、クリック認識、境界指定を切り替えます。" },
           { term: "ペンサイズ", description: "手動フリーモードで使うブラシの太さです。" },
@@ -591,12 +591,16 @@ const rembgModelOptions = [
   ["silueta", "Silueta（軽量）"]
 ];
 
+const imageEditOuterColorModes = [
+  ["auto", "余白色を推定"],
+  ["white", "白い余白"],
+  ["black", "黒い余白"],
+  ["chroma", "指定した余白色"]
+];
+
 const imageEditBackgroundModes = [
-  ["auto", "背景色を推定"],
-  ["white", "白背景"],
-  ["black", "黒背景"],
-  ["chroma", "指定色"],
-  ["click", "クリック認識"]
+  ...imageEditOuterColorModes,
+  ["click", "クリック領域"]
 ];
 
 const manualImageEditTools = [
@@ -4801,7 +4805,7 @@ function imageEditBackgroundSwatchStyle(value) {
 
 function renderImageEditBackgroundModeButtons(selectedMode) {
   const selected = normalizedImageEditBackgroundMode(selectedMode);
-  return imageEditBackgroundModes
+  return imageEditOuterColorModes
     .map(([value, label]) => `
       <button
         type="button"
@@ -4815,6 +4819,23 @@ function renderImageEditBackgroundModeButtons(selectedMode) {
       </button>
     `)
     .join("");
+}
+
+function renderImageEditClickRecognitionButton(selectedMode) {
+  const selected = normalizedImageEditBackgroundMode(selectedMode);
+  const value = "click";
+  return `
+    <button
+      type="button"
+      class="ghost image-edit-background-button image-edit-region-button ${value === selected ? "active-toggle" : ""}"
+      data-action="set-image-edit-background-mode"
+      data-mode="${value}"
+      aria-pressed="${value === selected ? "true" : "false"}"
+    >
+      <span class="image-edit-background-swatch" style="${imageEditBackgroundSwatchStyle(value)}"></span>
+      <span>クリックした領域を消す</span>
+    </button>
+  `;
 }
 
 function imageEditSourceStamp(source) {
@@ -5181,7 +5202,7 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
             <div class="full meta">${escapeHtml(backgroundRemoverStatusText())}</div>
           ` : `
             <div class="full image-edit-background-panel">
-              <div class="meta">背景</div>
+              <div class="meta">外周から消す色</div>
               <select id="image-edit-background-mode" hidden aria-hidden="true" tabindex="-1">
                 ${imageEditBackgroundModes.map(([value, label]) => `<option value="${value}" ${mode === value ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
               </select>
@@ -5189,7 +5210,13 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
                 ${renderImageEditBackgroundModeButtons(mode)}
               </div>
             </div>
-            <label>指定色
+            <div class="full image-edit-background-panel">
+              <div class="meta">クリック領域</div>
+              <div class="image-edit-background-buttons image-edit-region-buttons">
+                ${renderImageEditClickRecognitionButton(mode)}
+              </div>
+            </div>
+            <label>余白の指定色
               <input id="image-edit-chroma-color" type="color" value="${escapeHtml(state.imageEditChromaColor || "#ffffff")}">
             </label>
             <label>許容値
@@ -5202,7 +5229,7 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
               <div class="full toolbar">
                 <button class="ghost" data-action="undo-image-edit-click-point" ${clickPointCount ? "" : "disabled"}>戻す</button>
               </div>
-              <div class="full meta">元画像をクリックすると、その地点からつながる背景を自動認識します。現在 ${escapeHtml(String(clickPointCount))} 点。</div>
+              <div class="full meta">クリック指定: ${escapeHtml(String(clickPointCount))} 点</div>
             ` : ""}
           `}
           <div class="full toolbar">
@@ -5956,7 +5983,7 @@ function averageImageColor(data, width, height, startX, startY, sampleSize) {
 
 function imageEditBackgroundModeLabel(value) {
   const mode = normalizedImageEditBackgroundMode(value);
-  return imageEditBackgroundModes.find(([option]) => option === mode)?.[1] || "背景色を推定";
+  return imageEditBackgroundModes.find(([option]) => option === mode)?.[1] || "余白色を推定";
 }
 
 function imageEditLocalProviderLabel(controls) {
