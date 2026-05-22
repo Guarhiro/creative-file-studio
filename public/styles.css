@@ -1141,7 +1141,7 @@ textarea {
 
 .reference-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(138px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(164px, 1fr));
   gap: 10px;
   max-height: 520px;
   overflow: auto;
@@ -1175,12 +1175,24 @@ textarea {
   background: #ece7dd;
 }
 
-.audio-thumb {
-  display: grid;
-  place-items: center;
-  color: #fff;
-  background: linear-gradient(135deg, #1f8a84, #b78017);
-  font-weight: 800;
+.reference-video-player {
+  background: #111;
+}
+
+.reference-audio-preview {
+  display: flex;
+  align-items: center;
+  padding: 12px;
+  box-sizing: border-box;
+  background:
+    linear-gradient(135deg, rgba(31, 138, 132, 0.16), rgba(183, 128, 23, 0.16)),
+    #f7f3ea;
+}
+
+.reference-audio-player {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
 }
 
 .reference-check {
@@ -1476,6 +1488,20 @@ textarea {
 
 .audio-edit-mode-buttons button {
   width: 100%;
+}
+
+.audio-edit-file-drop {
+  display: grid;
+  gap: 8px;
+  border: 2px dashed rgba(183, 128, 23, 0.35);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.54);
+  padding: 12px;
+}
+
+.audio-edit-file-drop.dragover {
+  border-color: var(--teal);
+  background: rgba(31, 138, 132, 0.09);
 }
 
 .audio-edit-rows {
