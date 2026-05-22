@@ -112,6 +112,21 @@ const state = {
   audioIsGenerating: false,
   audioGenerationStartedAt: 0,
   audioGenerationTimer: null,
+  audioEditWorkId: null,
+  audioEditCharacterId: "",
+  audioEditFile: null,
+  audioEditMode: "split",
+  audioEditSplitPoints: ["5", "10"],
+  audioEditCutRanges: [{ start: "0", end: "1" }],
+  audioEditVolumePercent: 100,
+  audioEditPitchSemitones: 0,
+  audioEditOutputFormat: "source",
+  audioEditTitle: "",
+  audioEditIsRunning: false,
+  audioEditStatus: "idle",
+  audioEditInfo: null,
+  audioEditError: "",
+  audioEditResult: null,
   lastOpenRouterDebug: null,
   irodoriStatus: "idle",
   irodoriStatusMessage: "",
@@ -148,6 +163,8 @@ const state = {
 const imageEditSourceDataUrlCache = new Map();
 let imageEditAspectPreviewTimer = null;
 let imageEditAspectPreviewToken = 0;
+const audioWaveformBufferCache = new Map();
+let audioWaveformContext = null;
 
 const navItems = [
   { id: "studio", label: "作品とキャラ" },
@@ -165,6 +182,7 @@ const navItems = [
     ]
   },
   { id: "audio", label: "音声生成" },
+  { id: "audio-edit", label: "音声編集" },
   { id: "video", label: "動画生成" },
   { id: "library", label: "画像整理" },
   { id: "prompt", label: "Prompt Lab" },
@@ -382,6 +400,35 @@ const screenHelpContent = {
           { term: "演技指示", description: "声色、感情、間、距離感など、読み方に関する指示です。" },
           { term: "Stability / Similarity / Style / Speed", description: "ElevenLabsの安定度、声の近さ、表現量、速度です。" },
           { term: "Steps / Candidates / Seed", description: "Irodori-TTSの生成回数、候補数、再現用の乱数です。" }
+        ]
+      }
+    ]
+  },
+  "audio-edit": {
+    title: "音声編集のヘルプ",
+    lead: "mp3またはwavを読み込み、分割、カット、音量変更、ピッチ変更をして保存する画面です。",
+    sections: [
+      {
+        title: "使い方",
+        items: [
+          { term: "音声を選択", description: "mp3またはwavファイルを読み込みます。読み込んだ元ファイルは保存せず、編集結果だけを保存します。" },
+          { term: "複数分割", description: "分割したい秒数を複数指定すると、0秒から順に複数の音声ファイルへ書き出します。" },
+          { term: "不要範囲をカット", description: "消したい開始秒と終了秒を複数指定し、残りの部分をつないだ1つの音声ファイルを書き出します。" },
+          { term: "音量変更", description: "0-400%で音量を指定し、音量調整後の音声を1ファイルとして書き出します。" },
+          { term: "ピッチ変更", description: "-12から+12半音で高さを指定し、ピッチ変更後の音声を1ファイルとして書き出します。" },
+          { term: "波形と現在時間", description: "音声プレイヤーの下に波形と現在の再生時間を0.1秒単位で表示します。波形クリックでも再生位置を移動できます。" },
+          { term: "編集開始", description: "ffmpegで処理し、完了後に作品とキャラに紐づいた音声履歴へ登録します。" }
+        ]
+      },
+      {
+        title: "設定値の意味",
+        items: [
+          { term: "作品 / キャラ指定", description: "編集結果の音声履歴で紐づける保存先です。キャラ未指定でも保存できます。" },
+          { term: "出力形式", description: "元ファイルと同じ形式、mp3、wavから選べます。" },
+          { term: "分割秒", description: "音声を切り分ける位置です。例: 10秒と25秒なら、0-10秒、10-25秒、25秒以降に分かれます。" },
+          { term: "カット範囲", description: "不要部分の開始秒と終了秒です。複数指定した場合は重なる範囲をまとめて処理します。" },
+          { term: "音量", description: "100%で元と同じ音量、50%で半分、200%で2倍です。0%は無音になります。" },
+          { term: "ピッチ", description: "0半音で元の高さ、+12半音で1オクターブ上、-12半音で1オクターブ下です。" }
         ]
       }
     ]
@@ -1576,22 +1623,24 @@ function workWorldItemById(id) {
 }
 
 function normalizeAudioItem(item = {}) {
-  const provider = normalizedAudioProvider(item.provider || (item.model === "Irodori-TTS" ? "irodori" : "openrouter"));
+  const provider = item.provider === "audio-edit"
+    ? "audio-edit"
+    : normalizedAudioProvider(item.provider || (item.model === "Irodori-TTS" ? "irodori" : "openrouter"));
   const irodori = provider === "irodori" ? normalizedIrodoriSettings(item.irodori || item.parameters || item.request || {}) : null;
   const voicebox = provider === "voicebox" ? voiceboxSettingsFromControls(item.voicebox || item.parameters || item.request || {}) : null;
   return {
     id: item.id || uid(),
     workId: item.workId || null,
     characterId: item.characterId || null,
-    title: item.title || item.name || "生成音声",
+    title: item.title || item.name || (provider === "audio-edit" ? "編集音声" : "生成音声"),
     input: item.input || item.text || "",
     provider,
-    voice: item.voice || (provider === "irodori" ? irodori?.mode || "VoiceDesign" : provider === "voicebox" ? voicebox?.profileId || "Voicebox" : "Kore"),
-    model: item.model || (provider === "irodori" ? "Irodori-TTS" : provider === "voicebox" ? "Voicebox" : defaultOpenRouterTtsModel),
-    format: item.format || (provider === "irodori" || provider === "voicebox" ? "wav" : "mp3"),
+    voice: item.voice || (provider === "irodori" ? irodori?.mode || "VoiceDesign" : provider === "voicebox" ? voicebox?.profileId || "Voicebox" : provider === "audio-edit" ? "音声編集" : "Kore"),
+    model: item.model || (provider === "irodori" ? "Irodori-TTS" : provider === "voicebox" ? "Voicebox" : provider === "audio-edit" ? "ffmpeg" : defaultOpenRouterTtsModel),
+    format: item.format || (provider === "irodori" || provider === "voicebox" || provider === "audio-edit" ? "wav" : "mp3"),
     url: item.url || "",
     localPath: item.localPath || item.path || "",
-    mimeType: item.mimeType || (provider === "irodori" || provider === "voicebox" ? "audio/wav" : "audio/mpeg"),
+    mimeType: item.mimeType || (provider === "irodori" || provider === "voicebox" || provider === "audio-edit" ? "audio/wav" : "audio/mpeg"),
     generationId: item.generationId || "",
     size: Number(item.size) || null,
     agentNote: item.agentNote || "",
@@ -1601,6 +1650,7 @@ function normalizeAudioItem(item = {}) {
     irodori,
     elevenLabs: item.elevenLabs || null,
     voicebox,
+    audioEdit: item.audioEdit || null,
     referenceAudio: item.referenceAudio || null,
     createdAt: item.createdAt || new Date().toISOString()
   };
@@ -2799,6 +2849,16 @@ function fileToDataUrl(file) {
   });
 }
 
+function audioDurationFromDataUrl(dataUrl) {
+  return new Promise((resolve) => {
+    const audio = document.createElement("audio");
+    audio.preload = "metadata";
+    audio.onloadedmetadata = () => resolve(Number.isFinite(audio.duration) ? audio.duration : null);
+    audio.onerror = () => resolve(null);
+    audio.src = dataUrl;
+  });
+}
+
 function fileToText(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -2916,6 +2976,9 @@ async function postJson(url, body, method = "POST") {
 	    }
 	    if (url.startsWith("/api/image-edit/") && /Method not allowed|Not found/i.test(text)) {
 	      throw new Error("画像編集APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
+	    }
+	    if (url.startsWith("/api/audio-edit/") && /Method not allowed|Not found/i.test(text)) {
+	      throw new Error("音声編集APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
 	    }
 	    const error = new Error(readableError(payload.error) || readableError(payload) || text || `${response.status} ${response.statusText}`);
 	    error.payload = payload;
@@ -3392,6 +3455,7 @@ function currentTitle() {
   if (state.view === "edit-aspect") return ["アスペクト比変換", "指定比率へ配置し、位置と拡大率を調整します。"];
   if (state.view === "edit-gif") return ["動画GIF化", "動画をGIFに変換して画像一覧へ保存します。"];
   if (state.view === "audio") return ["音声生成", "OpenRouter、ElevenLabs、Voicebox、Irodori-TTSでキャラ音声やナレーションを作ります。"];
+  if (state.view === "audio-edit") return ["音声編集", "mp3/wavを分割、カット、音量・ピッチ変更します。"];
   if (state.view === "video") return ["動画生成", "選択した動画モデル向けの指示書作成と生成を行います。"];
   if (state.view === "library") return ["画像整理", "取り込んだ画像を作品・キャラ・状態で確認します。"];
   if (state.view === "prompt") return ["Prompt Lab", "差分やシーン案から生成プロンプトをまとめて作ります。"];
@@ -3448,6 +3512,7 @@ function renderView() {
   if (state.view === "edit-aspect") return renderImageEditor({ forcedProvider: "aspect", hideProviderChooser: true, includeVideoPanel: false });
   if (state.view === "edit-gif") return renderVideoGifConverter();
   if (state.view === "audio") return renderAudioAgent();
+  if (state.view === "audio-edit") return renderAudioEditor();
   if (state.view === "video") return renderVideoAgent();
   if (state.view === "library") return renderLibrary();
   if (state.view === "prompt") return renderPromptLab();
@@ -4197,6 +4262,426 @@ function formatBytes(value) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function formatAudioTime(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds < 0) return "";
+  const rounded = Math.round(seconds * 10) / 10;
+  const minutes = Math.floor(rounded / 60);
+  const rest = rounded - minutes * 60;
+  if (!minutes) return `${Number.isInteger(rest) ? rest : rest.toFixed(1)}秒`;
+  return `${minutes}分${rest.toFixed(rest % 1 ? 1 : 0).padStart(2, "0")}秒`;
+}
+
+function formatAudioTimeTenths(value) {
+  if (value === null || value === undefined || value === "") return "--";
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds < 0) return "--";
+  return `${(Math.round(seconds * 10) / 10).toFixed(1)}秒`;
+}
+
+function renderAudioWaveformPlayer(src, options = {}) {
+  const source = String(src || "");
+  if (!source) return `<div class="empty compact">音声ファイルが見つかりません。</div>`;
+  const preload = options.preload || "none";
+  return `
+    <div class="audio-waveform-player">
+      <audio class="generated-audio waveform-audio" controls preload="${escapeHtml(preload)}" src="${escapeHtml(source)}"></audio>
+      <div class="audio-waveform-strip" role="button" tabindex="0" aria-label="波形から再生位置を移動">
+        <canvas class="audio-waveform-canvas"></canvas>
+      </div>
+      <div class="audio-time-readout">
+        <span data-audio-current-time>0.0秒</span>
+        <span class="audio-time-divider">/</span>
+        <span data-audio-duration-time>--</span>
+      </div>
+    </div>
+  `;
+}
+
+function getAudioWaveformContext() {
+  if (!audioWaveformContext) {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return null;
+    audioWaveformContext = new AudioContextClass();
+  }
+  return audioWaveformContext;
+}
+
+async function audioWaveformBuffer(src) {
+  if (audioWaveformBufferCache.has(src)) return audioWaveformBufferCache.get(src);
+  const context = getAudioWaveformContext();
+  if (!context) return null;
+  const response = await fetch(src);
+  if (!response.ok) throw new Error("音声波形を読み込めませんでした。");
+  const arrayBuffer = await response.arrayBuffer();
+  const buffer = await context.decodeAudioData(arrayBuffer.slice(0));
+  audioWaveformBufferCache.set(src, buffer);
+  return buffer;
+}
+
+function canvasDisplaySize(canvas) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    width: Math.max(240, Math.floor(rect.width || canvas.clientWidth || 360)),
+    height: Math.max(58, Math.floor(rect.height || canvas.clientHeight || 72))
+  };
+}
+
+function prepareWaveformCanvas(canvas) {
+  const { width, height } = canvasDisplaySize(canvas);
+  const scale = window.devicePixelRatio || 1;
+  const pixelWidth = Math.floor(width * scale);
+  const pixelHeight = Math.floor(height * scale);
+  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+  }
+  const context = canvas.getContext("2d");
+  context.setTransform(scale, 0, 0, scale, 0, 0);
+  return { context, width, height };
+}
+
+function drawWaveformCanvas(canvas, audio, buffer = null) {
+  if (!canvas || !audio) return;
+  const { context, width, height } = prepareWaveformCanvas(canvas);
+  context.clearRect(0, 0, width, height);
+  context.fillStyle = "#fbfaf7";
+  context.fillRect(0, 0, width, height);
+  context.strokeStyle = "rgba(31, 35, 40, 0.08)";
+  context.beginPath();
+  context.moveTo(0, height / 2);
+  context.lineTo(width, height / 2);
+  context.stroke();
+
+  const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : buffer?.duration || 0;
+  const progress = duration ? Math.min(1, Math.max(0, audio.currentTime / duration)) : 0;
+  const progressX = Math.round(width * progress);
+
+  if (!buffer) {
+    context.fillStyle = "rgba(112, 116, 123, 0.22)";
+    for (let x = 0; x < width; x += 7) {
+      const barHeight = 8 + ((x * 11) % 29);
+      context.fillRect(x, (height - barHeight) / 2, 3, barHeight);
+    }
+  } else {
+    const data = buffer.getChannelData(0);
+    const samplesPerPixel = Math.max(1, Math.floor(data.length / width));
+    const center = height / 2;
+    const amp = height * 0.42;
+    for (let x = 0; x < width; x += 1) {
+      const start = x * samplesPerPixel;
+      const end = Math.min(data.length, start + samplesPerPixel);
+      let min = 1;
+      let max = -1;
+      for (let i = start; i < end; i += 1) {
+        const value = data[i];
+        if (value < min) min = value;
+        if (value > max) max = value;
+      }
+      context.strokeStyle = x <= progressX ? "rgba(31, 138, 132, 0.88)" : "rgba(112, 116, 123, 0.38)";
+      context.beginPath();
+      context.moveTo(x + 0.5, center + min * amp);
+      context.lineTo(x + 0.5, center + max * amp);
+      context.stroke();
+    }
+  }
+
+  context.strokeStyle = "#d85f43";
+  context.lineWidth = 2;
+  context.beginPath();
+  context.moveTo(progressX + 0.5, 6);
+  context.lineTo(progressX + 0.5, height - 6);
+  context.stroke();
+}
+
+function updateWaveformTime(player, audio, buffer = null) {
+  const current = player.querySelector("[data-audio-current-time]");
+  const duration = player.querySelector("[data-audio-duration-time]");
+  if (current) current.textContent = formatAudioTimeTenths(audio.currentTime || 0);
+  if (duration) {
+    const total = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : buffer?.duration || null;
+    duration.textContent = formatAudioTimeTenths(total);
+  }
+}
+
+function bindAudioWaveforms(root = document) {
+  root.querySelectorAll(".audio-waveform-player").forEach((player) => {
+    if (player.dataset.waveformBound === "true") return;
+    player.dataset.waveformBound = "true";
+    const audio = player.querySelector("audio");
+    const canvas = player.querySelector(".audio-waveform-canvas");
+    const strip = player.querySelector(".audio-waveform-strip");
+    if (!audio || !canvas || !strip) return;
+    let buffer = null;
+    let timer = null;
+    const refresh = () => {
+      updateWaveformTime(player, audio, buffer);
+      drawWaveformCanvas(canvas, audio, buffer);
+    };
+    const stopTimer = () => {
+      if (timer) window.clearInterval(timer);
+      timer = null;
+    };
+    const startTimer = () => {
+      stopTimer();
+      timer = window.setInterval(refresh, 100);
+      refresh();
+    };
+    const loadWaveform = async () => {
+      try {
+        buffer = await audioWaveformBuffer(audio.currentSrc || audio.src);
+        refresh();
+      } catch {
+        refresh();
+      }
+    };
+    audio.addEventListener("loadedmetadata", refresh);
+    audio.addEventListener("durationchange", refresh);
+    audio.addEventListener("timeupdate", refresh);
+    audio.addEventListener("play", startTimer);
+    audio.addEventListener("pause", stopTimer);
+    audio.addEventListener("ended", () => {
+      stopTimer();
+      refresh();
+    });
+    strip.addEventListener("click", (event) => {
+      const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : buffer?.duration || 0;
+      if (!duration) return;
+      const rect = strip.getBoundingClientRect();
+      const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+      audio.currentTime = duration * ratio;
+      refresh();
+    });
+    strip.addEventListener("keydown", (event) => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : buffer?.duration || 0;
+      if (!duration) return;
+      if (event.key === "Home") audio.currentTime = 0;
+      if (event.key === "End") audio.currentTime = duration;
+      if (event.key === "ArrowLeft") audio.currentTime = Math.max(0, audio.currentTime - 0.1);
+      if (event.key === "ArrowRight") audio.currentTime = Math.min(duration, audio.currentTime + 0.1);
+      refresh();
+    });
+    window.requestAnimationFrame(refresh);
+    loadWaveform();
+  });
+}
+
+function audioEditDefaultTitle(fileName = "") {
+  const base = String(fileName || "編集音声").split(/[\\/]/).pop().replace(/\.[^.]+$/i, "").trim();
+  return `${base || "編集音声"}_編集`;
+}
+
+function audioEditOutputFormatOptions(selectedValue) {
+  const options = [["source", "元と同じ"], ["mp3", "MP3"], ["wav", "WAV"]];
+  const selected = ["source", "mp3", "wav"].includes(selectedValue) ? selectedValue : "source";
+  return options.map(([value, label]) => `<option value="${escapeHtml(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(label)}</option>`).join("");
+}
+
+function audioEditStatusText() {
+  if (state.audioEditStatus === "loading") return "ffmpegの状態を確認中です。";
+  if (state.audioEditInfo?.found) return `ffmpeg使用可能: ${state.audioEditInfo.version || ""}`;
+  return state.audioEditError || "ffmpegは未確認です。音声編集にはffmpegとffprobeが必要です。";
+}
+
+function audioEditModeValue(value) {
+  return ["cut", "volume", "pitch"].includes(value) ? value : "split";
+}
+
+function audioEditModeButton(value, label) {
+  return `<button type="button" class="ghost ${state.audioEditMode === value ? "active-toggle" : ""}" data-action="set-audio-edit-mode" data-mode="${escapeHtml(value)}">${escapeHtml(label)}</button>`;
+}
+
+function audioEditVolumePercentValue(value) {
+  return boundedSettingNumber(value, 100, 0, 400, true);
+}
+
+function audioEditPitchSemitonesValue(value) {
+  return boundedSettingNumber(value, 0, -12, 12, false);
+}
+
+function audioEditSignedNumberLabel(value) {
+  const rounded = Math.round(Number(value) * 10) / 10;
+  if (!Number.isFinite(rounded) || rounded === 0) return "0";
+  const label = Number.isInteger(rounded) ? String(rounded) : String(rounded);
+  return rounded > 0 ? `+${label}` : label;
+}
+
+function renderAudioEditSplitRows() {
+  const points = state.audioEditSplitPoints?.length ? state.audioEditSplitPoints : [""];
+  return `
+    <div class="audio-edit-rows full">
+      ${points.map((point, index) => `
+        <div class="audio-edit-row">
+          <label>分割秒 ${index + 1}
+            <input data-audio-edit-split-index="${index}" type="number" min="0" max="36000" step="0.1" value="${escapeHtml(point)}">
+          </label>
+          <button type="button" class="ghost icon-button" data-action="remove-audio-edit-split" data-index="${index}" ${points.length <= 1 ? "disabled" : ""} aria-label="分割秒を削除">-</button>
+        </div>
+      `).join("")}
+      <button type="button" class="ghost" data-action="add-audio-edit-split">分割秒を追加</button>
+    </div>
+  `;
+}
+
+function renderAudioEditCutRows() {
+  const ranges = state.audioEditCutRanges?.length ? state.audioEditCutRanges : [{ start: "", end: "" }];
+  return `
+    <div class="audio-edit-rows full">
+      ${ranges.map((range, index) => `
+        <div class="audio-edit-row cut-range">
+          <label>開始秒
+            <input data-audio-edit-cut-start="${index}" type="number" min="0" max="36000" step="0.1" value="${escapeHtml(range.start)}">
+          </label>
+          <label>終了秒
+            <input data-audio-edit-cut-end="${index}" type="number" min="0" max="36000" step="0.1" value="${escapeHtml(range.end)}">
+          </label>
+          <button type="button" class="ghost icon-button" data-action="remove-audio-edit-cut" data-index="${index}" ${ranges.length <= 1 ? "disabled" : ""} aria-label="カット範囲を削除">-</button>
+        </div>
+      `).join("")}
+      <button type="button" class="ghost" data-action="add-audio-edit-cut">カット範囲を追加</button>
+    </div>
+  `;
+}
+
+function renderAudioEditVolumeControls() {
+  const value = audioEditVolumePercentValue(state.audioEditVolumePercent);
+  return `
+    <div class="audio-edit-rows full">
+      <div class="audio-edit-volume-control">
+        <label class="full">音量
+          <input id="audio-edit-volume-range" type="range" min="0" max="400" step="1" value="${escapeHtml(value)}">
+        </label>
+        <label>音量（%）
+          <input id="audio-edit-volume-number" type="number" min="0" max="400" step="1" value="${escapeHtml(value)}">
+        </label>
+        <button type="button" class="ghost" data-action="reset-audio-edit-volume">100%に戻す</button>
+      </div>
+      <div class="meta">100%で元音量、50%で半分、200%で2倍です。大きくしすぎると音割れする場合があります。</div>
+    </div>
+  `;
+}
+
+function renderAudioEditPitchControls() {
+  const value = audioEditPitchSemitonesValue(state.audioEditPitchSemitones);
+  return `
+    <div class="audio-edit-rows full">
+      <div class="audio-edit-pitch-control">
+        <label class="full">ピッチ
+          <input id="audio-edit-pitch-range" type="range" min="-12" max="12" step="0.1" value="${escapeHtml(value)}">
+        </label>
+        <label>ピッチ（半音）
+          <input id="audio-edit-pitch-number" type="number" min="-12" max="12" step="0.1" value="${escapeHtml(value)}">
+        </label>
+        <button type="button" class="ghost" data-action="reset-audio-edit-pitch">0に戻す</button>
+      </div>
+      <div class="meta">0で元の高さ、+12で1オクターブ上、-12で1オクターブ下です。長さはできるだけ元に近づけて書き出します。</div>
+    </div>
+  `;
+}
+
+function renderAudioEditOutput(output) {
+  return `
+    <article class="audio-job audio-edit-output">
+      <div>
+        <div class="char-name">${escapeHtml(output.name || "編集音声")}</div>
+        <div class="meta">${escapeHtml(output.label || "")}${output.size ? ` / ${escapeHtml(formatBytes(output.size))}` : ""}</div>
+      </div>
+      ${renderAudioWaveformPlayer(output.url, { preload: "metadata" })}
+      ${output.path ? `<div class="meta">保存先: ${escapeHtml(output.path)}</div>` : ""}
+    </article>
+  `;
+}
+
+function renderAudioEditResult() {
+  if (state.audioEditIsRunning) {
+    return `<div class="empty compact">音声を処理中です。長い音声や複数分割では少し時間がかかります。</div>`;
+  }
+  const outputs = state.audioEditResult?.outputs || [];
+  if (!outputs.length) return `<div class="empty compact">まだ編集結果がありません。</div>`;
+  return `<div class="audio-history-list">${outputs.map(renderAudioEditOutput).join("")}</div>`;
+}
+
+function audioEditHistoryItems() {
+  return audioItemsForWork(state.audioEditWorkId)
+    .filter((item) => item.provider === "audio-edit")
+    .filter((item) => !state.audioEditCharacterId || item.characterId === state.audioEditCharacterId)
+    .slice(0, 12);
+}
+
+function audioEditControlsFromDom() {
+  const selectedCharId = document.querySelector("#audio-edit-character")?.value || state.audioEditCharacterId || "";
+  const selectedChar = byId(state.db.characters, selectedCharId);
+  const activeMode = document.querySelector("[data-action='set-audio-edit-mode'].active-toggle")?.dataset.mode;
+  const visibleMode = document.querySelector("#audio-edit-pitch-number")
+    ? "pitch"
+    : document.querySelector("#audio-edit-volume-number")
+      ? "volume"
+      : document.querySelector("[data-audio-edit-cut-start]")
+        ? "cut"
+        : document.querySelector("[data-audio-edit-split-index]")
+          ? "split"
+          : "";
+  const mode = audioEditModeValue(visibleMode || activeMode || state.audioEditMode || document.querySelector("[data-audio-edit-mode]")?.value);
+  return {
+    workId: selectedChar?.workId || document.querySelector("#audio-edit-work")?.value || state.audioEditWorkId || null,
+    characterId: selectedCharId,
+    title: document.querySelector("#audio-edit-title")?.value.trim() || state.audioEditTitle || audioEditDefaultTitle(state.audioEditFile?.name),
+    mode,
+    outputFormat: document.querySelector("#audio-edit-output-format")?.value || state.audioEditOutputFormat || "source",
+    volumePercent: audioEditVolumePercentValue(document.querySelector("#audio-edit-volume-number")?.value ?? document.querySelector("#audio-edit-volume-range")?.value ?? state.audioEditVolumePercent),
+    pitchSemitones: audioEditPitchSemitonesValue(document.querySelector("#audio-edit-pitch-number")?.value ?? document.querySelector("#audio-edit-pitch-range")?.value ?? state.audioEditPitchSemitones),
+    splitPoints: Array.from(document.querySelectorAll("[data-audio-edit-split-index]")).map((input) => input.value),
+    cutRanges: (state.audioEditCutRanges?.length ? state.audioEditCutRanges : [{ start: "", end: "" }]).map((_, index) => ({
+      start: document.querySelector(`[data-audio-edit-cut-start="${index}"]`)?.value ?? "",
+      end: document.querySelector(`[data-audio-edit-cut-end="${index}"]`)?.value ?? ""
+    }))
+  };
+}
+
+function rememberAudioEditControls(controls = audioEditControlsFromDom()) {
+  state.audioEditWorkId = controls.workId || null;
+  state.audioEditCharacterId = controls.characterId || "";
+  state.audioEditTitle = controls.title || "";
+  state.audioEditMode = audioEditModeValue(controls.mode);
+  state.audioEditOutputFormat = ["source", "mp3", "wav"].includes(controls.outputFormat) ? controls.outputFormat : "source";
+  state.audioEditVolumePercent = audioEditVolumePercentValue(controls.volumePercent);
+  state.audioEditPitchSemitones = audioEditPitchSemitonesValue(controls.pitchSemitones);
+  state.audioEditSplitPoints = controls.splitPoints?.length ? controls.splitPoints : [""];
+  state.audioEditCutRanges = controls.cutRanges?.length ? controls.cutRanges : [{ start: "", end: "" }];
+}
+
+function numericAudioEditValues(controls) {
+  return {
+    splitPoints: (controls.splitPoints || [])
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && value > 0),
+    cutRanges: (controls.cutRanges || [])
+      .map((range) => ({ start: Number(range.start), end: Number(range.end) }))
+      .filter((range) => Number.isFinite(range.start) && Number.isFinite(range.end) && range.end > range.start),
+    volumePercent: audioEditVolumePercentValue(controls.volumePercent),
+    pitchSemitones: audioEditPitchSemitonesValue(controls.pitchSemitones)
+  };
+}
+
+function audioEditMemo(result, controls) {
+  if (result.mode === "volume") {
+    const volumePercent = result.settings?.volumePercent ?? numericAudioEditValues(controls).volumePercent;
+    return `音量変更: ${volumePercent}% / 形式 ${result.settings?.outputFormat || controls.outputFormat}`;
+  }
+  if (result.mode === "pitch") {
+    const pitchSemitones = result.settings?.pitchSemitones ?? numericAudioEditValues(controls).pitchSemitones;
+    return `ピッチ変更: ${audioEditSignedNumberLabel(pitchSemitones)}半音 / 形式 ${result.settings?.outputFormat || controls.outputFormat}`;
+  }
+  if (result.mode === "cut") {
+    const ranges = result.settings?.cutRanges || numericAudioEditValues(controls).cutRanges;
+    return `不要範囲カット: ${ranges.map((range) => `${formatAudioTime(range.start)}-${formatAudioTime(range.end)}`).join(" / ")} / 形式 ${result.settings?.outputFormat || controls.outputFormat}`;
+  }
+  const points = result.settings?.splitPoints || numericAudioEditValues(controls).splitPoints;
+  return `分割点: ${points.map(formatAudioTime).join(" / ")} / 形式 ${result.settings?.outputFormat || controls.outputFormat}`;
 }
 
 function transparentPngName(name = "image", suffix = "transparent") {
@@ -5956,6 +6441,100 @@ async function runVideoGifConversion() {
     toast(error.message);
   } finally {
     state.videoGifIsRunning = false;
+    render();
+  }
+}
+
+async function checkAudioEditStatus({ silent = false } = {}) {
+  state.audioEditStatus = "loading";
+  state.audioEditError = "";
+  if (!silent) render();
+  try {
+    const result = await postJson("/api/audio-edit/status", {});
+    state.audioEditInfo = result;
+    state.audioEditStatus = result.found ? "ready" : "missing";
+    state.audioEditError = result.found ? "" : (result.installHint || "ffmpegまたはffprobeが見つかりません。");
+    if (!silent) {
+      render();
+      toast(result.found ? "ffmpegを利用できます。" : "ffmpegまたはffprobeが見つかりません。");
+    }
+    return result;
+  } catch (error) {
+    state.audioEditStatus = "failed";
+    state.audioEditError = error.message;
+    if (!silent) {
+      render();
+      toast(error.message);
+    }
+    return null;
+  }
+}
+
+async function runAudioEdit() {
+  const file = state.audioEditFile;
+  if (!file?.dataUrl) return toast("編集するmp3またはwavを選択してください。");
+  const controls = audioEditControlsFromDom();
+  rememberAudioEditControls(controls);
+  const mode = audioEditModeValue(controls.mode);
+  const numeric = numericAudioEditValues(controls);
+  if (mode === "split" && !numeric.splitPoints.length) return toast("分割秒を1つ以上指定してください。");
+  if (mode === "cut" && !numeric.cutRanges.length) return toast("カットする開始秒と終了秒を1つ以上指定してください。");
+
+  const selectedChar = byId(state.db.characters, controls.characterId);
+  const work = byId(state.db.works, selectedChar?.workId || controls.workId || state.selectedWorkId);
+  state.audioEditIsRunning = true;
+  state.audioEditResult = null;
+  render();
+  try {
+    toastApiSubmitted(mode === "pitch" ? "音声のピッチ変更を開始しました。" : mode === "volume" ? "音声の音量変更を開始しました。" : mode === "cut" ? "音声の不要範囲カットを開始しました。" : "音声の複数分割を開始しました。");
+    const result = await postJson("/api/audio-edit/process", {
+      dataUrl: file.dataUrl,
+      name: file.name || "audio.wav",
+      title: controls.title,
+      mode,
+      outputFormat: controls.outputFormat,
+      volumePercent: numeric.volumePercent,
+      pitchSemitones: numeric.pitchSemitones,
+      splitPoints: numeric.splitPoints,
+      cutRanges: numeric.cutRanges
+    });
+    state.audioEditResult = result;
+    const memo = audioEditMemo(result, controls);
+    const createdAt = new Date().toISOString();
+    const created = (result.outputs || []).map((output) => normalizeAudioItem({
+      id: uid(),
+      workId: work?.id || null,
+      characterId: selectedChar?.id || null,
+      title: result.mode === "split" ? `${controls.title} ${String(output.index || 1).padStart(2, "0")}` : controls.title,
+      input: `元音声: ${file.name || result.source?.name || "audio"}\n${memo}`,
+      provider: "audio-edit",
+      voice: result.mode === "split" ? "複数分割" : result.mode === "volume" ? "音量変更" : result.mode === "pitch" ? "ピッチ変更" : "不要範囲カット",
+      model: "ffmpeg",
+      format: output.format,
+      url: output.url,
+      localPath: output.path,
+      mimeType: output.mimeType,
+      size: output.size,
+      agentNote: output.label || memo,
+      caption: output.label || "",
+      audioEdit: {
+        mode: result.mode,
+        sourceName: file.name || result.source?.name || "",
+        splitPoints: result.settings?.splitPoints || [],
+        cutRanges: result.settings?.cutRanges || [],
+        volumePercent: result.settings?.volumePercent ?? null,
+        pitchSemitones: result.settings?.pitchSemitones ?? null,
+        outputFormat: result.settings?.outputFormat || output.format
+      },
+      createdAt
+    }));
+    state.db.audioItems.unshift(...created);
+    await saveDb();
+    toast(result.mode === "split" ? `${created.length} 件に分割して保存しました。` : result.mode === "volume" ? "音量変更した音声を保存しました。" : result.mode === "pitch" ? "ピッチ変更した音声を保存しました。" : "不要部分をカットして保存しました。");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    state.audioEditIsRunning = false;
     render();
   }
 }
@@ -8990,7 +9569,7 @@ async function startAudioGeneration() {
 }
 
 function renderAudioItem(audio) {
-  const providerLabel = audio.provider === "irodori" ? "Irodori-TTS" : audio.provider === "elevenlabs" ? "ElevenLabs" : audio.provider === "voicebox" ? "Voicebox" : "OpenRouter TTS";
+  const providerLabel = audio.provider === "irodori" ? "Irodori-TTS" : audio.provider === "elevenlabs" ? "ElevenLabs" : audio.provider === "voicebox" ? "Voicebox" : audio.provider === "audio-edit" ? "音声編集" : "OpenRouter TTS";
   const openRouterModelLabel = audio.provider === "openrouter" ? openRouterTtsModelConfig(audio.model).label : "";
   const voiceLabel = audio.provider === "irodori"
     ? `${audio.irodori?.mode || audio.voice || "VoiceDesign"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`
@@ -8998,6 +9577,8 @@ function renderAudioItem(audio) {
       ? `${audio.voice || "voice ID未設定"} / ${audio.model || "eleven_multilingual_v2"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`
       : audio.provider === "voicebox"
         ? `${audio.voicebox?.profileName || audio.voicebox?.profileId || audio.voice || "profile未設定"} / ${audio.voicebox?.language || "ja"}${audio.voicebox?.defaultEngine ? ` / ${audio.voicebox.defaultEngine}` : ""}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`
+        : audio.provider === "audio-edit"
+          ? `${audio.model || "ffmpeg"} / ${audio.format || "wav"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`
         : `${openRouterModelLabel} / ${audio.voice || "Kore"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`;
   return `
     <article class="audio-job">
@@ -9005,11 +9586,90 @@ function renderAudioItem(audio) {
         <div class="char-name">${escapeHtml(audio.title || "生成音声")}</div>
         <div class="meta">${escapeHtml(audioCharacterLabel(audio))} / ${escapeHtml(providerLabel)} / ${escapeHtml(voiceLabel)} / ${audio.createdAt ? escapeHtml(new Date(audio.createdAt).toLocaleString("ja-JP")) : ""}</div>
       </div>
-      <audio class="generated-audio" controls preload="none" src="${escapeHtml(audio.url)}"></audio>
+      ${renderAudioWaveformPlayer(audio.url, { preload: "metadata" })}
       <div class="result-text">${escapeHtml(compactPromptText(audio.input, 900))}</div>
       ${audio.agentNote ? `<div class="meta">${escapeHtml(audio.agentNote)}</div>` : ""}
       ${audio.localPath ? `<div class="meta">保存先: ${escapeHtml(audio.localPath)}</div>` : ""}
     </article>
+  `;
+}
+
+function renderAudioEditor() {
+  const work = byId(state.db.works, state.audioEditWorkId) || byId(state.db.works, state.selectedWorkId) || state.db.works[0] || null;
+  if (!state.audioEditWorkId && work) state.audioEditWorkId = work.id;
+  const chars = state.db.characters.filter((char) => !state.audioEditWorkId || char.workId === state.audioEditWorkId);
+  if (state.audioEditCharacterId && !chars.some((char) => char.id === state.audioEditCharacterId)) {
+    state.audioEditCharacterId = "";
+  }
+  const file = state.audioEditFile;
+  const durationText = file?.duration ? ` / 長さ ${formatAudioTime(file.duration)}` : "";
+  const titleValue = state.audioEditTitle || audioEditDefaultTitle(file?.name || "");
+  const history = audioEditHistoryItems();
+  return `
+    <div class="video-layout audio-layout audio-edit-layout">
+      <section class="panel">
+        <div class="panel-header"><h2>編集設定</h2></div>
+        <div class="panel-body form-grid">
+          <label class="full">作品
+            <select id="audio-edit-work">
+              <option value="">全作品</option>
+              ${state.db.works.map((item) => `<option value="${escapeHtml(item.id)}" ${state.audioEditWorkId === item.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="full">キャラ指定
+            <select id="audio-edit-character">
+              <option value="">指定なし</option>
+              ${chars.map((char) => `<option value="${char.id}" ${state.audioEditCharacterId === char.id ? "selected" : ""}>${escapeHtml(char.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="full">タイトル
+            <input id="audio-edit-title" value="${escapeHtml(titleValue)}">
+          </label>
+          <input id="audio-edit-input" type="file" accept=".mp3,.wav,audio/mpeg,audio/wav,audio/x-wav" hidden>
+          <div class="full toolbar">
+            <button class="ghost" data-action="choose-audio-edit-file">音声を選択</button>
+            <button class="ghost" data-action="clear-audio-edit-file" ${file ? "" : "disabled"}>選択を解除</button>
+          </div>
+          <div class="full meta">${file ? `${escapeHtml(file.name)} / ${escapeHtml(formatBytes(file.size || 0))}${escapeHtml(durationText)}` : "mp3またはwavを選択してください。"}</div>
+          <input type="hidden" data-audio-edit-mode value="${escapeHtml(state.audioEditMode)}">
+          <div class="full audio-edit-mode-buttons">
+            ${audioEditModeButton("split", "複数分割")}
+            ${audioEditModeButton("cut", "不要範囲をカット")}
+            ${audioEditModeButton("volume", "音量変更")}
+            ${audioEditModeButton("pitch", "ピッチ変更")}
+          </div>
+          <label class="full">出力形式
+            <select id="audio-edit-output-format">${audioEditOutputFormatOptions(state.audioEditOutputFormat)}</select>
+          </label>
+          ${state.audioEditMode === "pitch" ? renderAudioEditPitchControls() : state.audioEditMode === "volume" ? renderAudioEditVolumeControls() : state.audioEditMode === "cut" ? renderAudioEditCutRows() : renderAudioEditSplitRows()}
+          <div class="full toolbar">
+            <button class="ghost" data-action="check-audio-edit-ffmpeg" ${state.audioEditStatus === "loading" ? "disabled" : ""}>ffmpeg確認</button>
+            <button class="accent" data-action="run-audio-edit" ${state.audioEditIsRunning || !file ? "disabled" : ""}>編集開始</button>
+          </div>
+          <div class="full meta">${escapeHtml(audioEditStatusText())}</div>
+        </div>
+      </section>
+      <section class="video-main">
+        <section class="panel">
+          <div class="panel-header"><h2>元音声</h2></div>
+          <div class="panel-body">
+            ${file?.dataUrl ? renderAudioWaveformPlayer(file.dataUrl, { preload: "metadata" }) : `<div class="empty compact">音声を選択するとここで再生確認できます。</div>`}
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-header"><h2>編集結果</h2></div>
+          <div class="panel-body">
+            ${renderAudioEditResult()}
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-header"><h2>音声編集履歴</h2></div>
+          <div class="panel-body audio-history-list">
+            ${history.length ? history.map(renderAudioItem).join("") : `<div class="empty compact">音声編集の履歴はまだありません。</div>`}
+          </div>
+        </section>
+      </section>
+    </div>
   `;
 }
 
@@ -9032,6 +9692,7 @@ function renderAudioAgent() {
   const voiceboxValue = voiceboxSettingsFromControls(controls.voicebox || {});
   const irodoriValue = normalizedIrodoriSettings({ ...state.db.settings.irodoriDefaults, ...controls });
   const history = audioItemsForWork(state.audioWorkId)
+    .filter((item) => item.provider !== "audio-edit")
     .filter((item) => !state.audioCharacterId || item.characterId === state.audioCharacterId)
     .slice(0, 12);
   return `
@@ -10048,10 +10709,12 @@ function bindView() {
   if (state.view === "edit-aspect") bindImageEditor({ forcedProvider: "aspect" });
   if (state.view === "edit-gif") bindVideoGifConverter();
   if (state.view === "audio") bindAudioAgent();
+  if (state.view === "audio-edit") bindAudioEditor();
   if (state.view === "video") bindVideoAgent();
   if (state.view === "library") bindLibrary();
   if (state.view === "prompt") bindPromptLab();
   if (state.view === "settings") bindSettings();
+  bindAudioWaveforms();
 }
 
 function bindStudio() {
@@ -10914,6 +11577,162 @@ function bindAudioAgent() {
     copyText(text);
   });
   document.querySelector("[data-action='audio-start-generation']")?.addEventListener("click", startAudioGeneration);
+}
+
+function bindAudioEditor() {
+  const persist = () => rememberAudioEditControls();
+  document.querySelector("#audio-edit-work")?.addEventListener("change", (event) => {
+    persist();
+    state.audioEditWorkId = event.target.value || null;
+    state.selectedWorkId = state.audioEditWorkId;
+    if (state.audioEditCharacterId && !state.db.characters.some((char) => char.id === state.audioEditCharacterId && (!state.audioEditWorkId || char.workId === state.audioEditWorkId))) {
+      state.audioEditCharacterId = "";
+    }
+    render();
+  });
+  document.querySelector("#audio-edit-character")?.addEventListener("change", (event) => {
+    persist();
+    state.audioEditCharacterId = event.target.value || "";
+    const char = byId(state.db.characters, state.audioEditCharacterId);
+    if (char) {
+      state.audioEditWorkId = char.workId;
+      state.selectedWorkId = char.workId;
+    }
+    render();
+  });
+  ["#audio-edit-title", "#audio-edit-output-format"].forEach((selector) => {
+    document.querySelector(selector)?.addEventListener("input", persist);
+    document.querySelector(selector)?.addEventListener("change", persist);
+  });
+  document.querySelectorAll("[data-audio-edit-split-index], [data-audio-edit-cut-start], [data-audio-edit-cut-end]").forEach((input) => {
+    input.addEventListener("input", persist);
+    input.addEventListener("change", persist);
+  });
+  document.querySelectorAll("[data-action='set-audio-edit-mode']").forEach((button) => {
+    button.addEventListener("click", () => {
+      persist();
+      state.audioEditMode = audioEditModeValue(button.dataset.mode);
+      state.audioEditResult = null;
+      render();
+    });
+  });
+  const syncVolumeControls = (value) => {
+    const normalized = audioEditVolumePercentValue(value);
+    const range = document.querySelector("#audio-edit-volume-range");
+    const number = document.querySelector("#audio-edit-volume-number");
+    if (range) range.value = String(normalized);
+    if (number) number.value = String(normalized);
+    state.audioEditVolumePercent = normalized;
+  };
+  ["#audio-edit-volume-range", "#audio-edit-volume-number"].forEach((selector) => {
+    document.querySelector(selector)?.addEventListener("input", (event) => {
+      syncVolumeControls(event.target.value);
+      persist();
+    });
+    document.querySelector(selector)?.addEventListener("change", (event) => {
+      syncVolumeControls(event.target.value);
+      persist();
+    });
+  });
+  document.querySelector("[data-action='reset-audio-edit-volume']")?.addEventListener("click", () => {
+    syncVolumeControls(100);
+    persist();
+  });
+  const syncPitchControls = (value) => {
+    const normalized = audioEditPitchSemitonesValue(value);
+    const range = document.querySelector("#audio-edit-pitch-range");
+    const number = document.querySelector("#audio-edit-pitch-number");
+    if (range) range.value = String(normalized);
+    if (number) number.value = String(normalized);
+    state.audioEditPitchSemitones = normalized;
+  };
+  ["#audio-edit-pitch-range", "#audio-edit-pitch-number"].forEach((selector) => {
+    document.querySelector(selector)?.addEventListener("input", (event) => {
+      syncPitchControls(event.target.value);
+      persist();
+    });
+    document.querySelector(selector)?.addEventListener("change", (event) => {
+      syncPitchControls(event.target.value);
+      persist();
+    });
+  });
+  document.querySelector("[data-action='reset-audio-edit-pitch']")?.addEventListener("click", () => {
+    syncPitchControls(0);
+    persist();
+  });
+  document.querySelector("[data-action='add-audio-edit-split']")?.addEventListener("click", () => {
+    persist();
+    const points = state.audioEditSplitPoints?.length ? [...state.audioEditSplitPoints] : [""];
+    const last = Number(points.at(-1));
+    points.push(String(Number.isFinite(last) ? Math.round((last + 5) * 10) / 10 : 5));
+    state.audioEditSplitPoints = points;
+    render();
+  });
+  document.querySelectorAll("[data-action='remove-audio-edit-split']").forEach((button) => {
+    button.addEventListener("click", () => {
+      persist();
+      const index = Number(button.dataset.index);
+      state.audioEditSplitPoints = (state.audioEditSplitPoints || []).filter((_, itemIndex) => itemIndex !== index);
+      if (!state.audioEditSplitPoints.length) state.audioEditSplitPoints = [""];
+      render();
+    });
+  });
+  document.querySelector("[data-action='add-audio-edit-cut']")?.addEventListener("click", () => {
+    persist();
+    const ranges = state.audioEditCutRanges?.length ? [...state.audioEditCutRanges] : [{ start: "", end: "" }];
+    const lastEnd = Number(ranges.at(-1)?.end);
+    const start = Number.isFinite(lastEnd) ? Math.round(lastEnd * 10) / 10 : 0;
+    ranges.push({ start: String(start), end: String(Math.round((start + 1) * 10) / 10) });
+    state.audioEditCutRanges = ranges;
+    render();
+  });
+  document.querySelectorAll("[data-action='remove-audio-edit-cut']").forEach((button) => {
+    button.addEventListener("click", () => {
+      persist();
+      const index = Number(button.dataset.index);
+      state.audioEditCutRanges = (state.audioEditCutRanges || []).filter((_, itemIndex) => itemIndex !== index);
+      if (!state.audioEditCutRanges.length) state.audioEditCutRanges = [{ start: "", end: "" }];
+      render();
+    });
+  });
+  document.querySelector("[data-action='choose-audio-edit-file']")?.addEventListener("click", () => {
+    document.querySelector("#audio-edit-input")?.click();
+  });
+  document.querySelector("#audio-edit-input")?.addEventListener("change", async (event) => {
+    const file = [...(event.target.files || [])].find((item) => item.type === "audio/mpeg" || item.type === "audio/wav" || item.type === "audio/x-wav" || /\.(mp3|wav)$/i.test(item.name || ""));
+    if (!file) return;
+    if (file.size > 180 * 1024 * 1024) {
+      event.target.value = "";
+      return toast("音声は180MB以下のmp3またはwavを選択してください。長い素材は短くしてから試すと安定します。");
+    }
+    const dataUrl = await fileToDataUrl(file);
+    const genericDefault = audioEditDefaultTitle("");
+    state.audioEditFile = {
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      dataUrl,
+      duration: await audioDurationFromDataUrl(dataUrl),
+      createdAt: new Date().toISOString()
+    };
+    if (!state.audioEditTitle || state.audioEditTitle === genericDefault) {
+      state.audioEditTitle = audioEditDefaultTitle(file.name);
+    }
+    state.audioEditResult = null;
+    if (state.audioEditStatus === "idle") {
+      checkAudioEditStatus({ silent: true }).then(() => {
+        if (state.view === "audio-edit") render();
+      });
+    }
+    render();
+  });
+  document.querySelector("[data-action='clear-audio-edit-file']")?.addEventListener("click", () => {
+    state.audioEditFile = null;
+    state.audioEditResult = null;
+    render();
+  });
+  document.querySelector("[data-action='check-audio-edit-ffmpeg']")?.addEventListener("click", () => checkAudioEditStatus());
+  document.querySelector("[data-action='run-audio-edit']")?.addEventListener("click", runAudioEdit);
 }
 
 function bindVideoAgent() {
@@ -12387,6 +13206,7 @@ function openCharacterAudioModal(char) {
     `,
     `<div></div><button data-action="close-audio-list">閉じる</button>`,
     (modal, close) => {
+      bindAudioWaveforms(modal);
       modal.querySelector("[data-action='close-audio-list']").addEventListener("click", close);
     }
   );

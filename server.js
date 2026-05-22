@@ -259,7 +259,8 @@ function extensionForMedia(kind, subtype) {
   if (kind === "audio") {
     if (clean === "mpeg" || clean === "mp3") return ".mp3";
     if (clean === "mp4" || clean === "m4a" || clean === "x-m4a") return ".m4a";
-    if (["wav", "ogg", "webm"].includes(clean)) return `.${clean}`;
+    if (clean === "wav" || clean === "x-wav" || clean === "wave") return ".wav";
+    if (["ogg", "webm"].includes(clean)) return `.${clean}`;
   }
   return kind === "video" ? ".mp4" : kind === "audio" ? ".m4a" : ".png";
 }
@@ -617,6 +618,27 @@ function videoGifFfmpegStatus(tools) {
     ffprobeVersion: ffprobe.ok ? (ffprobe.stdout?.split("\n")[0] || "").trim() : "",
     error: ffmpeg.ok ? "" : (ffmpeg.stderr || ffmpeg.stdout || ffmpeg.error || "ffmpeg が見つかりません。"),
     installHint: "ffmpegをPATHに追加するか、画像編集画面のbackgroundremoverセットアップで同梱ffmpegを用意してください。",
+    result: tools?.result || null
+  };
+}
+
+function audioEditFfmpegStatus(tools) {
+  const ffmpeg = tools?.result?.ffmpeg || {};
+  const ffprobe = tools?.result?.ffprobe || {};
+  const found = Boolean(ffmpeg.ok && ffprobe.ok);
+  return {
+    found,
+    version: ffmpeg.ok ? (ffmpeg.stdout?.split("\n")[0] || "").trim() : "",
+    ffmpegFound: Boolean(ffmpeg.ok),
+    ffprobeFound: Boolean(ffprobe.ok),
+    ffprobeVersion: ffprobe.ok ? (ffprobe.stdout?.split("\n")[0] || "").trim() : "",
+    error: found
+      ? ""
+      : [
+        ffmpeg.ok ? "" : (ffmpeg.stderr || ffmpeg.stdout || ffmpeg.error || "ffmpeg が見つかりません。"),
+        ffprobe.ok ? "" : (ffprobe.stderr || ffprobe.stdout || ffprobe.error || "ffprobe が見つかりません。")
+      ].filter(Boolean).join(" / "),
+    installHint: "ffmpeg/ffprobeをPATHに追加するか、画像編集画面のbackgroundremoverセットアップで同梱ffmpegを用意してください。",
     result: tools?.result || null
   };
 }
@@ -1427,6 +1449,440 @@ async function handleVideoGifConvert(req, res) {
     });
   } catch (error) {
     sendJson(res, 502, { error: `動画GIF化に失敗しました: ${error.message}` });
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+function normalizedAudioEditMode(value) {
+  if (value === "cut" || value === "volume" || value === "pitch") return value;
+  return "split";
+}
+
+function audioEditInputExt(parsed, name) {
+  const parsedExt = String(parsed?.ext || "").toLowerCase();
+  const nameExt = path.extname(String(name || "")).toLowerCase();
+  if ([".mp3", ".wav"].includes(parsedExt)) return parsedExt;
+  if ([".mp3", ".wav"].includes(nameExt)) return nameExt;
+  return "";
+}
+
+function normalizedAudioEditOutputFormat(value, inputExt) {
+  const clean = String(value || "source").trim().toLowerCase();
+  if (clean === "mp3" || clean === "wav") return clean;
+  return inputExt === ".mp3" ? "mp3" : "wav";
+}
+
+function audioEditOutputExt(format) {
+  return format === "mp3" ? ".mp3" : ".wav";
+}
+
+function audioEditOutputMime(format) {
+  return format === "mp3" ? "audio/mpeg" : "audio/wav";
+}
+
+function audioEditCodecArgs(format) {
+  return format === "mp3"
+    ? ["-acodec", "libmp3lame", "-b:a", "192k"]
+    : ["-acodec", "pcm_s16le", "-ar", "44100"];
+}
+
+function audioEditSecond(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return Math.max(0, Math.round(number * 1000) / 1000);
+}
+
+function normalizedAudioEditVolumePercent(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 100;
+  return Math.min(400, Math.max(0, Math.round(number)));
+}
+
+function normalizedAudioEditPitchSemitones(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.min(12, Math.max(-12, Math.round(number * 10) / 10));
+}
+
+function audioEditSignedNumberLabel(value) {
+  const rounded = Math.round(Number(value) * 10) / 10;
+  if (!Number.isFinite(rounded) || rounded === 0) return "0";
+  const label = Number.isInteger(rounded) ? String(rounded) : String(rounded);
+  return rounded > 0 ? `+${label}` : label;
+}
+
+function audioEditTimeLabel(value) {
+  if (!Number.isFinite(Number(value))) return "末尾";
+  const rounded = Math.round(Number(value) * 100) / 100;
+  return Number.isInteger(rounded) ? `${rounded}` : String(rounded);
+}
+
+function normalizedAudioEditSplitPoints(points, duration) {
+  const source = Array.isArray(points)
+    ? points
+    : String(points || "").split(/[,\s]+/g);
+  const max = Number.isFinite(duration) && duration > 0 ? duration : null;
+  const values = source
+    .map(audioEditSecond)
+    .filter((value) => value !== null && value > 0.01 && (max === null || value < max - 0.01))
+    .map((value) => Math.round(value * 1000) / 1000);
+  return Array.from(new Set(values)).sort((a, b) => a - b);
+}
+
+function normalizedAudioEditCutRanges(ranges, duration) {
+  const max = Number.isFinite(duration) && duration > 0 ? duration : null;
+  const source = Array.isArray(ranges) ? ranges : [];
+  const sorted = source.map((range) => {
+    const start = audioEditSecond(range?.start);
+    const end = audioEditSecond(range?.end);
+    if (start === null || end === null) return null;
+    const boundedStart = max === null ? start : Math.min(start, max);
+    const boundedEnd = max === null ? end : Math.min(end, max);
+    if (boundedEnd <= boundedStart + 0.01) return null;
+    return { start: boundedStart, end: boundedEnd };
+  }).filter(Boolean).sort((a, b) => a.start - b.start || a.end - b.end);
+
+  const merged = [];
+  for (const range of sorted) {
+    const previous = merged.at(-1);
+    if (previous && range.start <= previous.end + 0.001) {
+      previous.end = Math.max(previous.end, range.end);
+    } else {
+      merged.push({ ...range });
+    }
+  }
+  return merged;
+}
+
+function audioEditSegmentsForSplit(points, duration) {
+  const segments = [];
+  let start = 0;
+  for (const point of points) {
+    if (point > start + 0.01) segments.push({ start, end: point });
+    start = point;
+  }
+  if (Number.isFinite(duration) && duration > 0) {
+    if (duration > start + 0.01) segments.push({ start, end: duration });
+  } else {
+    segments.push({ start, end: null });
+  }
+  return segments;
+}
+
+function audioEditSegmentsForCut(ranges, duration) {
+  const segments = [];
+  let cursor = 0;
+  for (const range of ranges) {
+    if (range.start > cursor + 0.01) segments.push({ start: cursor, end: range.start });
+    cursor = Math.max(cursor, range.end);
+  }
+  if (Number.isFinite(duration) && duration > 0) {
+    if (duration > cursor + 0.01) segments.push({ start: cursor, end: duration });
+  } else {
+    segments.push({ start: cursor, end: null });
+  }
+  return segments;
+}
+
+function audioEditSegmentDuration(segment) {
+  return Number.isFinite(segment.end) ? Math.max(0, segment.end - segment.start) : null;
+}
+
+function audioEditOutputName(sourceName, suffix, ext) {
+  const base = cleanFileNamePart(path.parse(path.basename(String(sourceName || "audio"))).name, "audio", 70);
+  return safeUploadName(`${base}-${suffix}`, ext);
+}
+
+async function probeAudioDuration(inputPath) {
+  const result = await runProcess([
+    "ffprobe",
+    "-v",
+    "error",
+    "-show_entries",
+    "format=duration",
+    "-of",
+    "default=noprint_wrappers=1:nokey=1",
+    inputPath
+  ], {
+    cwd: __dirname,
+    timeoutMs: 30000,
+    env: backgroundRemoverEnv()
+  });
+  if (!result.ok) return null;
+  const duration = Number(String(result.stdout || "").trim());
+  return Number.isFinite(duration) && duration > 0 ? Math.round(duration * 1000) / 1000 : null;
+}
+
+async function runAudioEditSegment(inputPath, outputPath, segment, format) {
+  const args = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-i", inputPath];
+  if (segment.start > 0) args.push("-ss", String(segment.start));
+  const duration = audioEditSegmentDuration(segment);
+  if (duration !== null) args.push("-t", String(duration));
+  args.push("-vn", ...audioEditCodecArgs(format), outputPath);
+  return await runProcess(args, {
+    cwd: __dirname,
+    timeoutMs: 30 * 60 * 1000,
+    env: backgroundRemoverEnv()
+  });
+}
+
+async function runAudioEditConcat(segmentPaths, outputPath, format) {
+  const args = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning"];
+  for (const segmentPath of segmentPaths) args.push("-i", segmentPath);
+  const inputs = segmentPaths.map((_, index) => `[${index}:a:0]`).join("");
+  args.push(
+    "-filter_complex",
+    `${inputs}concat=n=${segmentPaths.length}:v=0:a=1[a]`,
+    "-map",
+    "[a]",
+    "-vn",
+    ...audioEditCodecArgs(format),
+    outputPath
+  );
+  return await runProcess(args, {
+    cwd: __dirname,
+    timeoutMs: 30 * 60 * 1000,
+    env: backgroundRemoverEnv()
+  });
+}
+
+async function runAudioEditVolume(inputPath, outputPath, format, volumePercent) {
+  const volume = Math.round((volumePercent / 100) * 1000) / 1000;
+  const args = [
+    "ffmpeg",
+    "-y",
+    "-hide_banner",
+    "-loglevel",
+    "warning",
+    "-i",
+    inputPath,
+    "-vn",
+    "-af",
+    `volume=${volume}`,
+    ...audioEditCodecArgs(format),
+    outputPath
+  ];
+  return await runProcess(args, {
+    cwd: __dirname,
+    timeoutMs: 30 * 60 * 1000,
+    env: backgroundRemoverEnv()
+  });
+}
+
+async function runAudioEditPitch(inputPath, outputPath, format, pitchSemitones) {
+  const sourceRate = 44100;
+  const factor = Math.pow(2, pitchSemitones / 12);
+  const shiftedRate = Math.max(1, Math.round(sourceRate * factor));
+  const tempo = Math.round((1 / factor) * 1000) / 1000;
+  const args = [
+    "ffmpeg",
+    "-y",
+    "-hide_banner",
+    "-loglevel",
+    "warning",
+    "-i",
+    inputPath,
+    "-vn",
+    "-af",
+    `aresample=${sourceRate},asetrate=${shiftedRate},aresample=${sourceRate},atempo=${tempo}`,
+    ...audioEditCodecArgs(format),
+    outputPath
+  ];
+  return await runProcess(args, {
+    cwd: __dirname,
+    timeoutMs: 30 * 60 * 1000,
+    env: backgroundRemoverEnv()
+  });
+}
+
+async function ensureAudioEditOutput(result, outputPath, label) {
+  if (!result.ok) {
+    throw new Error(`${label}に失敗しました: ${result.stderr || result.stdout || result.error || "unknown error"}`);
+  }
+  if (/Output file is empty|Conversion failed/i.test(`${result.stderr}\n${result.stdout}`)) {
+    throw new Error(`${label}が空出力で終了しました。秒数指定を確認してください。`);
+  }
+  if (!await isFile(outputPath)) throw new Error(`${label}の出力ファイルが見つかりません。`);
+  const stat = await fs.stat(outputPath);
+  if (!stat.size) throw new Error(`${label}の出力ファイルが空です。秒数指定を確認してください。`);
+  return stat;
+}
+
+async function audioEditOutputInfo(filePath, format, segment = {}, extra = {}) {
+  const stat = await fs.stat(filePath);
+  return {
+    url: audioUrlFor(filePath),
+    path: filePath,
+    name: path.basename(filePath),
+    mimeType: audioEditOutputMime(format),
+    format,
+    size: stat.size,
+    start: Number.isFinite(segment.start) ? segment.start : null,
+    end: Number.isFinite(segment.end) ? segment.end : null,
+    duration: Number.isFinite(segment.end) ? Math.max(0, segment.end - segment.start) : null,
+    ...extra
+  };
+}
+
+async function handleAudioEditStatus(req, res) {
+  const tools = await checkFfmpeg();
+  sendJson(res, 200, audioEditFfmpegStatus(tools));
+}
+
+async function handleAudioEditProcess(req, res) {
+  const body = await readJson(req, 260 * 1024 * 1024);
+  let parsed;
+  try {
+    parsed = parseDataUrl(body.dataUrl, ["audio"]);
+  } catch (error) {
+    return sendJson(res, 400, { error: error.message || "mp3またはwavの音声 data URL が必要です。" });
+  }
+
+  const inputExt = audioEditInputExt(parsed, body.name);
+  if (!inputExt) {
+    return sendJson(res, 400, { error: "音声編集はmp3またはwavファイルに対応しています。" });
+  }
+
+  const tools = await checkFfmpeg();
+  const ffmpegStatus = audioEditFfmpegStatus(tools);
+  if (!ffmpegStatus.found) {
+    return sendJson(res, 400, {
+      error: `音声編集にはffmpegとffprobeが必要です。${ffmpegStatus.error || ""}`.trim(),
+      status: ffmpegStatus
+    });
+  }
+
+  const mode = normalizedAudioEditMode(body.mode);
+  const format = normalizedAudioEditOutputFormat(body.outputFormat, inputExt);
+  const outputExt = audioEditOutputExt(format);
+  const sourceName = body.name || `audio${inputExt}`;
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "creative-file-studio-audio-edit-"));
+  const inputPath = path.join(tempDir, safeOriginalFileName(sourceName, inputExt, "audio"));
+  const createdOutputPaths = [];
+
+  try {
+    await fs.writeFile(inputPath, Buffer.from(parsed.base64, "base64"));
+    const duration = await probeAudioDuration(inputPath);
+    const outputs = [];
+
+    if (mode === "volume") {
+      const volumePercent = normalizedAudioEditVolumePercent(body.volumePercent);
+      const destination = await uniqueFilePath(audioDir, audioEditOutputName(sourceName, `volume-${volumePercent}pct`, outputExt));
+      createdOutputPaths.push(destination);
+      const result = await runAudioEditVolume(inputPath, destination, format, volumePercent);
+      await ensureAudioEditOutput(result, destination, "音量変更");
+      const output = await audioEditOutputInfo(destination, format, { start: 0, end: duration }, {
+        kind: "volume",
+        index: 1,
+        label: `音量 ${volumePercent}%`,
+        volumePercent,
+        result: { stdout: result.stdout, stderr: result.stderr, command: result.command }
+      });
+      return sendJson(res, 200, {
+        mode,
+        source: { name: sourceName, duration, mimeType: `${parsed.kind}/${parsed.subtype}` },
+        settings: { volumePercent, outputFormat: format },
+        outputs: [output],
+        status: ffmpegStatus
+      });
+    }
+
+    if (mode === "pitch") {
+      const pitchSemitones = normalizedAudioEditPitchSemitones(body.pitchSemitones);
+      const pitchLabel = audioEditSignedNumberLabel(pitchSemitones);
+      const pitchSuffix = pitchLabel.replace("+", "plus").replace("-", "minus").replace(".", "p");
+      const destination = await uniqueFilePath(audioDir, audioEditOutputName(sourceName, `pitch-${pitchSuffix}st`, outputExt));
+      createdOutputPaths.push(destination);
+      const result = await runAudioEditPitch(inputPath, destination, format, pitchSemitones);
+      await ensureAudioEditOutput(result, destination, "ピッチ変更");
+      const output = await audioEditOutputInfo(destination, format, { start: 0, end: duration }, {
+        kind: "pitch",
+        index: 1,
+        label: `ピッチ ${pitchLabel}半音`,
+        pitchSemitones,
+        result: { stdout: result.stdout, stderr: result.stderr, command: result.command }
+      });
+      return sendJson(res, 200, {
+        mode,
+        source: { name: sourceName, duration, mimeType: `${parsed.kind}/${parsed.subtype}` },
+        settings: { pitchSemitones, outputFormat: format },
+        outputs: [output],
+        status: ffmpegStatus
+      });
+    }
+
+    if (mode === "split") {
+      const splitPoints = normalizedAudioEditSplitPoints(body.splitPoints, duration);
+      if (!splitPoints.length) {
+        return sendJson(res, 400, { error: "分割点を1つ以上指定してください。", duration, status: ffmpegStatus });
+      }
+      const segments = audioEditSegmentsForSplit(splitPoints, duration);
+      for (const [index, segment] of segments.entries()) {
+        const suffix = `split-${String(index + 1).padStart(2, "0")}`;
+        const destination = await uniqueFilePath(audioDir, audioEditOutputName(sourceName, suffix, outputExt));
+        createdOutputPaths.push(destination);
+        const result = await runAudioEditSegment(inputPath, destination, segment, format);
+        await ensureAudioEditOutput(result, destination, `分割ファイル${index + 1}の作成`);
+        outputs.push(await audioEditOutputInfo(destination, format, segment, {
+          kind: "split",
+          index: index + 1,
+          label: `${audioEditTimeLabel(segment.start)}秒 - ${audioEditTimeLabel(segment.end)}秒`,
+          result: { stdout: result.stdout, stderr: result.stderr, command: result.command }
+        }));
+      }
+      return sendJson(res, 200, {
+        mode,
+        source: { name: sourceName, duration, mimeType: `${parsed.kind}/${parsed.subtype}` },
+        settings: { splitPoints, outputFormat: format },
+        outputs,
+        status: ffmpegStatus
+      });
+    }
+
+    const cutRanges = normalizedAudioEditCutRanges(body.cutRanges, duration);
+    if (!cutRanges.length) {
+      return sendJson(res, 400, { error: "カットする範囲を1つ以上指定してください。", duration, status: ffmpegStatus });
+    }
+    const keepSegments = audioEditSegmentsForCut(cutRanges, duration);
+    if (!keepSegments.length) {
+      return sendJson(res, 400, { error: "指定範囲をカットすると残る音声がありません。", duration, status: ffmpegStatus });
+    }
+
+    const destination = await uniqueFilePath(audioDir, audioEditOutputName(sourceName, "cut", outputExt));
+    createdOutputPaths.push(destination);
+    let result;
+    if (keepSegments.length === 1) {
+      result = await runAudioEditSegment(inputPath, destination, keepSegments[0], format);
+    } else {
+      const segmentPaths = [];
+      for (const [index, segment] of keepSegments.entries()) {
+        const segmentPath = path.join(tempDir, `keep-${String(index + 1).padStart(2, "0")}${outputExt}`);
+        const segmentResult = await runAudioEditSegment(inputPath, segmentPath, segment, format);
+        await ensureAudioEditOutput(segmentResult, segmentPath, `残す範囲${index + 1}の準備`);
+        segmentPaths.push(segmentPath);
+      }
+      result = await runAudioEditConcat(segmentPaths, destination, format);
+    }
+    await ensureAudioEditOutput(result, destination, "不要範囲カット");
+    const output = await audioEditOutputInfo(destination, format, {}, {
+      kind: "cut",
+      index: 1,
+      label: `${cutRanges.map((range) => `${audioEditTimeLabel(range.start)}-${audioEditTimeLabel(range.end)}秒`).join(" / ")} をカット`,
+      cutRanges,
+      keepSegments,
+      result: { stdout: result.stdout, stderr: result.stderr, command: result.command }
+    });
+    sendJson(res, 200, {
+      mode,
+      source: { name: sourceName, duration, mimeType: `${parsed.kind}/${parsed.subtype}` },
+      settings: { cutRanges, outputFormat: format },
+      outputs: [output],
+      status: ffmpegStatus
+    });
+  } catch (error) {
+    await Promise.all(createdOutputPaths.map((filePath) => fs.rm(filePath, { force: true }).catch(() => {})));
+    sendJson(res, 502, { error: `音声編集に失敗しました: ${error.message}`, status: ffmpegStatus });
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -3697,6 +4153,14 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/image-edit/video-gif") {
       return await handleVideoGifConvert(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/audio-edit/status") {
+      return await handleAudioEditStatus(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/audio-edit/process") {
+      return await handleAudioEditProcess(req, res);
     }
 
     if (req.method === "POST" && url.pathname === "/api/trash-import-source") {
