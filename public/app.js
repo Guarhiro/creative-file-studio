@@ -33,6 +33,8 @@ const state = {
   imageIsThinking: false,
   imageIsGenerating: false,
   imagePollingJobId: "",
+  imageHistoryPage: 1,
+  imageSelectedJobIds: [],
   imageCompareEnabled: false,
   imageCompareCount: 3,
   imageCompareMode: "seed",
@@ -101,6 +103,8 @@ const state = {
   videoIsThinking: false,
   videoIsGenerating: false,
   videoPollingJobId: "",
+  videoHistoryPage: 1,
+  videoSelectedJobIds: [],
   audioWorkId: null,
   audioCharacterId: "",
   audioVoice: "Kore",
@@ -115,6 +119,8 @@ const state = {
   audioIsGenerating: false,
   audioGenerationStartedAt: 0,
   audioGenerationTimer: null,
+  audioHistoryPage: 1,
+  audioSelectedItemIds: [],
   audioEditWorkId: null,
   audioEditCharacterId: "",
   audioEditFile: null,
@@ -279,7 +285,7 @@ const screenHelpContent = {
           { term: "エージェント", description: "作りたい構図や雰囲気を会話で伝え、Comfy送信用プロンプトの案を作ります。" },
           { term: "Comfy送信用プロンプト", description: "手動編集できます。生成開始時にComfyUIのworkflowへ差し込まれます。" },
           { term: "参照画像", description: "LoadImage系NodeのIDと入力名を指定し、選択した画像でworkflowの画像入力を差し替えます。" },
-          { term: "生成履歴", description: "進行中ステータス、完成画像、保存先、再利用用のプロンプトを確認できます。" }
+          { term: "生成履歴", description: "進行中ステータス、完成画像、保存先、再利用用のプロンプトを確認でき、選択削除と一括削除ができます。" }
         ]
       },
       {
@@ -392,7 +398,7 @@ const screenHelpContent = {
           { term: "作品 / キャラ指定", description: "生成音声の保存先と、キャラへの紐づけを選びます。" },
           { term: "エージェント", description: "声の雰囲気や台詞の意図を伝え、読み上げテキスト案を作ります。" },
           { term: "読み上げテキスト", description: "実際に音声化する本文です。手動編集できます。" },
-          { term: "生成履歴", description: "生成済み音声の再生、保存先、キャラ紐づけを確認できます。" }
+          { term: "生成履歴", description: "生成済み音声の再生、保存先、キャラ紐づけを確認でき、選択削除と一括削除ができます。" }
         ]
       },
       {
@@ -449,7 +455,7 @@ const screenHelpContent = {
           { term: "生成設定", description: "作品、動画モデル、秒数、比率、解像度、音声有無などを選びます。" },
           { term: "参照素材", description: "画像、動画、音声を追加・選択し、モデルが対応する範囲で生成に使います。" },
           { term: "エージェント", description: "構成、タイムライン、カメラ、エフェクトなどを会話で整理し、API送信用プロンプト案を作ります。" },
-          { term: "生成履歴", description: "送信後のステータス、進行率、保存動画、エラー、最終フレーム保存を確認します。" }
+          { term: "生成履歴", description: "送信後のステータス、進行率、保存動画、エラー、最終フレーム保存を確認し、選択削除と一括削除ができます。" }
         ]
       },
       {
@@ -745,6 +751,32 @@ const grokSpeechTags = ["[pause]", "[long-pause]", "[laugh]", "[chuckle]", "[sig
 const activeImageJobStatuses = ["submitting", "submitted", "pending", "queued", "running", "processing"];
 
 const activeVideoJobStatuses = ["submitting", "submitted", "pending", "queued", "running", "processing"];
+
+const generationHistoryPageSize = 10;
+
+const generationHistoryConfigs = {
+  image: {
+    dbKey: "imageJobs",
+    selectedKey: "imageSelectedJobIds",
+    pageKey: "imageHistoryPage",
+    label: "画像生成履歴",
+    activeStatuses: activeImageJobStatuses
+  },
+  audio: {
+    dbKey: "audioItems",
+    selectedKey: "audioSelectedItemIds",
+    pageKey: "audioHistoryPage",
+    label: "音声生成履歴",
+    activeStatuses: []
+  },
+  video: {
+    dbKey: "videoJobs",
+    selectedKey: "videoSelectedJobIds",
+    pageKey: "videoHistoryPage",
+    label: "動画生成履歴",
+    activeStatuses: activeVideoJobStatuses
+  }
+};
 
 const imageCompareModes = [
   ["seed", "Seed"],
@@ -1721,6 +1753,122 @@ function imageJobsForWork(workId) {
   return (state.db.imageJobs || [])
     .filter((job) => !workId || job.workId === workId)
     .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+}
+
+function generationHistoryConfig(kind) {
+  return generationHistoryConfigs[kind];
+}
+
+function generationHistorySelectedIds(kind) {
+  const config = generationHistoryConfig(kind);
+  if (!config) return [];
+  if (!Array.isArray(state[config.selectedKey])) state[config.selectedKey] = [];
+  return state[config.selectedKey];
+}
+
+function isGenerationHistorySelected(kind, id) {
+  return generationHistorySelectedIds(kind).includes(id);
+}
+
+function isGenerationHistoryActive(kind, item) {
+  const config = generationHistoryConfig(kind);
+  return Boolean(config?.activeStatuses?.includes(item?.status));
+}
+
+function resetGenerationHistoryPage(kind) {
+  const config = generationHistoryConfig(kind);
+  if (config) state[config.pageKey] = 1;
+}
+
+function clearGenerationHistorySelection(kind) {
+  const config = generationHistoryConfig(kind);
+  if (config) state[config.selectedKey] = [];
+}
+
+function generationHistoryPageInfo(kind, total) {
+  const config = generationHistoryConfig(kind);
+  const pageCount = Math.max(1, Math.ceil(total / generationHistoryPageSize));
+  const requestedPage = Number(state[config.pageKey]) || 1;
+  const page = Math.min(Math.max(1, requestedPage), pageCount);
+  state[config.pageKey] = page;
+  const start = total ? (page - 1) * generationHistoryPageSize : 0;
+  const end = Math.min(start + generationHistoryPageSize, total);
+  return { page, pageSize: generationHistoryPageSize, pageCount, start, end };
+}
+
+function getPagedGenerationHistoryItems(kind, allItems) {
+  const pageInfo = generationHistoryPageInfo(kind, allItems.length);
+  return {
+    pageInfo,
+    items: allItems.slice(pageInfo.start, pageInfo.end)
+  };
+}
+
+function selectedGenerationHistoryItems(kind, items, { prune = true } = {}) {
+  const config = generationHistoryConfig(kind);
+  if (!config) return [];
+  const visibleIds = new Set(items.map((item) => item.id));
+  if (prune) {
+    state[config.selectedKey] = generationHistorySelectedIds(kind).filter((id) => visibleIds.has(id));
+  }
+  const selectedIds = new Set(generationHistorySelectedIds(kind));
+  return items.filter((item) => selectedIds.has(item.id));
+}
+
+function visibleImageHistoryItems() {
+  return imageJobsForWork(state.imageWorkId);
+}
+
+function visibleAudioHistoryItems() {
+  return audioItemsForWork(state.audioWorkId)
+    .filter((item) => item.provider !== "audio-edit")
+    .filter((item) => !state.audioCharacterId || item.characterId === state.audioCharacterId);
+}
+
+function visibleVideoHistoryItems() {
+  return (state.db.videoJobs || [])
+    .filter((job) => !state.videoWorkId || job.workId === state.videoWorkId)
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+}
+
+function generationHistoryRangeText(pageInfo, total) {
+  return total ? `${pageInfo.start + 1}-${pageInfo.end} / ${total} 件` : "0 件";
+}
+
+function renderGenerationHistoryPager(kind, pageInfo, total) {
+  if (total <= generationHistoryPageSize) return "";
+  return `
+    <div class="generation-history-pager">
+      <button class="ghost" data-action="${kind}-history-page-prev" ${pageInfo.page <= 1 ? "disabled" : ""}>前へ</button>
+      <span class="meta">${pageInfo.page} / ${pageInfo.pageCount} ページ</span>
+      <button class="ghost" data-action="${kind}-history-page-next" ${pageInfo.page >= pageInfo.pageCount ? "disabled" : ""}>次へ</button>
+    </div>
+  `;
+}
+
+function renderGenerationHistoryActions(kind, allItems, pageItems, pageInfo) {
+  const selectedItems = selectedGenerationHistoryItems(kind, allItems);
+  const selectedPageItems = selectedGenerationHistoryItems(kind, pageItems, { prune: false });
+  const allPageSelected = pageItems.length > 0 && selectedPageItems.length === pageItems.length;
+  return `
+    <div class="generation-history-actions">
+      <span class="meta">${selectedItems.length ? `${selectedItems.length} 件選択中` : generationHistoryRangeText(pageInfo, allItems.length)}</span>
+      <button class="ghost" data-action="${kind}-history-select-page" ${pageItems.length && !allPageSelected ? "" : "disabled"}>ページ内を選択</button>
+      <button class="ghost" data-action="${kind}-history-clear-selection" ${selectedItems.length ? "" : "disabled"}>選択解除</button>
+      <button class="ghost danger-outline" data-action="${kind}-history-delete-selected" ${selectedItems.length ? "" : "disabled"}>選択削除</button>
+      <button class="ghost danger-outline" data-action="${kind}-history-delete-all" ${allItems.length ? "" : "disabled"}>一括削除</button>
+      ${renderGenerationHistoryPager(kind, pageInfo, allItems.length)}
+    </div>
+  `;
+}
+
+function renderGenerationHistoryCheckbox(kind, item) {
+  return `
+    <label class="history-select-row">
+      <input type="checkbox" data-action="toggle-${kind}-history-selection" data-id="${escapeHtml(item.id)}" ${isGenerationHistorySelected(kind, item.id) ? "checked" : ""}>
+      <span>選択</span>
+    </label>
+  `;
 }
 
 function worldItemForAsset(asset) {
@@ -3159,6 +3307,37 @@ async function deleteGalleryAssetsCompletely(assets) {
   state.gallerySelectedAssetIds = (state.gallerySelectedAssetIds || []).filter((id) => !deletingIds.has(id));
   await saveDb();
   toast(`${assets.length} 件の登録を削除しました。${deletingUrls.size ? `画像ファイル本体 ${deletingUrls.size} 件も削除しました。` : "画像ファイル本体は残しました。"}`);
+  render();
+}
+
+async function deleteGenerationHistoryItems(kind, items, scope = "selected") {
+  const config = generationHistoryConfig(kind);
+  if (!config || !items.length) return;
+  const ids = new Set(items.map((item) => item.id));
+  const activeCount = items.filter((item) => isGenerationHistoryActive(kind, item)).length;
+  const targetText = scope === "all"
+    ? `現在の表示条件に合う ${items.length} 件の${config.label}を一括削除します。`
+    : scope === "single"
+      ? `「${items[0].title || items[0].name || config.label}」を${config.label}から削除します。`
+      : `選択中の ${items.length} 件の${config.label}を削除します。`;
+  const ok = window.confirm(
+    `${targetText}保存済みファイル本体は削除されません。`
+    + (activeCount ? " 進行中の生成タスク自体は停止しません。" : "")
+  );
+  if (!ok) return;
+
+  state.db[config.dbKey] = (state.db[config.dbKey] || []).filter((item) => !ids.has(item.id));
+  state[config.selectedKey] = generationHistorySelectedIds(kind).filter((id) => !ids.has(id));
+  if (kind === "image") {
+    if (ids.has(state.imagePollingJobId)) state.imagePollingJobId = "";
+    syncImageGenerationFlag();
+  }
+  if (kind === "video") {
+    if (ids.has(state.videoPollingJobId)) state.videoPollingJobId = "";
+    state.videoIsGenerating = (state.db.videoJobs || []).some((job) => activeVideoJobStatuses.includes(job.status));
+  }
+  await saveDb();
+  toast(`${items.length} 件の履歴を削除しました。保存済みファイル本体は残しました。`);
   render();
 }
 
@@ -7830,6 +8009,7 @@ async function startSeedanceGeneration() {
       updatedAt: new Date().toISOString()
     };
     state.db.videoJobs.unshift(job);
+    resetGenerationHistoryPage("video");
     state.videoIsGenerating = true;
     await saveDb();
     render();
@@ -8485,7 +8665,8 @@ function renderImageAgent() {
   };
   const gpuMode = state.imageGpuMode || settings.gpuMode;
   const endpoint = activeComfyBaseUrl(gpuMode);
-  const jobs = imageJobsForWork(state.imageWorkId).slice(0, 16);
+  const allJobs = visibleImageHistoryItems();
+  const { items: jobs, pageInfo: historyPageInfo } = getPagedGenerationHistoryItems("image", allJobs);
   const compareGroups = imageCompareGroupsForWork(state.imageWorkId).slice(0, 4);
   const activeJobs = activeImageJobs();
   return `
@@ -8610,7 +8791,10 @@ function renderImageAgent() {
           </section>
         ` : ""}
         <section class="panel">
-          <div class="panel-header"><h2>生成履歴</h2></div>
+          <div class="panel-header generation-history-header">
+            <h2>生成履歴</h2>
+            ${renderGenerationHistoryActions("image", allJobs, jobs, historyPageInfo)}
+          </div>
           <div class="panel-body image-job-list">
             ${jobs.length ? jobs.map(renderImageJob).join("") : `<div class="empty compact">生成画像はまだありません。</div>`}
           </div>
@@ -8656,7 +8840,8 @@ function renderImageJob(job) {
   const referenceText = (job.settings?.references || []).map((item) => item.name || item.key).filter(Boolean).join(", ");
   const compareText = job.compareGroupId ? `${imageCompareModeLabel(job.compareMode)}比較 ${job.compareIndex !== null ? `${job.compareIndex + 1}/${job.compareTotal || "?"}` : ""}${job.compareLabel ? ` / ${job.compareLabel}` : ""}` : "";
   return `
-    <article class="image-job ${status}">
+    <article class="image-job ${status} ${isGenerationHistorySelected("image", job.id) ? "history-selected" : ""}">
+      ${renderGenerationHistoryCheckbox("image", job)}
       <div>
         <div class="char-name">${escapeHtml(job.title || "生成画像")}</div>
         <div class="meta">${compareText ? `${escapeHtml(compareText)} / ` : ""}${escapeHtml(work?.name || "全作品")} / ${char ? `${escapeHtml(char.name)} / ` : ""}${escapeHtml(imageGpuLabel(job.gpuMode))} / ${escapeHtml(imageStatusLabel(status))}${progress !== null ? ` ${escapeHtml(`${progress}%`)}` : ""}${loraText ? ` / LoRA: ${escapeHtml(loraText)}` : ""}${referenceText ? ` / 参照: ${escapeHtml(referenceText)}` : ""} / ${job.updatedAt ? escapeHtml(new Date(job.updatedAt).toLocaleString("ja-JP")) : ""}</div>
@@ -8673,6 +8858,7 @@ function renderImageJob(job) {
         <button class="ghost" data-action="refresh-image-job" data-id="${job.id}" ${!job.providerTaskId || ["succeeded", "cancelled"].includes(status) ? "disabled" : ""}>更新</button>
         <button class="ghost" data-action="adopt-image-job" data-id="${job.id}">採用</button>
         <button class="ghost" data-action="copy-image-job-prompt" data-id="${job.id}">プロンプト</button>
+        <button class="ghost danger-outline" data-action="delete-image-history" data-id="${job.id}">履歴削除</button>
       </div>
       ${job.images?.map((image) => image.localPath ? `<div class="meta">保存先: ${escapeHtml(image.localPath)}</div>` : "").join("") || ""}
       ${job.error ? `<div class="meta danger-text">${escapeHtml(job.error)}</div>` : ""}
@@ -9144,6 +9330,7 @@ async function startComfyGeneration() {
     persistImageGenerationState(controls, prompt);
     const job = buildImageJobFromControls({ ...controls, prompt });
     state.db.imageJobs.unshift(job);
+    resetGenerationHistoryPage("image");
     state.imageIsGenerating = true;
     await saveDb();
     render();
@@ -9174,6 +9361,7 @@ async function startComfyComparisonGeneration(controls) {
     createdAt: new Date(now + index).toISOString()
   }));
   state.db.imageJobs.unshift(...jobs);
+  resetGenerationHistoryPage("image");
   state.imageIsGenerating = true;
   await saveDb();
   render();
@@ -10096,6 +10284,7 @@ async function startAudioGeneration() {
       }));
     }
     state.db.audioItems.unshift(...created);
+    resetGenerationHistoryPage("audio");
     await saveDb();
     state.audioIsGenerating = false;
     stopAudioGenerationClock();
@@ -10111,6 +10300,7 @@ async function startAudioGeneration() {
 }
 
 function renderAudioItem(audio, options = {}) {
+  const historyKind = options.historyKind || "";
   const providerLabel = audio.provider === "irodori" ? "Irodori-TTS" : audio.provider === "elevenlabs" ? "ElevenLabs" : audio.provider === "voicebox" ? "Voicebox" : audio.provider === "audio-edit" ? "音声編集" : "OpenRouter TTS";
   const openRouterModelLabel = audio.provider === "openrouter" ? openRouterTtsModelConfig(audio.model).label : "";
   const voiceLabel = audio.provider === "irodori"
@@ -10123,7 +10313,8 @@ function renderAudioItem(audio, options = {}) {
           ? `${audio.model || "ffmpeg"} / ${audio.format || "wav"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`
         : `${openRouterModelLabel} / ${audio.voice || "Kore"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`;
   return `
-    <article class="audio-job">
+    <article class="audio-job ${historyKind && isGenerationHistorySelected(historyKind, audio.id) ? "history-selected" : ""}">
+      ${historyKind ? renderGenerationHistoryCheckbox(historyKind, audio) : ""}
       <div>
         <div class="audio-file-heading">
           <span class="char-name">${escapeHtml(audio.title || "生成音声")}</span>
@@ -10143,6 +10334,11 @@ function renderAudioItem(audio, options = {}) {
       <div class="result-text">${escapeHtml(compactPromptText(audio.input, 900))}</div>
       ${audio.agentNote ? `<div class="meta">${escapeHtml(audio.agentNote)}</div>` : ""}
       ${audio.localPath ? `<div class="meta">保存先: ${escapeHtml(audio.localPath)}</div>` : ""}
+      ${historyKind ? `
+        <div class="card-actions">
+          <button class="ghost danger-outline" data-action="delete-${historyKind}-history" data-id="${escapeHtml(audio.id)}">履歴削除</button>
+        </div>
+      ` : ""}
     </article>
   `;
 }
@@ -10246,10 +10442,8 @@ function renderAudioAgent() {
   const elevenLabsValue = elevenLabsSettingsFromControls(controls.elevenLabs || {});
   const voiceboxValue = voiceboxSettingsFromControls(controls.voicebox || {});
   const irodoriValue = normalizedIrodoriSettings({ ...state.db.settings.irodoriDefaults, ...controls });
-  const history = audioItemsForWork(state.audioWorkId)
-    .filter((item) => item.provider !== "audio-edit")
-    .filter((item) => !state.audioCharacterId || item.characterId === state.audioCharacterId)
-    .slice(0, 12);
+  const allHistory = visibleAudioHistoryItems();
+  const { items: history, pageInfo: historyPageInfo } = getPagedGenerationHistoryItems("audio", allHistory);
   return `
     <div class="video-layout audio-layout">
       <section class="panel">
@@ -10337,9 +10531,12 @@ function renderAudioAgent() {
           </div>
         </section>
         <section class="panel">
-          <div class="panel-header"><h2>生成履歴</h2></div>
+          <div class="panel-header generation-history-header">
+            <h2>生成履歴</h2>
+            ${renderGenerationHistoryActions("audio", allHistory, history, historyPageInfo)}
+          </div>
           <div class="panel-body audio-history-list">
-            ${history.length ? history.map(renderAudioItem).join("") : `<div class="empty compact">生成音声はまだありません。</div>`}
+            ${history.length ? history.map((item) => renderAudioItem(item, { historyKind: "audio" })).join("") : `<div class="empty compact">生成音声はまだありません。</div>`}
           </div>
         </section>
       </section>
@@ -10508,10 +10705,8 @@ function renderVideoAgent() {
     baseUrl: state.db.settings.seedanceBaseUrl,
     hasVideoInput: hasVideoInputReferences(selectedItems)
   });
-  const jobs = (state.db.videoJobs || [])
-    .filter((job) => !state.videoWorkId || job.workId === state.videoWorkId)
-    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
-    .slice(0, 12);
+  const allJobs = visibleVideoHistoryItems();
+  const { items: jobs, pageInfo: historyPageInfo } = getPagedGenerationHistoryItems("video", allJobs);
   const activeJobs = (state.db.videoJobs || []).filter((job) => activeVideoJobStatuses.includes(job.status));
   return `
     ${renderVideoCostSummary(monthlyCost, currentRate)}
@@ -10634,7 +10829,10 @@ function renderVideoAgent() {
           </div>
         </section>
         <section class="panel">
-          <div class="panel-header"><h2>生成履歴</h2></div>
+          <div class="panel-header generation-history-header">
+            <h2>生成履歴</h2>
+            ${renderGenerationHistoryActions("video", allJobs, jobs, historyPageInfo)}
+          </div>
           <div class="panel-body video-job-list">
             ${jobs.length ? jobs.map(renderVideoJob).join("") : `<div class="empty compact">生成履歴はまだありません。</div>`}
           </div>
@@ -10682,7 +10880,8 @@ function renderVideoJob(job) {
     ? `${cost.source === "actual" ? "実コスト" : "概算"} ${formatUsd(cost.usd)}`
     : "";
   return `
-    <article class="video-job ${status}">
+    <article class="video-job ${status} ${isGenerationHistorySelected("video", job.id) ? "history-selected" : ""}">
+      ${renderGenerationHistoryCheckbox("video", job)}
       <div>
         <div class="char-name">${escapeHtml(displayVideoJobTitle(job))}</div>
         <div class="meta">${escapeHtml(work?.name || "全作品")} / ${escapeHtml(videoStatusLabel(status))}${progress !== null ? ` ${escapeHtml(`${progress}%`)}` : ""} / ${job.updatedAt ? escapeHtml(new Date(job.updatedAt).toLocaleString("ja-JP")) : ""}${costText ? ` / ${escapeHtml(costText)}` : ""}</div>
@@ -10698,6 +10897,7 @@ function renderVideoJob(job) {
         <button class="ghost" data-action="refresh-video-job" data-id="${job.id}" ${!job.providerTaskId || ["succeeded", "failed", "expired", "cancelled"].includes(status) ? "disabled" : ""}>更新</button>
         <button class="ghost" data-action="copy-video-job-prompt" data-id="${job.id}">プロンプト</button>
         ${status === "succeeded" && job.settings?.returnLastFrame && job.localUrl && !job.lastFrameUrl ? `<button class="ghost" data-action="save-video-last-frame" data-id="${job.id}">最終フレーム保存</button>` : ""}
+        <button class="ghost danger-outline" data-action="delete-video-history" data-id="${job.id}">履歴削除</button>
       </div>
       ${job.localPath ? `<div class="meta">保存先: ${escapeHtml(job.localPath)}</div>` : ""}
       ${job.lastFrameUrl ? `<div class="meta">最終フレーム: ${escapeHtml(job.lastFrameLocalPath || job.lastFrameUrl)}</div>` : ""}
@@ -11884,6 +12084,53 @@ function bindGallery() {
   });
 }
 
+function bindGenerationHistoryControls(kind, allItemsProvider) {
+  const config = generationHistoryConfig(kind);
+  if (!config) return;
+  const allItems = () => allItemsProvider();
+  document.querySelector(`[data-action='${kind}-history-page-prev']`)?.addEventListener("click", () => {
+    state[config.pageKey] -= 1;
+    render({ preserveLiveTextDrafts: true });
+  });
+  document.querySelector(`[data-action='${kind}-history-page-next']`)?.addEventListener("click", () => {
+    state[config.pageKey] += 1;
+    render({ preserveLiveTextDrafts: true });
+  });
+  document.querySelector(`[data-action='${kind}-history-select-page']`)?.addEventListener("click", () => {
+    const { items } = getPagedGenerationHistoryItems(kind, allItems());
+    const ids = new Set(generationHistorySelectedIds(kind));
+    items.forEach((item) => ids.add(item.id));
+    state[config.selectedKey] = [...ids];
+    render({ preserveLiveTextDrafts: true });
+  });
+  document.querySelector(`[data-action='${kind}-history-clear-selection']`)?.addEventListener("click", () => {
+    clearGenerationHistorySelection(kind);
+    render({ preserveLiveTextDrafts: true });
+  });
+  document.querySelector(`[data-action='${kind}-history-delete-selected']`)?.addEventListener("click", () => {
+    const selected = selectedGenerationHistoryItems(kind, allItems());
+    deleteGenerationHistoryItems(kind, selected, "selected");
+  });
+  document.querySelector(`[data-action='${kind}-history-delete-all']`)?.addEventListener("click", () => {
+    deleteGenerationHistoryItems(kind, allItems(), "all");
+  });
+  document.querySelectorAll(`[data-action='toggle-${kind}-history-selection']`).forEach((checkbox) => {
+    checkbox.addEventListener("change", () => {
+      const ids = new Set(generationHistorySelectedIds(kind));
+      if (checkbox.checked) ids.add(checkbox.dataset.id);
+      else ids.delete(checkbox.dataset.id);
+      state[config.selectedKey] = [...ids];
+      render({ preserveLiveTextDrafts: true });
+    });
+  });
+  document.querySelectorAll(`[data-action='delete-${kind}-history']`).forEach((button) => {
+    button.addEventListener("click", () => {
+      const item = byId(state.db[config.dbKey] || [], button.dataset.id);
+      if (item) deleteGenerationHistoryItems(kind, [item], "single");
+    });
+  });
+}
+
 function bindImageAgent() {
   const persistImageControls = () => {
     const controls = imageControlsFromDom();
@@ -11967,6 +12214,8 @@ function bindImageAgent() {
     if (state.imageCharacterId && !imageCharacterOptions().some((char) => char.id === state.imageCharacterId)) {
       state.imageCharacterId = "";
     }
+    resetGenerationHistoryPage("image");
+    clearGenerationHistorySelection("image");
     render();
   });
   document.querySelector("#image-character")?.addEventListener("change", (event) => {
@@ -11977,6 +12226,8 @@ function bindImageAgent() {
       state.imageWorkId = char.workId;
       state.selectedWorkId = char.workId;
     }
+    resetGenerationHistoryPage("image");
+    clearGenerationHistorySelection("image");
     render();
   });
   document.querySelector("[data-action='image-send-message']")?.addEventListener("click", () => handleImageAgentMessage(false));
@@ -12016,6 +12267,7 @@ function bindImageAgent() {
   document.querySelectorAll("[data-action='adopt-image-job']").forEach((button) => {
     button.addEventListener("click", () => adoptImageJob(button.dataset.id));
   });
+  bindGenerationHistoryControls("image", visibleImageHistoryItems);
 }
 
 function bindAudioAgent() {
@@ -12141,6 +12393,8 @@ function bindAudioAgent() {
     if (state.audioCharacterId && !audioCharacterOptions().some((char) => char.id === state.audioCharacterId)) {
       state.audioCharacterId = "";
     }
+    resetGenerationHistoryPage("audio");
+    clearGenerationHistorySelection("audio");
     render();
   });
   document.querySelector("#audio-character")?.addEventListener("change", (event) => {
@@ -12151,6 +12405,8 @@ function bindAudioAgent() {
       state.audioWorkId = char.workId;
       state.selectedWorkId = char.workId;
     }
+    resetGenerationHistoryPage("audio");
+    clearGenerationHistorySelection("audio");
     render();
   });
   document.querySelector("[data-action='audio-send-message']")?.addEventListener("click", () => handleAudioAgentMessage(false));
@@ -12160,6 +12416,7 @@ function bindAudioAgent() {
     copyText(text);
   });
   document.querySelector("[data-action='audio-start-generation']")?.addEventListener("click", startAudioGeneration);
+  bindGenerationHistoryControls("audio", visibleAudioHistoryItems);
 }
 
 function bindAudioEditor() {
@@ -12393,6 +12650,8 @@ function bindVideoAgent() {
       const item = allVideoReferences().find((candidate) => candidate.key === key);
       return !state.videoWorkId || !item?.workId || item.workId === state.videoWorkId;
     });
+    resetGenerationHistoryPage("video");
+    clearGenerationHistorySelection("video");
     render();
   });
   document.querySelector("#video-reference-kind")?.addEventListener("change", (event) => {
@@ -12491,6 +12750,7 @@ function bindVideoAgent() {
     });
   });
   if (isOpenRouterSeedanceBaseUrl()) loadOpenRouterVideoModels();
+  bindGenerationHistoryControls("video", visibleVideoHistoryItems);
 }
 
 async function classifyAsset(asset, knownDataUrl = null, fallbackPromptFormat = state.importPromptFormat, options = {}) {
