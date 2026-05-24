@@ -963,6 +963,10 @@ textarea {
   font-size: 12px;
 }
 
+.small-json {
+  min-height: 92px;
+}
+
 .result-text {
   background: #f5f1e8;
   border: 1px solid var(--line);

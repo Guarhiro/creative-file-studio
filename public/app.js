@@ -24,6 +24,7 @@ const state = {
   libraryPageSize: 48,
   imageWorkId: null,
   imageCharacterId: "",
+  imageProvider: "comfy",
   imageGpuMode: "local",
   imageChatMessages: [
     { role: "assistant", content: "画像生成エージェントです。作りたい絵の構図、雰囲気、衣装、背景、避けたい要素を教えてください。" }
@@ -161,7 +162,7 @@ const state = {
   voiceboxProfiles: [],
   voiceboxProfileStatus: "idle",
   voiceboxProfileError: "",
-  comfyModels: { checkpoints: [], loras: [], updatedAt: "" },
+  comfyModels: { checkpoints: [], loras: [], samplers: [], modules: [], provider: "comfy", updatedAt: "" },
   comfyModelStatus: "idle",
   comfyModelError: "",
   comfyValidation: null,
@@ -277,25 +278,26 @@ const screenHelpContent = {
   },
   image: {
     title: "画像生成のヘルプ",
-    lead: "ComfyUIへ生成指示を送り、生成画像を作品フォルダと画像一覧へ保存する画面です。",
+    lead: "ComfyUI、Forge、Forge Neoへ生成指示を送り、生成画像を作品フォルダと画像一覧へ保存する画面です。",
     sections: [
       {
         title: "使い方",
         items: [
-          { term: "エージェント", description: "作りたい構図や雰囲気を会話で伝え、Comfy送信用プロンプトの案を作ります。" },
-          { term: "Comfy送信用プロンプト", description: "手動編集できます。生成開始時にComfyUIのworkflowへ差し込まれます。" },
-          { term: "参照画像", description: "LoadImage系NodeのIDと入力名を指定し、選択した画像でworkflowの画像入力を差し替えます。" },
+          { term: "エージェント", description: "作りたい構図や雰囲気を会話で伝え、選択中の生成方式へ送るプロンプト案を作ります。" },
+          { term: "送信用プロンプト", description: "手動編集できます。ComfyUIではworkflowへ差し込み、Forge系ではtxt2imgへ送信します。" },
+          { term: "参照画像", description: "ComfyUI選択時にLoadImage系NodeのIDと入力名を指定し、選択した画像でworkflowの画像入力を差し替えます。" },
           { term: "生成履歴", description: "進行中ステータス、完成画像、保存先、再利用用のプロンプトを確認でき、選択削除と一括削除ができます。" }
         ]
       },
       {
         title: "設定値の意味",
         items: [
-          { term: "GPU", description: "ローカルGPUまたはクラウドGPUのComfyUI URLを選びます。URLは設定画面で管理します。" },
+          { term: "生成方式", description: "ComfyUI、Forge、Forge Neoを選びます。URLは設定画面で管理します。" },
+          { term: "GPU", description: "ComfyUI選択時にローカルGPUまたはクラウドGPUのURLを選びます。" },
           { term: "幅 / 高さ", description: "生成画像のピクセルサイズです。大きいほど重くなります。" },
           { term: "Steps", description: "生成の反復回数です。増やすと時間がかかりますが、細部が安定しやすくなります。" },
           { term: "CFG", description: "プロンプトにどれだけ強く従うかの値です。高すぎると硬い絵になりやすいです。" },
-          { term: "Sampler / Scheduler", description: "ComfyUI側の生成方式です。workflowとモデルに合う名前を指定します。" },
+          { term: "Sampler / Scheduler", description: "生成方式側のサンプラー設定です。モデルに合う名前を指定します。" },
           { term: "Batch", description: "一度に生成する枚数です。" },
           { term: "Seed", description: "同じ条件で再現したい時の乱数です。空欄ならランダムになります。" },
           { term: "Checkpoint / LoRA", description: "使うモデルと追加学習モデルです。モデル一覧取得後は候補から選べます。" },
@@ -716,9 +718,19 @@ const defaultComfyWorkflow = {
 };
 
 const comfyDefaultSettings = {
+  provider: "comfy",
   gpuMode: "local",
   localBaseUrl: "http://127.0.0.1:8188",
   cloudBaseUrl: "",
+  forgeBaseUrl: "http://127.0.0.1:7860",
+  forgeNeoBaseUrl: "http://127.0.0.1:7860",
+  forgeNeoModules: [],
+  forgeNeoDtype: "Automatic",
+  forgeNeoDistilledCfg: "",
+  forgeNeoRefinerCheckpoint: "",
+  forgeNeoRefinerSwitchAt: "",
+  forgeNeoOverrideSettingsJson: "",
+  forgeNeoPayloadJson: "",
   workflowJson: JSON.stringify(defaultComfyWorkflow, null, 2),
   workflowViewMode: "json",
   positiveNodeId: "6",
@@ -1136,6 +1148,8 @@ const apiKey = () => localStorage.getItem("openrouter_api_key") || "";
 const seedanceApiKey = () => localStorage.getItem("seedance_api_key") || "";
 const elevenLabsApiKey = () => localStorage.getItem("elevenlabs_api_key") || "";
 const comfyCloudApiKey = () => localStorage.getItem("comfy_cloud_api_key") || "";
+const forgeApiKey = () => localStorage.getItem("forge_api_key") || "";
+const forgeNeoApiKey = () => localStorage.getItem("forge_neo_api_key") || "";
 const removeBgApiKey = () => localStorage.getItem("removebg_api_key") || "";
 const isOpenRouterSeedanceBaseUrl = (value = state.db?.settings?.seedanceBaseUrl) => String(value || "").includes("openrouter.ai");
 const isReplicateSeedanceBaseUrl = (value = state.db?.settings?.seedanceBaseUrl) => String(value || "").includes("replicate.com");
@@ -1143,12 +1157,39 @@ const activeSeedanceApiKey = (baseUrl = state.db?.settings?.seedanceBaseUrl) =>
   isOpenRouterSeedanceBaseUrl(baseUrl) ? (apiKey() || seedanceApiKey()) : seedanceApiKey();
 const seedanceProviderLabel = (baseUrl = state.db?.settings?.seedanceBaseUrl) =>
   isOpenRouterSeedanceBaseUrl(baseUrl) ? "OpenRouter" : isReplicateSeedanceBaseUrl(baseUrl) ? "Replicate" : "Seedance";
+const imageProviderFromValue = (value) => {
+  const text = String(value || "").trim().toLowerCase();
+  if (["forge-neo", "forge_neo", "forgeneo", "neo"].includes(text)) return "forge-neo";
+  if (text === "forge") return "forge";
+  return "comfy";
+};
+const isForgeImageProvider = (provider) => imageProviderFromValue(provider) !== "comfy";
+const imageProviderLabel = (provider) => {
+  const value = imageProviderFromValue(provider);
+  if (value === "forge-neo") return "Forge Neo";
+  if (value === "forge") return "Forge";
+  return "ComfyUI";
+};
 const activeComfySettings = () => normalizedComfySettings(state.db?.settings?.comfy || {});
+const activeImageProvider = () => imageProviderFromValue(state.imageProvider || activeComfySettings().provider);
 const activeComfyBaseUrl = (gpuMode = activeComfySettings().gpuMode) => {
   const settings = activeComfySettings();
   return gpuMode === "cloud" ? settings.cloudBaseUrl : settings.localBaseUrl;
 };
 const activeComfyApiKey = (gpuMode = activeComfySettings().gpuMode) => gpuMode === "cloud" ? comfyCloudApiKey() : "";
+const activeImageBaseUrl = (provider = activeImageProvider(), gpuMode = activeComfySettings().gpuMode) => {
+  const settings = activeComfySettings();
+  const normalized = imageProviderFromValue(provider);
+  if (normalized === "forge-neo") return settings.forgeNeoBaseUrl;
+  if (normalized === "forge") return settings.forgeBaseUrl;
+  return activeComfyBaseUrl(gpuMode);
+};
+const activeImageApiKey = (provider = activeImageProvider(), gpuMode = activeComfySettings().gpuMode) => {
+  const normalized = imageProviderFromValue(provider);
+  if (normalized === "forge-neo") return forgeNeoApiKey() || forgeApiKey();
+  if (normalized === "forge") return forgeApiKey();
+  return activeComfyApiKey(gpuMode);
+};
 const clientSourcePathForFile = (file) => {
   const value = typeof file?.path === "string" ? file.path.trim() : "";
   return value && (/^\/|^[a-zA-Z]:[\\/]|^~\//.test(value)) ? value : "";
@@ -1710,7 +1751,7 @@ function normalizeImageJob(job = {}) {
     title: job.title || "生成画像",
     prompt: job.prompt || "",
     negativePrompt: job.negativePrompt || "",
-    provider: "comfy",
+    provider: imageProviderFromValue(job.provider || job.settings?.provider),
     gpuMode: job.gpuMode === "cloud" ? "cloud" : "local",
     status: job.status || "pending",
     providerTaskId: job.providerTaskId || job.promptId || "",
@@ -2091,6 +2132,39 @@ function activeComfyLoras(value = []) {
   return normalizedComfyLoras(value, 0).filter((item) => item.name);
 }
 
+const forgeNeoDtypeOptions = [
+  "Automatic",
+  "Automatic (fp16 LoRA)",
+  "float8-e4m3fn",
+  "float8-e4m3fn (fp16 LoRA)",
+  "float8-e5m2",
+  "float8-e5m2 (fp16 LoRA)",
+  "int8",
+  "int8 (fp16 LoRA)",
+  "bnb-nf4",
+  "bnb-nf4 (fp16 LoRA)",
+  "bnb-fp4",
+  "bnb-fp4 (fp16 LoRA)"
+];
+
+function normalizedForgeNeoModules(value = [], minSlots = 4) {
+  const source = Array.isArray(value)
+    ? value
+    : String(value || "").split(/\r?\n|,/g);
+  const items = source.map((item) => String(item?.filename || item?.model_name || item?.name || item || "").trim());
+  while (items.length < minSlots) items.push("");
+  return items.slice(0, Math.max(minSlots, items.length));
+}
+
+function activeForgeNeoModules(value = []) {
+  return normalizedForgeNeoModules(value, 0).filter(Boolean);
+}
+
+function normalizedForgeNeoDtype(value) {
+  const text = String(value || "").trim();
+  return forgeNeoDtypeOptions.includes(text) ? text : "Automatic";
+}
+
 function emptyComfyReferenceSlot(index = 0) {
   return { label: `参照${index + 1}`, key: "", name: "", url: "", nodeId: "", inputName: "image" };
 }
@@ -2166,11 +2240,22 @@ function voiceboxSettingsFromControls(source = {}) {
 
 function normalizedComfySettings(value = {}) {
   const source = { ...comfyDefaultSettings, ...(value || {}) };
+  const provider = imageProviderFromValue(source.provider);
   const gpuMode = source.gpuMode === "cloud" ? "cloud" : "local";
   return {
+    provider,
     gpuMode,
     localBaseUrl: String(source.localBaseUrl || comfyDefaultSettings.localBaseUrl).trim() || comfyDefaultSettings.localBaseUrl,
     cloudBaseUrl: String(source.cloudBaseUrl || "").trim(),
+    forgeBaseUrl: String(source.forgeBaseUrl || comfyDefaultSettings.forgeBaseUrl).trim() || comfyDefaultSettings.forgeBaseUrl,
+    forgeNeoBaseUrl: String(source.forgeNeoBaseUrl || comfyDefaultSettings.forgeNeoBaseUrl).trim() || comfyDefaultSettings.forgeNeoBaseUrl,
+    forgeNeoModules: normalizedForgeNeoModules(source.forgeNeoModules || source.forgeNeoAdditionalModules || source.modules),
+    forgeNeoDtype: normalizedForgeNeoDtype(source.forgeNeoDtype || source.forgeNeoUnetDtype),
+    forgeNeoDistilledCfg: String(source.forgeNeoDistilledCfg ?? "").trim(),
+    forgeNeoRefinerCheckpoint: String(source.forgeNeoRefinerCheckpoint || "").trim(),
+    forgeNeoRefinerSwitchAt: String(source.forgeNeoRefinerSwitchAt ?? "").trim(),
+    forgeNeoOverrideSettingsJson: String(source.forgeNeoOverrideSettingsJson || "").trim(),
+    forgeNeoPayloadJson: String(source.forgeNeoPayloadJson || "").trim(),
     workflowJson: String(source.workflowJson || comfyDefaultSettings.workflowJson).trim() || comfyDefaultSettings.workflowJson,
     workflowViewMode: source.workflowViewMode === "visual" ? "visual" : "json",
     positiveNodeId: String(source.positiveNodeId || "6").trim(),
@@ -2285,6 +2370,7 @@ function normalizeSettings() {
   state.db.settings.irodoriDefaults = normalizedIrodoriSettings(state.db.settings.irodoriDefaults);
   state.db.settings.comfy = normalizedComfySettings(state.db.settings.comfy);
   state.db.settings.comfyPresets = normalizedComfyPresets(state.db.settings.comfyPresets);
+  state.imageProvider = state.db.settings.comfy.provider || state.imageProvider;
   state.imageGpuMode = state.db.settings.comfy.gpuMode || state.imageGpuMode;
   state.db.settings.moveImportedSourcesToTrash = state.db.settings.moveImportedSourcesToTrash === true;
   state.db.settings.importSourceRoot = String(state.db.settings.importSourceRoot || "").trim();
@@ -3157,13 +3243,16 @@ async function postJson(url, body, method = "POST") {
 	    if (url.startsWith("/api/backgroundremover/") && /Method not allowed|Not found/i.test(text)) {
 	      throw new Error("backgroundremover APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
 	    }
-	    if (url.startsWith("/api/image-edit/") && /Method not allowed|Not found/i.test(text)) {
-	      throw new Error("画像編集APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
-	    }
-	    if (url.startsWith("/api/audio-edit/") && /Method not allowed|Not found/i.test(text)) {
-	      throw new Error("音声編集APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
-	    }
-	    const error = new Error(readableError(payload.error) || readableError(payload) || text || `${response.status} ${response.statusText}`);
+		    if (url.startsWith("/api/image-edit/") && /Method not allowed|Not found/i.test(text)) {
+		      throw new Error("画像編集APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
+		    }
+		    if (url.startsWith("/api/audio-edit/") && /Method not allowed|Not found/i.test(text)) {
+		      throw new Error("音声編集APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
+		    }
+		    if (url.startsWith("/api/forge/") && /Method not allowed|Not found/i.test(text)) {
+		      throw new Error("Forge APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
+		    }
+		    const error = new Error(readableError(payload.error) || readableError(payload) || text || `${response.status} ${response.statusText}`);
 	    error.payload = payload;
 	    error.responseText = text;
 	    throw error;
@@ -3673,7 +3762,7 @@ function currentTitle() {
   if (state.view === "studio") return ["作品とキャラ", "作品単位でキャラ設定と立ち絵を管理します。"];
   if (state.view === "import") return ["画像取込", "複数画像を取り込み、AIでキャラ別に振り分けます。"];
   if (state.view === "gallery") return ["画像一覧", "作品ごと、キャラごとに保存済み画像を閲覧します。"];
-  if (state.view === "image") return ["画像生成", "ComfyUIでローカルGPUまたはクラウドGPUに生成を投げます。"];
+  if (state.view === "image") return ["画像生成", "ComfyUI、Forge、Forge Neoへ画像生成を送信します。"];
   if (state.view === "edit") return ["背景除去", "背景除去と透過PNG変換を行います。"];
   if (state.view === "edit-aspect") return ["アスペクト比変換", "指定比率へ配置し、位置と拡大率を調整します。"];
   if (state.view === "edit-gif") return ["動画GIF化", "動画をGIFに変換して画像一覧へ保存します。"];
@@ -8335,7 +8424,8 @@ function imageCharacterOptions() {
   return state.db.characters.filter((char) => !state.imageWorkId || char.workId === state.imageWorkId);
 }
 
-function imageGpuLabel(gpuMode) {
+function imageGpuLabel(gpuMode, provider = "comfy") {
+  if (isForgeImageProvider(provider)) return imageProviderLabel(provider);
   return gpuMode === "cloud" ? "クラウドGPU" : "ローカルGPU";
 }
 
@@ -8409,6 +8499,7 @@ function imageControlsFromDom() {
   const settings = activeComfySettings();
   const promptInput = document.querySelector("#image-prompt-text");
   const negativeInput = document.querySelector("#image-negative-prompt");
+  const provider = imageProviderFromValue(imageControlValue("image-provider", state.imageProvider || settings.provider));
   const gpuMode = imageControlValue("image-gpu-mode", state.imageGpuMode || settings.gpuMode) === "cloud" ? "cloud" : "local";
   const loraFallback = state.imagePromptDraft?.loras || settings.loras;
   const referenceSlots = comfyReferenceSlotsFromDom("image", state.imagePromptDraft?.referenceSlots || settings.referenceSlots, true);
@@ -8416,6 +8507,7 @@ function imageControlsFromDom() {
   return {
     workId: imageControlValue("image-work", state.imageWorkId || state.selectedWorkId || ""),
     characterId: imageControlValue("image-character", state.imageCharacterId || ""),
+    provider,
     gpuMode,
     title: imageControlValue("image-title", state.imagePromptDraft?.title || "生成画像").trim() || "生成画像",
     prompt: promptInput ? promptInput.value : state.imagePromptDraft?.prompt || "",
@@ -8430,13 +8522,20 @@ function imageControlsFromDom() {
     seed: imageControlValue("image-seed", state.imagePromptDraft?.seed ?? settings.seed),
     checkpoint: imageControlValue("image-checkpoint", state.imagePromptDraft?.checkpoint || settings.checkpoint),
     loras: lorasFromDom("image", loraFallback),
+    forgeNeoModules: forgeNeoModulesFromDom("image", state.imagePromptDraft?.forgeNeoModules || settings.forgeNeoModules),
+    forgeNeoDtype: normalizedForgeNeoDtype(imageControlValue("image-forge-neo-dtype", state.imagePromptDraft?.forgeNeoDtype || settings.forgeNeoDtype)),
+    forgeNeoDistilledCfg: imageControlValue("image-forge-neo-distilled-cfg", state.imagePromptDraft?.forgeNeoDistilledCfg ?? settings.forgeNeoDistilledCfg),
+    forgeNeoRefinerCheckpoint: imageControlValue("image-forge-neo-refiner-checkpoint", state.imagePromptDraft?.forgeNeoRefinerCheckpoint || settings.forgeNeoRefinerCheckpoint),
+    forgeNeoRefinerSwitchAt: imageControlValue("image-forge-neo-refiner-switch-at", state.imagePromptDraft?.forgeNeoRefinerSwitchAt ?? settings.forgeNeoRefinerSwitchAt),
+    forgeNeoOverrideSettingsJson: imageControlValue("image-forge-neo-override-settings-json", state.imagePromptDraft?.forgeNeoOverrideSettingsJson || settings.forgeNeoOverrideSettingsJson),
+    forgeNeoPayloadJson: imageControlValue("image-forge-neo-payload-json", state.imagePromptDraft?.forgeNeoPayloadJson || settings.forgeNeoPayloadJson),
     referenceSlots,
     references: activeComfyReferenceSlots(referenceSlots),
     compareEnabled,
     compareCount: imageCompareCountValue(imageControlValue("image-compare-count", state.imagePromptDraft?.compareCount || state.imageCompareCount || 3)),
     compareMode: normalizeImageCompareMode(imageControlValue("image-compare-mode", state.imagePromptDraft?.compareMode || state.imageCompareMode || "seed")),
-    baseUrl: activeComfyBaseUrl(gpuMode),
-    apiKey: activeComfyApiKey(gpuMode),
+    baseUrl: activeImageBaseUrl(provider, gpuMode),
+    apiKey: activeImageApiKey(provider, gpuMode),
     workflowJson: settings.workflowJson,
     positiveNodeId: settings.positiveNodeId,
     negativeNodeId: settings.negativeNodeId,
@@ -8454,6 +8553,7 @@ function rememberImageControls(controls, { clearValidation = true } = {}) {
   const work = byId(state.db.works, selectedChar?.workId || controls.workId);
   state.imageWorkId = work?.id || controls.workId || null;
   state.imageCharacterId = selectedChar?.id || "";
+  state.imageProvider = imageProviderFromValue(controls.provider);
   state.imageGpuMode = controls.gpuMode;
   state.imageCompareEnabled = Boolean(controls.compareEnabled);
   state.imageCompareCount = imageCompareCountValue(controls.compareCount);
@@ -8463,6 +8563,7 @@ function rememberImageControls(controls, { clearValidation = true } = {}) {
     title: controls.title,
     prompt: controls.prompt,
     negativePrompt: controls.negativePrompt,
+    provider: state.imageProvider,
     width: controls.width,
     height: controls.height,
     steps: controls.steps,
@@ -8473,6 +8574,13 @@ function rememberImageControls(controls, { clearValidation = true } = {}) {
     seed: controls.seed,
     checkpoint: controls.checkpoint,
     loras: controls.loras,
+    forgeNeoModules: controls.forgeNeoModules,
+    forgeNeoDtype: controls.forgeNeoDtype,
+    forgeNeoDistilledCfg: controls.forgeNeoDistilledCfg,
+    forgeNeoRefinerCheckpoint: controls.forgeNeoRefinerCheckpoint,
+    forgeNeoRefinerSwitchAt: controls.forgeNeoRefinerSwitchAt,
+    forgeNeoOverrideSettingsJson: controls.forgeNeoOverrideSettingsJson,
+    forgeNeoPayloadJson: controls.forgeNeoPayloadJson,
     referenceSlots: controls.referenceSlots,
     compareEnabled: state.imageCompareEnabled,
     compareCount: state.imageCompareCount,
@@ -8480,6 +8588,7 @@ function rememberImageControls(controls, { clearValidation = true } = {}) {
   };
   state.db.settings.comfy = {
     ...activeComfySettings(),
+    provider: state.imageProvider,
     gpuMode: controls.gpuMode,
     width: controls.width,
     height: controls.height,
@@ -8491,6 +8600,13 @@ function rememberImageControls(controls, { clearValidation = true } = {}) {
     seed: controls.seed,
     checkpoint: controls.checkpoint,
     loras: controls.loras,
+    forgeNeoModules: controls.forgeNeoModules,
+    forgeNeoDtype: controls.forgeNeoDtype,
+    forgeNeoDistilledCfg: controls.forgeNeoDistilledCfg,
+    forgeNeoRefinerCheckpoint: controls.forgeNeoRefinerCheckpoint,
+    forgeNeoRefinerSwitchAt: controls.forgeNeoRefinerSwitchAt,
+    forgeNeoOverrideSettingsJson: controls.forgeNeoOverrideSettingsJson,
+    forgeNeoPayloadJson: controls.forgeNeoPayloadJson,
     referenceSlots: comfyReferenceSlotSettings(controls.referenceSlots)
   };
   if (clearValidation) state.comfyValidation = null;
@@ -8503,6 +8619,7 @@ function currentComfySettingsForPreset() {
     rememberImageControls(controls, { clearValidation: false });
     return normalizedComfySettings({
       ...activeComfySettings(),
+      provider: imageProviderFromValue(controls.provider),
       gpuMode: controls.gpuMode,
       width: controls.width,
       height: controls.height,
@@ -8514,6 +8631,13 @@ function currentComfySettingsForPreset() {
       seed: controls.seed,
       checkpoint: controls.checkpoint,
       loras: controls.loras,
+      forgeNeoModules: controls.forgeNeoModules,
+      forgeNeoDtype: controls.forgeNeoDtype,
+      forgeNeoDistilledCfg: controls.forgeNeoDistilledCfg,
+      forgeNeoRefinerCheckpoint: controls.forgeNeoRefinerCheckpoint,
+      forgeNeoRefinerSwitchAt: controls.forgeNeoRefinerSwitchAt,
+      forgeNeoOverrideSettingsJson: controls.forgeNeoOverrideSettingsJson,
+      forgeNeoPayloadJson: controls.forgeNeoPayloadJson,
       referenceSlots: comfyReferenceSlotSettings(controls.referenceSlots)
     });
   }
@@ -8528,14 +8652,18 @@ function applyComfyPreset(presetId) {
   const next = normalizedComfySettings({
     ...preset.settings,
     localBaseUrl: current.localBaseUrl,
-    cloudBaseUrl: current.cloudBaseUrl
+    cloudBaseUrl: current.cloudBaseUrl,
+    forgeBaseUrl: current.forgeBaseUrl,
+    forgeNeoBaseUrl: current.forgeNeoBaseUrl
   });
   state.db.settings.comfy = next;
+  state.imageProvider = next.provider;
   state.imageGpuMode = next.gpuMode;
   state.comfyValidation = null;
   if (state.view === "image") {
     state.imagePromptDraft = {
       ...(state.imagePromptDraft || {}),
+      provider: next.provider,
       width: next.width,
       height: next.height,
       steps: next.steps,
@@ -8546,6 +8674,13 @@ function applyComfyPreset(presetId) {
       seed: next.seed,
       checkpoint: next.checkpoint,
       loras: next.loras,
+      forgeNeoModules: next.forgeNeoModules,
+      forgeNeoDtype: next.forgeNeoDtype,
+      forgeNeoDistilledCfg: next.forgeNeoDistilledCfg,
+      forgeNeoRefinerCheckpoint: next.forgeNeoRefinerCheckpoint,
+      forgeNeoRefinerSwitchAt: next.forgeNeoRefinerSwitchAt,
+      forgeNeoOverrideSettingsJson: next.forgeNeoOverrideSettingsJson,
+      forgeNeoPayloadJson: next.forgeNeoPayloadJson,
       referenceSlots: next.referenceSlots,
       agentNote: `Comfyプリセット「${preset.name}」を適用しました。`
     };
@@ -8663,8 +8798,9 @@ function renderImageAgent() {
     compareMode: state.imageCompareMode,
     ...(state.imagePromptDraft || {})
   };
+  const provider = imageProviderFromValue(state.imageProvider || controls.provider || settings.provider);
   const gpuMode = state.imageGpuMode || settings.gpuMode;
-  const endpoint = activeComfyBaseUrl(gpuMode);
+  const endpoint = activeImageBaseUrl(provider, gpuMode);
   const allJobs = visibleImageHistoryItems();
   const { items: jobs, pageInfo: historyPageInfo } = getPagedGenerationHistoryItems("image", allJobs);
   const compareGroups = imageCompareGroupsForWork(state.imageWorkId).slice(0, 4);
@@ -8686,13 +8822,22 @@ function renderImageAgent() {
               ${chars.map((char) => `<option value="${char.id}" ${state.imageCharacterId === char.id ? "selected" : ""}>${escapeHtml(char.name)}</option>`).join("")}
             </select>
           </label>
-          <label class="full">GPU
-            <select id="image-gpu-mode">
-              <option value="local" ${gpuMode === "local" ? "selected" : ""}>ローカルGPU</option>
-              <option value="cloud" ${gpuMode === "cloud" ? "selected" : ""}>クラウドGPU</option>
+          <label class="full">生成方式
+            <select id="image-provider">
+              <option value="comfy" ${provider === "comfy" ? "selected" : ""}>ComfyUI</option>
+              <option value="forge" ${provider === "forge" ? "selected" : ""}>Forge</option>
+              <option value="forge-neo" ${provider === "forge-neo" ? "selected" : ""}>Forge Neo</option>
             </select>
           </label>
-          ${renderComfyPresetControls("image")}
+          ${provider === "comfy" ? `
+            <label class="full">GPU
+              <select id="image-gpu-mode">
+                <option value="local" ${gpuMode === "local" ? "selected" : ""}>ローカルGPU</option>
+                <option value="cloud" ${gpuMode === "cloud" ? "selected" : ""}>クラウドGPU</option>
+              </select>
+            </label>
+            ${renderComfyPresetControls("image")}
+          ` : ""}
           <div class="full image-compare-settings">
             <label class="check-row">
               <input id="image-compare-enabled" type="checkbox" ${controls.compareEnabled ? "checked" : ""}>
@@ -8713,36 +8858,67 @@ function renderImageAgent() {
           <label>高さ<input id="image-height" type="number" min="64" max="4096" step="64" value="${escapeHtml(controls.height || settings.height)}"></label>
           <label>Steps<input id="image-steps" type="number" min="1" max="150" value="${escapeHtml(controls.steps || settings.steps)}"></label>
           <label>CFG<input id="image-cfg" type="number" min="0" max="30" step="0.5" value="${escapeHtml(controls.cfg || settings.cfg)}"></label>
-          <label>Sampler<input id="image-sampler" value="${escapeHtml(controls.samplerName || settings.samplerName)}"></label>
+          <label>Sampler<input id="image-sampler" list="image-sampler-options" value="${escapeHtml(controls.samplerName || settings.samplerName)}"></label>
           <label>Scheduler<input id="image-scheduler" value="${escapeHtml(controls.scheduler || settings.scheduler)}"></label>
           <label>Batch<input id="image-batch-size" type="number" min="1" max="8" value="${escapeHtml(controls.batchSize || settings.batchSize)}"></label>
           <label>Seed<input id="image-seed" type="number" placeholder="空欄でランダム" value="${escapeHtml(controls.seed ?? settings.seed)}"></label>
-          <label class="full">モデル（Checkpoint）<input id="image-checkpoint" list="comfy-checkpoint-options" placeholder="workflow側の既定値を使う場合は空欄" value="${escapeHtml(controls.checkpoint || settings.checkpoint)}"></label>
-          <div class="full comfy-lora-list">
-            <div class="field-label">LoRA</div>
-            ${renderComfyLoraRows("image", controls.loras || settings.loras)}
-          </div>
-          <div class="full comfy-reference-panel">
-            <div class="toolbar slim-toolbar">
-              <div>
-                <div class="field-label">参照画像</div>
-                <div class="meta">LoadImage系NodeのIDを指定すると、選んだ画像をComfyUIへアップロードして差し替えます。</div>
-              </div>
-              <div>
-                <input id="image-reference-file-input" type="file" accept="image/*" multiple hidden>
-                <button class="ghost" data-action="choose-image-reference-files">画像追加</button>
+          <label class="full">モデル（Checkpoint）<input id="image-checkpoint" list="comfy-checkpoint-options" placeholder="${isForgeImageProvider(provider) ? `${imageProviderLabel(provider)}側の現在モデルを使う場合は空欄` : "workflow側の既定値を使う場合は空欄"}" value="${escapeHtml(controls.checkpoint || settings.checkpoint)}"></label>
+          ${provider === "forge-neo" ? `
+            <div class="full comfy-reference-panel">
+              <div class="field-label">Forge Neo詳細</div>
+              <div class="form-grid compact-grid">
+                <label>Diffusion in Low Bits
+                  <select id="image-forge-neo-dtype">
+                    ${forgeNeoDtypeOptions.map((option) => `<option value="${escapeHtml(option)}" ${normalizedForgeNeoDtype(controls.forgeNeoDtype || settings.forgeNeoDtype) === option ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}
+                  </select>
+                </label>
+                <label>Distilled CFG / Shift
+                  <input id="image-forge-neo-distilled-cfg" type="number" min="0" max="30" step="0.1" placeholder="モデル既定" value="${escapeHtml(controls.forgeNeoDistilledCfg ?? settings.forgeNeoDistilledCfg)}">
+                </label>
+                <label>Refiner checkpoint
+                  <input id="image-forge-neo-refiner-checkpoint" list="comfy-checkpoint-options" placeholder="未使用なら空欄" value="${escapeHtml(controls.forgeNeoRefinerCheckpoint || settings.forgeNeoRefinerCheckpoint)}">
+                </label>
+                <label>Refiner switch
+                  <input id="image-forge-neo-refiner-switch-at" type="number" min="0" max="1" step="0.05" placeholder="例: 0.8" value="${escapeHtml(controls.forgeNeoRefinerSwitchAt ?? settings.forgeNeoRefinerSwitchAt)}">
+                </label>
+                ${renderForgeNeoModuleRows("image", controls.forgeNeoModules || settings.forgeNeoModules)}
+                <label class="full">override_settings JSON
+                  <textarea id="image-forge-neo-override-settings-json" class="json-textarea small-json" spellcheck="false" placeholder='{"epsilon_scaling": true}'>${escapeHtml(controls.forgeNeoOverrideSettingsJson || settings.forgeNeoOverrideSettingsJson)}</textarea>
+                </label>
+                <label class="full">txt2img追加JSON
+                  <textarea id="image-forge-neo-payload-json" class="json-textarea small-json" spellcheck="false" placeholder='{"enable_hr": true}'>${escapeHtml(controls.forgeNeoPayloadJson || settings.forgeNeoPayloadJson)}</textarea>
+                </label>
               </div>
             </div>
-            ${renderComfyReferenceSlotRows("image", controls.referenceSlots || settings.referenceSlots, { includeReference: true })}
+          ` : ""}
+          <div class="full comfy-lora-list">
+            <div class="field-label">LoRA</div>
+            ${isForgeImageProvider(provider) ? `<div class="meta">${escapeHtml(imageProviderLabel(provider))}ではLoRA名をプロンプト末尾の <code>&lt;lora:name:strength&gt;</code> として送ります。</div>` : ""}
+            ${renderComfyLoraRows("image", controls.loras || settings.loras)}
           </div>
-          ${renderComfyModelDatalists()}
-          ${renderComfyModelStatus()}
-          ${renderComfyValidationResult()}
+          ${provider === "comfy" ? `
+            <div class="full comfy-reference-panel">
+              <div class="toolbar slim-toolbar">
+                <div>
+                  <div class="field-label">参照画像</div>
+                  <div class="meta">LoadImage系NodeのIDを指定すると、選んだ画像をComfyUIへアップロードして差し替えます。</div>
+                </div>
+                <div>
+                  <input id="image-reference-file-input" type="file" accept="image/*" multiple hidden>
+                  <button class="ghost" data-action="choose-image-reference-files">画像追加</button>
+                </div>
+              </div>
+              ${renderComfyReferenceSlotRows("image", controls.referenceSlots || settings.referenceSlots, { includeReference: true })}
+            </div>
+          ` : `<div class="full meta">${escapeHtml(imageProviderLabel(provider))}の初期対応はtxt2imgです。参照画像Nodeを使う生成はComfyUIを選択してください。</div>`}
+          ${renderComfyModelDatalists(provider)}
+          ${renderComfyModelStatus(provider)}
+          ${provider === "comfy" ? renderComfyValidationResult() : ""}
           <div class="full toolbar slim-toolbar">
             <button class="ghost" data-action="load-comfy-models" ${state.comfyModelStatus === "loading" ? "disabled" : ""}>モデル一覧取得</button>
-            <button class="ghost" data-action="validate-comfy-workflow">事前チェック</button>
+            ${provider === "comfy" ? `<button class="ghost" data-action="validate-comfy-workflow">事前チェック</button>` : ""}
           </div>
-          <div class="full meta">${escapeHtml(imageGpuLabel(gpuMode))}: ${escapeHtml(endpoint || "設定画面でURLを指定してください。")}</div>
+          <div class="full meta">${escapeHtml(imageProviderLabel(provider))}${provider === "comfy" ? ` / ${escapeHtml(imageGpuLabel(gpuMode))}` : ""}: ${escapeHtml(endpoint || "設定画面でURLを指定してください。")}</div>
         </div>
       </section>
       <section class="video-main">
@@ -8765,7 +8941,7 @@ function renderImageAgent() {
         <section class="panel">
           <div class="panel-header">
             <div>
-              <h2>Comfy送信用プロンプト</h2>
+              <h2>${escapeHtml(imageProviderLabel(provider))}送信用プロンプト</h2>
               <div class="meta">${escapeHtml(state.imagePromptDraft?.agentNote || "手動入力できます。")}</div>
             </div>
             <div class="group">
@@ -8844,7 +9020,7 @@ function renderImageJob(job) {
       ${renderGenerationHistoryCheckbox("image", job)}
       <div>
         <div class="char-name">${escapeHtml(job.title || "生成画像")}</div>
-        <div class="meta">${compareText ? `${escapeHtml(compareText)} / ` : ""}${escapeHtml(work?.name || "全作品")} / ${char ? `${escapeHtml(char.name)} / ` : ""}${escapeHtml(imageGpuLabel(job.gpuMode))} / ${escapeHtml(imageStatusLabel(status))}${progress !== null ? ` ${escapeHtml(`${progress}%`)}` : ""}${loraText ? ` / LoRA: ${escapeHtml(loraText)}` : ""}${referenceText ? ` / 参照: ${escapeHtml(referenceText)}` : ""} / ${job.updatedAt ? escapeHtml(new Date(job.updatedAt).toLocaleString("ja-JP")) : ""}</div>
+        <div class="meta">${compareText ? `${escapeHtml(compareText)} / ` : ""}${escapeHtml(work?.name || "全作品")} / ${char ? `${escapeHtml(char.name)} / ` : ""}${escapeHtml(imageProviderLabel(job.provider))}${job.provider === "comfy" ? ` / ${escapeHtml(imageGpuLabel(job.gpuMode))}` : ""} / ${escapeHtml(imageStatusLabel(status))}${progress !== null ? ` ${escapeHtml(`${progress}%`)}` : ""}${loraText ? ` / LoRA: ${escapeHtml(loraText)}` : ""}${referenceText ? ` / 参照: ${escapeHtml(referenceText)}` : ""} / ${job.updatedAt ? escapeHtml(new Date(job.updatedAt).toLocaleString("ja-JP")) : ""}</div>
       </div>
       ${activeImageJobStatuses.includes(status) ? `
         <div class="progress-track ${progress === null ? "indeterminate" : ""}">
@@ -8867,7 +9043,7 @@ function renderImageJob(job) {
 }
 
 function buildImageAgentSystemPrompt() {
-  return `あなたは画像生成モデル向けのプロンプト編集者です。ユーザーのチャット、作品情報、世界観、キャラ情報を読み、ComfyUIに送るプロンプト案を作ります。
+  return `あなたは画像生成モデル向けのプロンプト編集者です。ユーザーのチャット、作品情報、世界観、キャラ情報を読み、選択中の画像生成APIに送るプロンプト案を作ります。
 
 必ず次のJSONだけを返してください。
 {
@@ -8901,6 +9077,9 @@ function buildImageAgentText(inputText, controls) {
   const referenceText = activeComfyReferenceSlots(controls.referenceSlots)
     .map((item) => `${item.name || item.key} -> node ${item.nodeId}.${item.inputName || "image"}`)
     .join(", ") || "なし";
+  const forgeNeoText = imageProviderFromValue(controls.provider) === "forge-neo"
+    ? `, neoModules=${activeForgeNeoModules(controls.forgeNeoModules).join(", ") || "なし"}, neoDtype=${controls.forgeNeoDtype || "Automatic"}, distilledCfg=${controls.forgeNeoDistilledCfg || "既定"}, refiner=${controls.forgeNeoRefinerCheckpoint || "なし"}@${controls.forgeNeoRefinerSwitchAt || "既定"}`
+    : "";
   const charText = chars.map((char) => [
     `名前=${char.name}`,
     `メモ=${compactPromptText(char.memo, 460)}`,
@@ -8912,7 +9091,7 @@ function buildImageAgentText(inputText, controls) {
 ${inputText}
 
 現在の設定:
-gpu=${controls.gpuMode}, width=${controls.width}, height=${controls.height}, steps=${controls.steps}, cfg=${controls.cfg}, sampler=${controls.samplerName}, scheduler=${controls.scheduler}, batch=${controls.batchSize}, checkpoint=${controls.checkpoint || "workflow既定"}, lora=${loraText}, reference=${referenceText}
+  provider=${imageProviderLabel(controls.provider)}, gpu=${controls.gpuMode}, width=${controls.width}, height=${controls.height}, steps=${controls.steps}, cfg=${controls.cfg}, sampler=${controls.samplerName}, scheduler=${controls.scheduler}, batch=${controls.batchSize}, checkpoint=${controls.checkpoint || (isForgeImageProvider(controls.provider) ? `${imageProviderLabel(controls.provider)}現在値` : "workflow既定")}, lora=${loraText}, reference=${referenceText}${forgeNeoText}
 
 作品情報 / 世界観:
 ${buildPromptLabWorldContext(work)}
@@ -8934,6 +9113,7 @@ function mergeImageDraft(result, fallbackControls) {
     title: source.title || fallbackControls.title || "生成画像",
     prompt: source.prompt || "",
     negativePrompt: source.negativePrompt || source.negative_prompt || fallbackControls.negativePrompt || "",
+    provider: imageProviderFromValue(source.provider || fallbackControls.provider),
     width: Number(source.width || fallbackControls.width || 1024),
     height: Number(source.height || fallbackControls.height || 1024),
     steps: Number(source.steps || fallbackControls.steps || 28),
@@ -8944,6 +9124,13 @@ function mergeImageDraft(result, fallbackControls) {
     seed: source.seed ?? fallbackControls.seed ?? "",
     checkpoint: source.checkpoint || source.ckpt_name || fallbackControls.checkpoint || "",
     loras: normalizedComfyLoras(source.loras || fallbackControls.loras || []),
+    forgeNeoModules: normalizedForgeNeoModules(source.forgeNeoModules || source.forge_neo_modules || fallbackControls.forgeNeoModules || []),
+    forgeNeoDtype: normalizedForgeNeoDtype(source.forgeNeoDtype || source.forge_neo_dtype || fallbackControls.forgeNeoDtype),
+    forgeNeoDistilledCfg: source.forgeNeoDistilledCfg ?? source.distilled_cfg_scale ?? fallbackControls.forgeNeoDistilledCfg ?? "",
+    forgeNeoRefinerCheckpoint: source.forgeNeoRefinerCheckpoint || source.refiner_checkpoint || fallbackControls.forgeNeoRefinerCheckpoint || "",
+    forgeNeoRefinerSwitchAt: source.forgeNeoRefinerSwitchAt ?? source.refiner_switch_at ?? fallbackControls.forgeNeoRefinerSwitchAt ?? "",
+    forgeNeoOverrideSettingsJson: fallbackControls.forgeNeoOverrideSettingsJson || "",
+    forgeNeoPayloadJson: fallbackControls.forgeNeoPayloadJson || "",
     referenceSlots: normalizedComfyReferenceSlots(fallbackControls.referenceSlots || []),
     agentNote: source.agentNote || source.note || result?.message || ""
   };
@@ -8988,7 +9175,7 @@ async function handleImageAgentMessage(forceDraft = false) {
   }
 }
 
-async function registerComfyImagesAsAssets(job, images = []) {
+async function registerImageJobImagesAsAssets(job, images = []) {
   const work = byId(state.db.works, job.workId);
   const char = byId(state.db.characters, job.characterId);
   const existing = new Set((state.db.assets || []).filter((asset) => asset.sourceJobId === job.id).map((asset) => asset.url));
@@ -9013,8 +9200,8 @@ async function registerComfyImagesAsAssets(job, images = []) {
       aiPromptFormat: "natural",
       aiPrompt: job.prompt || "",
       aiNegativePrompt: job.negativePrompt || "",
-      aiReason: "ComfyUIで生成した画像です。",
-      source: "comfy",
+      aiReason: `${imageProviderLabel(job.provider)}で生成した画像です。`,
+      source: imageProviderFromValue(job.provider),
       sourceJobId: job.id,
       createdAt: new Date().toISOString()
     });
@@ -9159,6 +9346,7 @@ async function deleteSelectedComfyPreset() {
 
 function comfySettingsSnapshotFromControls(controls) {
   return {
+    provider: imageProviderFromValue(controls.provider),
     width: controls.width,
     height: controls.height,
     steps: controls.steps,
@@ -9169,6 +9357,13 @@ function comfySettingsSnapshotFromControls(controls) {
     seed: controls.seed,
     checkpoint: controls.checkpoint,
     loras: controls.loras,
+    forgeNeoModules: controls.forgeNeoModules,
+    forgeNeoDtype: controls.forgeNeoDtype,
+    forgeNeoDistilledCfg: controls.forgeNeoDistilledCfg,
+    forgeNeoRefinerCheckpoint: controls.forgeNeoRefinerCheckpoint,
+    forgeNeoRefinerSwitchAt: controls.forgeNeoRefinerSwitchAt,
+    forgeNeoOverrideSettingsJson: controls.forgeNeoOverrideSettingsJson,
+    forgeNeoPayloadJson: controls.forgeNeoPayloadJson,
     references: controls.references,
     referenceSlots: comfyReferenceSlotSettings(controls.referenceSlots),
     baseUrl: controls.baseUrl
@@ -9180,6 +9375,7 @@ function persistImageGenerationState(controls, prompt = controls.prompt.trim()) 
   const work = byId(state.db.works, selectedChar?.workId || controls.workId);
   state.db.settings.comfy = {
     ...activeComfySettings(),
+    provider: imageProviderFromValue(controls.provider),
     gpuMode: controls.gpuMode,
     width: controls.width,
     height: controls.height,
@@ -9191,8 +9387,16 @@ function persistImageGenerationState(controls, prompt = controls.prompt.trim()) 
     seed: controls.seed,
     checkpoint: controls.checkpoint,
     loras: controls.loras,
+    forgeNeoModules: controls.forgeNeoModules,
+    forgeNeoDtype: controls.forgeNeoDtype,
+    forgeNeoDistilledCfg: controls.forgeNeoDistilledCfg,
+    forgeNeoRefinerCheckpoint: controls.forgeNeoRefinerCheckpoint,
+    forgeNeoRefinerSwitchAt: controls.forgeNeoRefinerSwitchAt,
+    forgeNeoOverrideSettingsJson: controls.forgeNeoOverrideSettingsJson,
+    forgeNeoPayloadJson: controls.forgeNeoPayloadJson,
     referenceSlots: comfyReferenceSlotSettings(controls.referenceSlots)
   };
+  state.imageProvider = imageProviderFromValue(controls.provider);
   state.imageGpuMode = controls.gpuMode;
   state.imageWorkId = work?.id || controls.workId || null;
   state.imageCharacterId = selectedChar?.id || "";
@@ -9204,6 +9408,7 @@ function persistImageGenerationState(controls, prompt = controls.prompt.trim()) 
     title: controls.title,
     prompt,
     negativePrompt: controls.negativePrompt,
+    provider: state.imageProvider,
     width: controls.width,
     height: controls.height,
     steps: controls.steps,
@@ -9214,6 +9419,13 @@ function persistImageGenerationState(controls, prompt = controls.prompt.trim()) 
     seed: controls.seed,
     checkpoint: controls.checkpoint,
     loras: controls.loras,
+    forgeNeoModules: controls.forgeNeoModules,
+    forgeNeoDtype: controls.forgeNeoDtype,
+    forgeNeoDistilledCfg: controls.forgeNeoDistilledCfg,
+    forgeNeoRefinerCheckpoint: controls.forgeNeoRefinerCheckpoint,
+    forgeNeoRefinerSwitchAt: controls.forgeNeoRefinerSwitchAt,
+    forgeNeoOverrideSettingsJson: controls.forgeNeoOverrideSettingsJson,
+    forgeNeoPayloadJson: controls.forgeNeoPayloadJson,
     referenceSlots: controls.referenceSlots,
     compareEnabled: state.imageCompareEnabled,
     compareCount: state.imageCompareCount,
@@ -9232,6 +9444,7 @@ function buildImageJobFromControls(controls, overrides = {}) {
     title: overrides.title || controls.title,
     prompt: overrides.prompt || controls.prompt.trim(),
     negativePrompt: controls.negativePrompt,
+    provider: imageProviderFromValue(controls.provider),
     gpuMode: controls.gpuMode,
     status: "submitting",
     settings: comfySettingsSnapshotFromControls(controls),
@@ -9286,21 +9499,37 @@ function buildImageComparisonVariants(controls) {
 
 async function submitComfyImageJob(job, controls) {
   try {
-    const payload = await postJson("/api/comfy/create", {
+    const provider = imageProviderFromValue(controls.provider);
+    const selectedChar = byId(state.db.characters, controls.characterId);
+    const work = byId(state.db.works, selectedChar?.workId || controls.workId);
+    const payload = await postJson(isForgeImageProvider(provider) ? "/api/forge/create" : "/api/comfy/create", {
       ...controls,
-      prompt: controls.prompt.trim()
+      provider,
+      prompt: controls.prompt.trim(),
+      workName: work?.name || "",
+      title: controls.title || "生成画像"
     });
     job.providerPayload = payload.providerPayload || payload;
     job.request = payload.request || null;
     const providerError = readableError(payload.error) || readableError(payload.providerPayload?.error);
     if (providerError) throw new Error(providerError);
-    job.providerTaskId = payload.id || payload.prompt_id || "";
-    if (!job.providerTaskId) throw new Error("ComfyUIのprompt_idを取得できませんでした。");
+    job.providerTaskId = isForgeImageProvider(provider) ? "" : (payload.id || payload.prompt_id || "");
+    if (provider === "comfy" && !job.providerTaskId) throw new Error("ComfyUIのprompt_idを取得できませんでした。");
     job.status = payload.status || "submitted";
     job.progress = payload.progress ?? job.progress ?? 0;
-    job.progressMessage = "ComfyUIで生成待機中です。";
+    job.progressMessage = isForgeImageProvider(provider) ? `${imageProviderLabel(provider)}で生成が完了しました。` : "ComfyUIで生成待機中です。";
+    if (Array.isArray(payload.images) && payload.images.length) {
+      job.images = payload.images.map((image) => ({
+        url: image.url,
+        localPath: image.path || image.localPath || "",
+        nodeId: image.nodeId || "",
+        filename: image.filename || ""
+      }));
+      await registerImageJobImagesAsAssets(job, job.images);
+    }
     job.updatedAt = new Date().toISOString();
     await saveDb();
+    syncImageGenerationFlag();
     render();
     return true;
   } catch (error) {
@@ -9316,14 +9545,19 @@ async function submitComfyImageJob(job, controls) {
 
 async function startComfyGeneration() {
   const controls = imageControlsFromDom();
+  const provider = imageProviderFromValue(controls.provider);
   const prompt = controls.prompt.trim();
-  if (!controls.baseUrl) return toast(`${imageGpuLabel(controls.gpuMode)}のComfyUI URLを設定してください。`);
-  if (!controls.workflowJson) return toast("設定画面で ComfyUI workflow JSON を保存してください。");
-  if (!prompt) return toast("Comfy送信用プロンプトを入力してください。");
+  if (!controls.baseUrl) return toast(`${imageProviderLabel(provider)}のURLを設定してください。`);
+  if (provider === "comfy" && !controls.workflowJson) return toast("設定画面で ComfyUI workflow JSON を保存してください。");
+  if (!prompt) return toast(`${imageProviderLabel(provider)}送信用プロンプトを入力してください。`);
   rememberImageControls(controls);
-  const validation = await validateComfyControls(controls);
-  if (!validation.ok) {
-    return toast((validation.errors || [])[0] || "ComfyUI workflowの事前チェックで問題が見つかりました。");
+  if (provider === "comfy") {
+    const validation = await validateComfyControls(controls);
+    if (!validation.ok) {
+      return toast((validation.errors || [])[0] || "ComfyUI workflowの事前チェックで問題が見つかりました。");
+    }
+  } else {
+    state.comfyValidation = null;
   }
   if (controls.compareEnabled) return startComfyComparisonGeneration({ ...controls, prompt });
   try {
@@ -9334,11 +9568,17 @@ async function startComfyGeneration() {
     state.imageIsGenerating = true;
     await saveDb();
     render();
-    toastApiSubmitted("ComfyUIに画像生成を送信しました。返答を待っています。");
+    toastApiSubmitted(`${imageProviderLabel(provider)}に画像生成を送信しました。返答を待っています。`);
     const ok = await submitComfyImageJob(job, { ...controls, prompt });
     if (ok) {
-      toast("画像生成タスクを開始しました。");
-      await pollComfyJob(job.id);
+      if (job.providerTaskId) {
+        toast("画像生成タスクを開始しました。");
+        await pollComfyJob(job.id);
+      } else {
+        toast("生成画像を画像一覧へ保存しました。");
+        syncImageGenerationFlag();
+        render();
+      }
     } else {
       toast(job.error || "画像生成タスクを開始できませんでした。");
     }
@@ -9365,7 +9605,7 @@ async function startComfyComparisonGeneration(controls) {
   state.imageIsGenerating = true;
   await saveDb();
   render();
-  toastApiSubmitted(`${jobs.length} 件の比較生成をComfyUIに送信します。返答を待っています。`);
+  toastApiSubmitted(`${jobs.length} 件の比較生成を${imageProviderLabel(controls.provider)}に送信します。返答を待っています。`);
   let submitted = 0;
   for (let index = 0; index < variants.length; index += 1) {
     const ok = await submitComfyImageJob(jobs[index], {
@@ -9391,6 +9631,7 @@ async function adoptImageJob(jobId) {
   const referenceSlots = normalizedComfyReferenceSlots(settings.referenceSlots || settings.references || []);
   const nextControls = {
     ...current,
+    provider: imageProviderFromValue(job.provider || settings.provider),
     gpuMode: job.gpuMode,
     workId: job.workId || "",
     characterId: job.characterId || "",
@@ -9458,7 +9699,7 @@ async function pollComfyJob(jobId) {
         nodeId: image.nodeId || "",
         filename: image.filename || ""
       }));
-      await registerComfyImagesAsAssets(job, job.images);
+      await registerImageJobImagesAsAssets(job, job.images);
     }
     if (payload.error) job.error = readableError(payload.error);
     job.updatedAt = new Date().toISOString();
@@ -10991,6 +11232,21 @@ function lorasFromDom(prefix, fallback = []) {
   }));
 }
 
+function renderForgeNeoModuleRows(prefix, modules = []) {
+  return normalizedForgeNeoModules(modules).map((moduleName, index) => `
+    <label>Module ${index + 1}
+      <input id="${prefix}-forge-neo-module-${index}" list="forge-neo-module-options" placeholder="VAE / Text Encoder / mmproj" value="${escapeHtml(moduleName)}">
+    </label>
+  `).join("");
+}
+
+function forgeNeoModulesFromDom(prefix, fallback = []) {
+  const fallbackItems = normalizedForgeNeoModules(fallback);
+  return fallbackItems.map((item, index) => (
+    document.querySelector(`#${prefix}-forge-neo-module-${index}`)?.value.trim() ?? item
+  ));
+}
+
 function allImageReferences() {
   return allVideoReferences().filter((item) => item.kind === "image");
 }
@@ -11050,9 +11306,20 @@ function renderComfyReferenceSlotRows(prefix, slots = [], { includeReference = f
   }).join("");
 }
 
-function renderComfyModelDatalists() {
-  const checkpoints = Array.isArray(state.comfyModels?.checkpoints) ? state.comfyModels.checkpoints : [];
-  const loras = Array.isArray(state.comfyModels?.loras) ? state.comfyModels.loras : [];
+function imageModelCatalog(provider = activeImageProvider()) {
+  const requestedProvider = imageProviderFromValue(provider);
+  const storedProvider = imageProviderFromValue(state.comfyModels?.provider || "comfy");
+  if (storedProvider !== requestedProvider) return { checkpoints: [], loras: [], samplers: [], modules: [] };
+  return {
+    checkpoints: Array.isArray(state.comfyModels?.checkpoints) ? state.comfyModels.checkpoints : [],
+    loras: Array.isArray(state.comfyModels?.loras) ? state.comfyModels.loras : [],
+    samplers: Array.isArray(state.comfyModels?.samplers) ? state.comfyModels.samplers : [],
+    modules: Array.isArray(state.comfyModels?.modules) ? state.comfyModels.modules : []
+  };
+}
+
+function renderComfyModelDatalists(provider = activeImageProvider()) {
+  const { checkpoints, loras, samplers, modules } = imageModelCatalog(provider);
   return `
     <datalist id="comfy-checkpoint-options">
       ${checkpoints.map((name) => `<option value="${escapeHtml(name)}"></option>`).join("")}
@@ -11060,17 +11327,24 @@ function renderComfyModelDatalists() {
     <datalist id="comfy-lora-options">
       ${loras.map((name) => `<option value="${escapeHtml(name)}"></option>`).join("")}
     </datalist>
+    <datalist id="image-sampler-options">
+      ${samplers.map((name) => `<option value="${escapeHtml(name)}"></option>`).join("")}
+    </datalist>
+    <datalist id="forge-neo-module-options">
+      ${modules.map((name) => `<option value="${escapeHtml(name)}"></option>`).join("")}
+    </datalist>
   `;
 }
 
-function renderComfyModelStatus() {
-  const checkpoints = Array.isArray(state.comfyModels?.checkpoints) ? state.comfyModels.checkpoints : [];
-  const loras = Array.isArray(state.comfyModels?.loras) ? state.comfyModels.loras : [];
-  if (state.comfyModelStatus === "loading") return `<div class="full meta">ComfyUIのモデル一覧を取得中です。</div>`;
-  if (state.comfyModelStatus === "failed") return `<div class="full meta danger-text">${escapeHtml(state.comfyModelError || "ComfyUIのモデル一覧を取得できませんでした。")}</div>`;
-  if (!checkpoints.length && !loras.length) return `<div class="full meta">モデル一覧を取得すると、モデル（Checkpoint）とLoRA名を候補から選べます。</div>`;
+function renderComfyModelStatus(provider = activeImageProvider()) {
+  const label = imageProviderLabel(provider);
+  const { checkpoints, loras, samplers, modules } = imageModelCatalog(provider);
+  if (state.comfyModelStatus === "loading") return `<div class="full meta">${escapeHtml(label)}のモデル一覧を取得中です。</div>`;
+  if (state.comfyModelStatus === "failed") return `<div class="full meta danger-text">${escapeHtml(state.comfyModelError || `${label}のモデル一覧を取得できませんでした。`)}</div>`;
+  if (!checkpoints.length && !loras.length && !samplers.length && !modules.length) return `<div class="full meta">モデル一覧を取得すると、モデル（Checkpoint）、Sampler、LoRA名を候補から選べます。</div>`;
   const updated = state.comfyModels?.updatedAt ? ` / ${new Date(state.comfyModels.updatedAt).toLocaleString("ja-JP")}` : "";
-  return `<div class="full meta">ComfyUIモデル一覧: モデル（Checkpoint） ${checkpoints.length}件 / LoRA ${loras.length}件${escapeHtml(updated)}</div>`;
+  const moduleText = imageProviderFromValue(provider) === "forge-neo" ? ` / Module ${modules.length}件` : "";
+  return `<div class="full meta">${escapeHtml(label)}モデル一覧: モデル（Checkpoint） ${checkpoints.length}件 / Sampler ${samplers.length}件 / LoRA ${loras.length}件${escapeHtml(moduleText)}${escapeHtml(updated)}</div>`;
 }
 
 function renderComfyValidationResult() {
@@ -11191,35 +11465,88 @@ function renderComfyWorkflowVisual(settings) {
 
 function renderComfySettings() {
   const settings = activeComfySettings();
+  const provider = imageProviderFromValue(settings.provider);
+  const forgeSelected = isForgeImageProvider(provider);
+  const forgeLabel = imageProviderLabel(provider);
+  const forgeProduct = provider === "forge-neo" ? "Stable Diffusion WebUI Forge Neo" : "Stable Diffusion WebUI Forge";
+  const forgeBaseUrlInputId = provider === "forge-neo" ? "setting-forge-neo-base-url" : "setting-forge-base-url";
+  const forgeApiKeyInputId = provider === "forge-neo" ? "setting-forge-neo-api-key" : "setting-forge-api-key";
+  const forgeBaseUrlValue = provider === "forge-neo" ? settings.forgeNeoBaseUrl : settings.forgeBaseUrl;
+  const forgeApiKeyValue = provider === "forge-neo" ? forgeNeoApiKey() : forgeApiKey();
   return `
     <section class="panel settings-panel">
       <div class="panel-header">
-        <h2>ComfyUI</h2>
+        <h2>画像生成API</h2>
         <div class="group">
-          <button class="ghost" data-action="check-comfy">連携確認</button>
+          <button class="ghost" data-action="check-comfy">接続確認</button>
           <button class="ghost" data-action="load-comfy-models" ${state.comfyModelStatus === "loading" ? "disabled" : ""}>モデル一覧</button>
-          <button class="ghost" data-action="validate-comfy-workflow">事前チェック</button>
+          ${provider === "comfy" ? `<button class="ghost" data-action="validate-comfy-workflow">事前チェック</button>` : ""}
         </div>
       </div>
       <div class="panel-body form-grid">
-        ${renderComfyModelDatalists()}
-        ${renderComfyPresetControls("setting")}
-        <label class="full">既定GPU
-          <select id="setting-comfy-gpu-mode">
-            <option value="local" ${settings.gpuMode === "local" ? "selected" : ""}>ローカルGPU</option>
-            <option value="cloud" ${settings.gpuMode === "cloud" ? "selected" : ""}>クラウドGPU</option>
+        ${renderComfyModelDatalists(provider)}
+        <label class="full">既定生成方式
+          <select id="setting-image-provider">
+            <option value="comfy" ${provider === "comfy" ? "selected" : ""}>ComfyUI</option>
+            <option value="forge" ${provider === "forge" ? "selected" : ""}>Forge</option>
+            <option value="forge-neo" ${provider === "forge-neo" ? "selected" : ""}>Forge Neo</option>
           </select>
         </label>
-        <label class="full">ローカルComfyUI URL
-          <input id="setting-comfy-local-url" placeholder="http://127.0.0.1:8000" value="${escapeHtml(settings.localBaseUrl)}">
-        </label>
-        <div class="full meta">Comfyアプリ内の「設定」→「サーバー設定」でホストとポートを確認し、<code>http://(ホスト):(ポート)</code> の形式で入力してください。例: <code>http://127.0.0.1:8000</code></div>
-        <label class="full">クラウドComfyUI URL
-          <input id="setting-comfy-cloud-url" placeholder="https://your-comfy.example.com" value="${escapeHtml(settings.cloudBaseUrl)}">
-        </label>
-        <label class="full">クラウドAPIキー
-          <input id="setting-comfy-cloud-api-key" type="password" placeholder="Bearer token / API key" value="${escapeHtml(comfyCloudApiKey())}">
-        </label>
+        ${provider === "comfy" ? `
+          ${renderComfyPresetControls("setting")}
+          <label class="full">既定GPU
+            <select id="setting-comfy-gpu-mode">
+              <option value="local" ${settings.gpuMode === "local" ? "selected" : ""}>ローカルGPU</option>
+              <option value="cloud" ${settings.gpuMode === "cloud" ? "selected" : ""}>クラウドGPU</option>
+            </select>
+          </label>
+          <label class="full">ローカルComfyUI URL
+            <input id="setting-comfy-local-url" placeholder="http://127.0.0.1:8188" value="${escapeHtml(settings.localBaseUrl)}">
+          </label>
+          <div class="full meta">Comfyアプリ内の「設定」→「サーバー設定」でホストとポートを確認し、<code>http://(ホスト):(ポート)</code> の形式で入力してください。例: <code>http://127.0.0.1:8188</code></div>
+          <label class="full">クラウドComfyUI URL
+            <input id="setting-comfy-cloud-url" placeholder="https://your-comfy.example.com" value="${escapeHtml(settings.cloudBaseUrl)}">
+          </label>
+          <label class="full">クラウドAPIキー
+            <input id="setting-comfy-cloud-api-key" type="password" placeholder="Bearer token / API key" value="${escapeHtml(comfyCloudApiKey())}">
+          </label>
+        ` : `
+          <label class="full">${escapeHtml(forgeLabel)} URL
+            <input id="${forgeBaseUrlInputId}" placeholder="http://127.0.0.1:7860" value="${escapeHtml(forgeBaseUrlValue)}">
+          </label>
+          <label class="full">${escapeHtml(forgeLabel)} APIキー
+            <input id="${forgeApiKeyInputId}" type="password" placeholder="必要な環境だけ入力" value="${escapeHtml(forgeApiKeyValue)}">
+          </label>
+          <div class="full meta">${escapeHtml(forgeProduct)}を <code>--api</code> 付きで起動し、<code>/sdapi/v1/txt2img</code> へ送信します。参照画像NodeとWorkflow JSONはComfyUI選択時だけ使います。</div>
+          ${provider === "forge-neo" ? `
+            <div class="full comfy-reference-panel">
+              <div class="field-label">Forge Neo詳細</div>
+              <div class="form-grid compact-grid">
+                <label>Diffusion in Low Bits
+                  <select id="setting-forge-neo-dtype">
+                    ${forgeNeoDtypeOptions.map((option) => `<option value="${escapeHtml(option)}" ${settings.forgeNeoDtype === option ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}
+                  </select>
+                </label>
+                <label>Distilled CFG / Shift
+                  <input id="setting-forge-neo-distilled-cfg" type="number" min="0" max="30" step="0.1" placeholder="モデル既定" value="${escapeHtml(settings.forgeNeoDistilledCfg)}">
+                </label>
+                <label>Refiner checkpoint
+                  <input id="setting-forge-neo-refiner-checkpoint" list="comfy-checkpoint-options" placeholder="未使用なら空欄" value="${escapeHtml(settings.forgeNeoRefinerCheckpoint)}">
+                </label>
+                <label>Refiner switch
+                  <input id="setting-forge-neo-refiner-switch-at" type="number" min="0" max="1" step="0.05" placeholder="例: 0.8" value="${escapeHtml(settings.forgeNeoRefinerSwitchAt)}">
+                </label>
+                ${renderForgeNeoModuleRows("setting", settings.forgeNeoModules)}
+                <label class="full">override_settings JSON
+                  <textarea id="setting-forge-neo-override-settings-json" class="json-textarea small-json" spellcheck="false" placeholder='{"epsilon_scaling": true}'>${escapeHtml(settings.forgeNeoOverrideSettingsJson)}</textarea>
+                </label>
+                <label class="full">txt2img追加JSON
+                  <textarea id="setting-forge-neo-payload-json" class="json-textarea small-json" spellcheck="false" placeholder='{"enable_hr": true}'>${escapeHtml(settings.forgeNeoPayloadJson)}</textarea>
+                </label>
+              </div>
+            </div>
+          ` : ""}
+        `}
         <label>既定幅
           <input id="setting-comfy-width" type="number" min="64" max="4096" step="64" value="${escapeHtml(settings.width)}">
         </label>
@@ -11233,7 +11560,7 @@ function renderComfySettings() {
           <input id="setting-comfy-cfg" type="number" min="0" max="30" step="0.5" value="${escapeHtml(settings.cfg)}">
         </label>
         <label>既定Sampler
-          <input id="setting-comfy-sampler" value="${escapeHtml(settings.samplerName)}">
+          <input id="setting-comfy-sampler" list="image-sampler-options" value="${escapeHtml(settings.samplerName)}">
         </label>
         <label>既定Scheduler
           <input id="setting-comfy-scheduler" value="${escapeHtml(settings.scheduler)}">
@@ -11249,37 +11576,42 @@ function renderComfySettings() {
         </label>
         <div class="full comfy-lora-list">
           <div class="field-label">LoRA</div>
+          ${forgeSelected ? `<div class="meta">${escapeHtml(forgeLabel)}ではLoRA名を <code>&lt;lora:name:strength&gt;</code> としてプロンプト末尾に追加します。</div>` : ""}
           ${renderComfyLoraRows("setting", settings.loras)}
         </div>
-        <div class="full comfy-reference-panel">
-          <div class="field-label">参照画像Node</div>
-          <div class="meta">画像生成画面で選んだ参照画像を差し込むLoadImage系Nodeを指定します。</div>
-          ${renderComfyReferenceSlotRows("setting", settings.referenceSlots)}
-        </div>
-        ${renderComfyModelStatus()}
-        ${renderComfyValidationResult()}
-        <div class="full comfy-node-grid">
-          <label>Positive Node<input id="setting-comfy-positive-node" value="${escapeHtml(settings.positiveNodeId)}"></label>
-          <label>Negative Node<input id="setting-comfy-negative-node" value="${escapeHtml(settings.negativeNodeId)}"></label>
-          <label>Seed Node<input id="setting-comfy-seed-node" value="${escapeHtml(settings.seedNodeId)}"></label>
-          <label>Size Node<input id="setting-comfy-size-node" value="${escapeHtml(settings.sizeNodeId)}"></label>
-          <label>Steps Node<input id="setting-comfy-steps-node" value="${escapeHtml(settings.stepsNodeId)}"></label>
-          <label>CFG Node<input id="setting-comfy-cfg-node" value="${escapeHtml(settings.cfgNodeId)}"></label>
-          <label>Sampler Node<input id="setting-comfy-sampler-node" value="${escapeHtml(settings.samplerNodeId)}"></label>
-          <label>Checkpoint Node<input id="setting-comfy-checkpoint-node" value="${escapeHtml(settings.checkpointNodeId)}"></label>
-        </div>
-        <label class="full">Workflow表示
-          <select id="setting-comfy-workflow-mode">
-            <option value="json" ${settings.workflowViewMode === "json" ? "selected" : ""}>JSON編集</option>
-            <option value="visual" ${settings.workflowViewMode === "visual" ? "selected" : ""}>ビジュアル確認</option>
-          </select>
-        </label>
-        ${settings.workflowViewMode === "visual"
-          ? renderComfyWorkflowVisual(settings)
-          : `<label class="full">Workflow JSON
-              <textarea id="setting-comfy-workflow" class="json-textarea" spellcheck="false">${escapeHtml(settings.workflowJson)}</textarea>
-            </label>`}
-        <div class="full meta">ComfyUIで「Save (API Format)」したworkflowを貼り付けると、上のNode IDに対応する入力だけを生成時に差し替えます。完成画像は data/uploads の作品フォルダ内「_画像生成」に保存され、画像一覧にも登録されます。</div>
+        ${provider === "comfy" ? `
+          <div class="full comfy-reference-panel">
+            <div class="field-label">参照画像Node</div>
+            <div class="meta">画像生成画面で選んだ参照画像を差し込むLoadImage系Nodeを指定します。</div>
+            ${renderComfyReferenceSlotRows("setting", settings.referenceSlots)}
+          </div>
+        ` : ""}
+        ${renderComfyModelStatus(provider)}
+        ${provider === "comfy" ? `
+          ${renderComfyValidationResult()}
+          <div class="full comfy-node-grid">
+            <label>Positive Node<input id="setting-comfy-positive-node" value="${escapeHtml(settings.positiveNodeId)}"></label>
+            <label>Negative Node<input id="setting-comfy-negative-node" value="${escapeHtml(settings.negativeNodeId)}"></label>
+            <label>Seed Node<input id="setting-comfy-seed-node" value="${escapeHtml(settings.seedNodeId)}"></label>
+            <label>Size Node<input id="setting-comfy-size-node" value="${escapeHtml(settings.sizeNodeId)}"></label>
+            <label>Steps Node<input id="setting-comfy-steps-node" value="${escapeHtml(settings.stepsNodeId)}"></label>
+            <label>CFG Node<input id="setting-comfy-cfg-node" value="${escapeHtml(settings.cfgNodeId)}"></label>
+            <label>Sampler Node<input id="setting-comfy-sampler-node" value="${escapeHtml(settings.samplerNodeId)}"></label>
+            <label>Checkpoint Node<input id="setting-comfy-checkpoint-node" value="${escapeHtml(settings.checkpointNodeId)}"></label>
+          </div>
+          <label class="full">Workflow表示
+            <select id="setting-comfy-workflow-mode">
+              <option value="json" ${settings.workflowViewMode === "json" ? "selected" : ""}>JSON編集</option>
+              <option value="visual" ${settings.workflowViewMode === "visual" ? "selected" : ""}>ビジュアル確認</option>
+            </select>
+          </label>
+          ${settings.workflowViewMode === "visual"
+            ? renderComfyWorkflowVisual(settings)
+            : `<label class="full">Workflow JSON
+                <textarea id="setting-comfy-workflow" class="json-textarea" spellcheck="false">${escapeHtml(settings.workflowJson)}</textarea>
+              </label>`}
+          <div class="full meta">ComfyUIで「Save (API Format)」したworkflowを貼り付けると、上のNode IDに対応する入力だけを生成時に差し替えます。完成画像は data/uploads の作品フォルダ内「_画像生成」に保存され、画像一覧にも登録されます。</div>
+        ` : `<div class="full meta">${escapeHtml(forgeLabel)}では画面のPrompt、Negative、Size、Steps、CFG、Sampler、Batch、Seed、モデル（Checkpoint）をtxt2imgへ送ります。完成画像は data/uploads の作品フォルダ内「_画像生成」に保存され、画像一覧にも登録されます。</div>`}
       </div>
     </section>
   `;
@@ -12137,6 +12469,7 @@ function bindImageAgent() {
     rememberImageControls(controls);
   };
   [
+    "#image-provider",
     "#image-gpu-mode",
     "#image-title",
     "#image-width",
@@ -12148,6 +12481,12 @@ function bindImageAgent() {
     "#image-batch-size",
     "#image-seed",
     "#image-checkpoint",
+    "#image-forge-neo-dtype",
+    "#image-forge-neo-distilled-cfg",
+    "#image-forge-neo-refiner-checkpoint",
+    "#image-forge-neo-refiner-switch-at",
+    "#image-forge-neo-override-settings-json",
+    "#image-forge-neo-payload-json",
     "#image-prompt-text",
     "#image-negative-prompt",
     "#image-lora-name-0",
@@ -12180,6 +12519,9 @@ function bindImageAgent() {
   document.querySelectorAll("[id^='image-lora-']").forEach((input) => {
     input.addEventListener("input", persistImageControls);
   });
+  document.querySelectorAll("[id^='image-forge-neo-']").forEach((input) => {
+    input.addEventListener("input", persistImageControls);
+  });
   document.querySelector("#image-prompt-text")?.addEventListener("input", (event) => {
     state.imagePromptDraft = {
       ...(state.imagePromptDraft || {}),
@@ -12197,9 +12539,11 @@ function bindImageAgent() {
   document.querySelector("#image-chat-input")?.addEventListener("input", (event) => {
     state.imageChatDraft = event.target.value;
   });
-  document.querySelector("#image-gpu-mode")?.addEventListener("change", () => {
-    persistImageControls();
-    render();
+  ["#image-provider", "#image-gpu-mode"].forEach((selector) => {
+    document.querySelector(selector)?.addEventListener("change", () => {
+      persistImageControls();
+      render();
+    });
   });
   ["#image-compare-enabled", "#image-compare-mode"].forEach((selector) => {
     document.querySelector(selector)?.addEventListener("change", () => {
@@ -13034,9 +13378,19 @@ function comfySettingsFromDom() {
   const current = activeComfySettings();
   return normalizedComfySettings({
     ...current,
+    provider: document.querySelector("#setting-image-provider")?.value || current.provider,
     gpuMode: document.querySelector("#setting-comfy-gpu-mode")?.value || current.gpuMode,
     localBaseUrl: document.querySelector("#setting-comfy-local-url")?.value.trim() || current.localBaseUrl,
-    cloudBaseUrl: document.querySelector("#setting-comfy-cloud-url")?.value.trim() || "",
+    cloudBaseUrl: document.querySelector("#setting-comfy-cloud-url") ? document.querySelector("#setting-comfy-cloud-url").value.trim() : current.cloudBaseUrl,
+    forgeBaseUrl: document.querySelector("#setting-forge-base-url")?.value.trim() || current.forgeBaseUrl,
+    forgeNeoBaseUrl: document.querySelector("#setting-forge-neo-base-url")?.value.trim() || current.forgeNeoBaseUrl,
+    forgeNeoModules: forgeNeoModulesFromDom("setting", current.forgeNeoModules),
+    forgeNeoDtype: document.querySelector("#setting-forge-neo-dtype")?.value || current.forgeNeoDtype,
+    forgeNeoDistilledCfg: document.querySelector("#setting-forge-neo-distilled-cfg")?.value.trim() ?? current.forgeNeoDistilledCfg,
+    forgeNeoRefinerCheckpoint: document.querySelector("#setting-forge-neo-refiner-checkpoint")?.value.trim() || current.forgeNeoRefinerCheckpoint,
+    forgeNeoRefinerSwitchAt: document.querySelector("#setting-forge-neo-refiner-switch-at")?.value.trim() ?? current.forgeNeoRefinerSwitchAt,
+    forgeNeoOverrideSettingsJson: document.querySelector("#setting-forge-neo-override-settings-json")?.value.trim() || current.forgeNeoOverrideSettingsJson,
+    forgeNeoPayloadJson: document.querySelector("#setting-forge-neo-payload-json")?.value.trim() || current.forgeNeoPayloadJson,
     workflowJson: document.querySelector("#setting-comfy-workflow")?.value.trim() || current.workflowJson,
     workflowViewMode: document.querySelector("#setting-comfy-workflow-mode")?.value || current.workflowViewMode,
     positiveNodeId: document.querySelector("#setting-comfy-positive-node")?.value.trim() || current.positiveNodeId,
@@ -13064,7 +13418,12 @@ function comfySettingsFromDom() {
 function saveComfySettingsFromDom() {
   const keyInput = document.querySelector("#setting-comfy-cloud-api-key");
   if (keyInput) localStorage.setItem("comfy_cloud_api_key", keyInput.value.trim());
+  const forgeKeyInput = document.querySelector("#setting-forge-api-key");
+  if (forgeKeyInput) localStorage.setItem("forge_api_key", forgeKeyInput.value.trim());
+  const forgeNeoKeyInput = document.querySelector("#setting-forge-neo-api-key");
+  if (forgeNeoKeyInput) localStorage.setItem("forge_neo_api_key", forgeNeoKeyInput.value.trim());
   state.db.settings.comfy = comfySettingsFromDom();
+  state.imageProvider = state.db.settings.comfy.provider;
   state.imageGpuMode = state.db.settings.comfy.gpuMode;
   state.comfyValidation = null;
 }
@@ -13073,25 +13432,31 @@ async function loadComfyModels({ silent = false } = {}) {
   if (state.view === "settings") saveComfySettingsFromDom();
   const controls = state.view === "image" ? imageControlsFromDom() : null;
   if (controls) rememberImageControls(controls);
+  const provider = imageProviderFromValue(controls?.provider || activeComfySettings().provider);
   const gpuMode = controls?.gpuMode || activeComfySettings().gpuMode;
-  const baseUrl = controls?.baseUrl || activeComfyBaseUrl(gpuMode);
-  const apiKeyValue = controls?.apiKey || activeComfyApiKey(gpuMode);
-  if (!baseUrl) return toast(`${imageGpuLabel(gpuMode)}のComfyUI URLを設定してください。`);
+  const baseUrl = controls?.baseUrl || activeImageBaseUrl(provider, gpuMode);
+  const apiKeyValue = controls?.apiKey || activeImageApiKey(provider, gpuMode);
+  const label = imageProviderLabel(provider);
+  if (!baseUrl) return toast(`${label}のURLを設定してください。`);
   state.comfyModelStatus = "loading";
   state.comfyModelError = "";
   if (!silent) render({ preserveLiveTextDrafts: true });
   try {
-    const result = await postJson("/api/comfy/models", { baseUrl, apiKey: apiKeyValue });
+    const result = await postJson(isForgeImageProvider(provider) ? "/api/forge/models" : "/api/comfy/models", { baseUrl, apiKey: apiKeyValue, provider });
     state.comfyModels = {
       checkpoints: Array.isArray(result.checkpoints) ? result.checkpoints : [],
       loras: Array.isArray(result.loras) ? result.loras : [],
+      samplers: Array.isArray(result.samplers) ? result.samplers : [],
+      modules: Array.isArray(result.modules) ? result.modules : [],
+      provider,
       updatedAt: result.updatedAt || new Date().toISOString()
     };
     state.comfyModelStatus = "loaded";
     state.comfyModelError = "";
     if (!silent) {
       render({ preserveLiveTextDrafts: true });
-      toast(`ComfyUIモデル一覧を取得しました。Checkpoint ${state.comfyModels.checkpoints.length}件 / LoRA ${state.comfyModels.loras.length}件`);
+      const moduleText = provider === "forge-neo" ? ` / Module ${state.comfyModels.modules.length}件` : "";
+      toast(`${label}モデル一覧を取得しました。Checkpoint ${state.comfyModels.checkpoints.length}件 / Sampler ${state.comfyModels.samplers.length}件 / LoRA ${state.comfyModels.loras.length}件${moduleText}`);
     }
     return state.comfyModels;
   } catch (error) {
@@ -13108,18 +13473,21 @@ async function loadComfyModels({ silent = false } = {}) {
 async function checkComfyConnection() {
   saveComfySettingsFromDom();
   const settings = activeComfySettings();
-  const baseUrl = activeComfyBaseUrl(settings.gpuMode);
-  if (!baseUrl) return toast(`${imageGpuLabel(settings.gpuMode)}のComfyUI URLを設定してください。`);
+  const provider = imageProviderFromValue(settings.provider);
+  const baseUrl = activeImageBaseUrl(provider, settings.gpuMode);
+  if (!baseUrl) return toast(`${imageProviderLabel(provider)}のURLを設定してください。`);
   try {
-    const result = await postJson("/api/comfy/check", {
+    const result = await postJson(isForgeImageProvider(provider) ? "/api/forge/check" : "/api/comfy/check", {
       baseUrl,
-      apiKey: activeComfyApiKey(settings.gpuMode)
+      apiKey: activeImageApiKey(provider, settings.gpuMode),
+      provider
     });
     await saveDb();
     const deviceText = Array.isArray(result.devices) && result.devices.length
       ? ` / ${result.devices.map((device) => device.name || device.type || "device").join(", ")}`
       : "";
-    toast(`ComfyUIに接続できました。${deviceText}`);
+    const forgeModelText = result.sdModelCheckpoint ? ` / ${result.sdModelCheckpoint}` : "";
+    toast(`${imageProviderLabel(provider)}に接続できました。${deviceText}${forgeModelText}`);
     await loadComfyModels({ silent: true });
     if (state.view === "settings" || state.view === "image") render({ preserveLiveTextDrafts: true });
   } catch (error) {
@@ -13130,6 +13498,11 @@ async function checkComfyConnection() {
 function bindSettings() {
   loadOpenRouterModels();
   if (isOpenRouterSeedanceBaseUrl()) loadOpenRouterVideoModels();
+  document.querySelector("#setting-image-provider")?.addEventListener("change", () => {
+    saveComfySettingsFromDom();
+    state.comfyValidation = null;
+    render({ preserveLiveTextDrafts: true });
+  });
   document.querySelector("#setting-seedance-base-url")?.addEventListener("change", (event) => {
     const selected = seedanceApiBasePreset(event.target.value);
     const modelInput = document.querySelector("#setting-seedance-model");

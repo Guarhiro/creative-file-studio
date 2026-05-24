@@ -98,9 +98,19 @@ const emptyDb = {
     seedanceModel: "dreamina-seedance-2-0-260128",
     seedanceResolution: "720p",
     comfy: {
+      provider: "comfy",
       gpuMode: "local",
       localBaseUrl: "http://127.0.0.1:8188",
       cloudBaseUrl: "",
+      forgeBaseUrl: "http://127.0.0.1:7860",
+      forgeNeoBaseUrl: "http://127.0.0.1:7860",
+      forgeNeoModules: [],
+      forgeNeoDtype: "Automatic",
+      forgeNeoDistilledCfg: "",
+      forgeNeoRefinerCheckpoint: "",
+      forgeNeoRefinerSwitchAt: "",
+      forgeNeoOverrideSettingsJson: "",
+      forgeNeoPayloadJson: "",
       workflowJson: "",
       workflowViewMode: "json",
       positiveNodeId: "6",
@@ -3813,6 +3823,344 @@ async function saveComfyImage({ baseUrl, apiKey, image, promptId, workName, titl
   };
 }
 
+function normalizeForgeBaseUrl(value) {
+  const raw = String(value || "").trim().replace(/\/+$/g, "") || "http://127.0.0.1:7860";
+  try {
+    const parsed = new URL(raw);
+    parsed.hash = "";
+    return parsed.href.replace(/\/+$/g, "");
+  } catch {
+    return raw;
+  }
+}
+
+function forgeProviderLabel(value = "") {
+  const text = String(value || "").trim().toLowerCase();
+  return text.includes("neo") ? "Forge Neo" : "Forge";
+}
+
+function forgeProductName(label = "Forge") {
+  return label === "Forge Neo" ? "Stable Diffusion WebUI Forge Neo" : "Stable Diffusion WebUI Forge";
+}
+
+function forgeEndpoint(baseUrl, pathname = "") {
+  const base = normalizeForgeBaseUrl(baseUrl);
+  if (!base) throw new Error("Forge のURLが未設定です。");
+  const cleanPath = pathname.startsWith("/") ? pathname : `/${pathname}`;
+  const parsed = new URL(base);
+  const basePath = parsed.pathname.replace(/\/+$/g, "");
+  parsed.pathname = `${basePath}${cleanPath}`;
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed;
+}
+
+function forgeHeaders(apiKey = "", extra = {}) {
+  const headers = { ...extra };
+  const key = String(apiKey || "").trim();
+  if (key) {
+    headers.authorization = `Bearer ${key}`;
+    headers["x-api-key"] = key;
+  }
+  return headers;
+}
+
+async function forgeJson(response) {
+  const text = await response.text();
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch {
+    return { raw: text };
+  }
+}
+
+function forgeConnectionErrorMessage(baseUrl, error, label = "Forge") {
+  const urlText = String(baseUrl || "").trim() || "未設定のURL";
+  const productName = forgeProductName(label);
+  const detail = error?.cause?.code
+    ? ` (${error.cause.code})`
+    : error?.message && error.message !== "fetch failed"
+      ? ` (${error.message})`
+      : "";
+  if (error?.name === "AbortError" || error?.name === "TimeoutError") {
+    return `${label}への接続がタイムアウトしました。設定URL ${urlText} で${productName}がAPI有効で起動しているか確認してください${detail}。`;
+  }
+  return `${label}に接続できませんでした。設定URL ${urlText} で${productName}が起動しているか、--api付きで起動しているか確認してください${detail}。`;
+}
+
+function extractForgeModels(payload = []) {
+  const source = Array.isArray(payload) ? payload : payload?.models || payload?.data || [];
+  return [...new Set(source
+    .map((item) => item?.title || item?.model_name || item?.name || "")
+    .map((item) => String(item || "").trim())
+    .filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function extractForgeSamplers(payload = []) {
+  const source = Array.isArray(payload) ? payload : payload?.samplers || payload?.data || [];
+  return [...new Set(source
+    .map((item) => item?.name || "")
+    .map((item) => String(item || "").trim())
+    .filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function extractForgeLoras(payload = []) {
+  const source = Array.isArray(payload) ? payload : payload?.loras || payload?.data || [];
+  return [...new Set(source
+    .map((item) => item?.alias || item?.name || item?.path || "")
+    .map((item) => String(item || "").trim())
+    .filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function extractForgeModules(payload = []) {
+  const source = Array.isArray(payload) ? payload : payload?.modules || payload?.data || [];
+  return [...new Set(source
+    .map((item) => item?.filename || item?.model_name || item?.name || "")
+    .map((item) => String(item || "").trim())
+    .filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function parseOptionalJsonObject(value, label) {
+  if (!value) return {};
+  if (typeof value === "object" && !Array.isArray(value)) return value;
+  const text = String(value || "").trim();
+  if (!text) return {};
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+  } catch (error) {
+    throw new Error(`${label} のJSONを読み取れませんでした: ${error.message}`);
+  }
+  throw new Error(`${label} はJSONオブジェクトで指定してください。`);
+}
+
+function activeForgeNeoModules(value = []) {
+  return (Array.isArray(value) ? value : String(value || "").split(/\r?\n|,/g))
+    .map((item) => String(item?.filename || item?.model_name || item?.name || item || "").trim())
+    .filter(Boolean);
+}
+
+function forgeLoraTokenName(value) {
+  const parsed = path.parse(String(value || "").trim());
+  return parsed.ext ? parsed.name : String(value || "").trim();
+}
+
+function forgePromptWithLoras(prompt, loras = []) {
+  const tokens = normalizedComfyLoras(loras)
+    .map((item) => {
+      const name = forgeLoraTokenName(item.name);
+      return name ? `<lora:${name}:${item.strengthModel}>` : "";
+    })
+    .filter(Boolean);
+  return [String(prompt || "").trim(), ...tokens].filter(Boolean).join(", ");
+}
+
+function parseForgeImagePayload(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^data:(image\/[\w.+-]+);base64,(.+)$/i);
+  const mimeType = match ? match[1].toLowerCase() : "image/png";
+  const base64 = match ? match[2] : text;
+  const subtype = mimeType.split("/")[1] || "png";
+  return {
+    buffer: Buffer.from(base64, "base64"),
+    ext: extensionForMedia("image", subtype),
+    mimeType
+  };
+}
+
+function scrubForgePayload(payload = {}) {
+  if (!payload || typeof payload !== "object") return payload;
+  return {
+    ...payload,
+    images: Array.isArray(payload.images) ? [`${payload.images.length} base64 image(s) omitted`] : payload.images
+  };
+}
+
+async function saveForgeImage({ image, workName, title, generationId, index, label = "Forge" }) {
+  const parsed = parseForgeImagePayload(image);
+  if (!parsed.buffer.length) throw new Error(`${label}の画像データが空でした。`);
+  const workFolder = safeFolderName(workName, "_未分類作品");
+  const destinationDir = path.join(uploadDir, workFolder, "_画像生成");
+  await fs.mkdir(destinationDir, { recursive: true });
+  const safeTitle = cleanFileNamePart(title || "forge-image", "forge-image", 70);
+  const safeGenerationId = cleanFileNamePart(generationId, "forge", 80);
+  const fileName = `${safeTitle}-${safeGenerationId}-${index + 1}${parsed.ext}`;
+  const filePath = path.join(destinationDir, fileName);
+  await fs.writeFile(filePath, parsed.buffer);
+  return {
+    url: uploadUrlFor(filePath),
+    path: filePath,
+    filename: fileName,
+    nodeId: "",
+    mimeType: parsed.mimeType
+  };
+}
+
+async function handleForgeCheck(req, res) {
+  const { baseUrl, apiKey, provider } = await readJson(req, 1024 * 1024);
+  const label = forgeProviderLabel(provider);
+  try {
+    let response;
+    try {
+      response = await fetch(forgeEndpoint(baseUrl, "/sdapi/v1/options"), {
+        headers: forgeHeaders(apiKey, { accept: "application/json" }),
+        signal: AbortSignal.timeout(15000)
+      });
+    } catch (error) {
+      throw new Error(forgeConnectionErrorMessage(baseUrl, error, label));
+    }
+    const payload = await forgeJson(response);
+    if (!response.ok) return sendJson(res, response.status, payload);
+    sendJson(res, 200, {
+      ok: true,
+      options: payload,
+      sdModelCheckpoint: payload.sd_model_checkpoint || ""
+    });
+  } catch (error) {
+    sendJson(res, 502, { error: `${label} 接続確認に失敗しました: ${error.message}` });
+  }
+}
+
+async function fetchForgeJson(baseUrl, apiKey, pathname, timeoutMs = 20000, label = "Forge") {
+  const response = await fetch(forgeEndpoint(baseUrl, pathname), {
+    headers: forgeHeaders(apiKey, { accept: "application/json" }),
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+  const payload = await forgeJson(response);
+  if (!response.ok) {
+    throw new Error(readableProviderError(payload) || `${label} ${pathname} が ${response.status} を返しました。`);
+  }
+  return payload;
+}
+
+async function handleForgeModels(req, res) {
+  const { baseUrl, apiKey, provider } = await readJson(req, 1024 * 1024);
+  const label = forgeProviderLabel(provider);
+  if (!baseUrl) return sendJson(res, 400, { error: `${label} のURLが未設定です。` });
+  try {
+    const [models, samplers, loras, modules] = await Promise.all([
+      fetchForgeJson(baseUrl, apiKey, "/sdapi/v1/sd-models", 20000, label),
+      fetchForgeJson(baseUrl, apiKey, "/sdapi/v1/samplers", 20000, label).catch(() => []),
+      fetchForgeJson(baseUrl, apiKey, "/sdapi/v1/loras", 20000, label).catch(() => []),
+      label === "Forge Neo" ? fetchForgeJson(baseUrl, apiKey, "/sdapi/v1/sd-modules", 20000, label).catch(() => []) : []
+    ]);
+    sendJson(res, 200, {
+      ok: true,
+      checkpoints: extractForgeModels(models),
+      samplers: extractForgeSamplers(samplers),
+      loras: extractForgeLoras(loras),
+      modules: extractForgeModules(modules),
+      updatedAt: new Date().toISOString()
+    });
+  } catch (error) {
+    sendJson(res, 502, { error: `${label} モデル一覧の取得に失敗しました: ${error.message}` });
+  }
+}
+
+async function handleForgeCreate(req, res) {
+  const body = await readJson(req, 12 * 1024 * 1024);
+  const { baseUrl, apiKey, prompt, negativePrompt, checkpoint, workName, title } = body;
+  const label = forgeProviderLabel(body.provider);
+  if (!baseUrl) return sendJson(res, 400, { error: `${label} のURLが未設定です。` });
+  if (!prompt) return sendJson(res, 400, { error: "画像生成プロンプトが必要です。" });
+  const seedText = String(body.seed ?? "").trim();
+  const seed = Number(seedText);
+  const isForgeNeo = label === "Forge Neo";
+  const requestPayload = {
+    prompt: forgePromptWithLoras(prompt, body.loras),
+    negative_prompt: String(negativePrompt || ""),
+    width: boundedNumber(body.width, 1024, 64, 4096, true),
+    height: boundedNumber(body.height, 1024, 64, 4096, true),
+    steps: boundedNumber(body.steps, 28, 1, 150, true),
+    cfg_scale: boundedNumber(body.cfg, 7, 0, 30),
+    sampler_name: String(body.samplerName || "Euler").trim() || "Euler",
+    scheduler: String(body.scheduler || "").trim() || undefined,
+    batch_size: boundedNumber(body.batchSize, 1, 1, 8, true),
+    n_iter: 1,
+    seed: Number.isFinite(seed) && seed >= 0 ? Math.floor(seed) : -1,
+    override_settings_restore_afterwards: true
+  };
+  if (checkpoint) {
+    requestPayload.override_settings = { sd_model_checkpoint: String(checkpoint).trim() };
+  }
+  if (isForgeNeo) {
+    try {
+      const overrideSettings = {
+        ...(requestPayload.override_settings || {}),
+        ...parseOptionalJsonObject(body.forgeNeoOverrideSettingsJson, "Forge Neo override_settings")
+      };
+      const modules = activeForgeNeoModules(body.forgeNeoModules);
+      if (modules.length) overrideSettings.forge_additional_modules = modules;
+      const dtype = String(body.forgeNeoDtype || "").trim();
+      if (dtype && dtype !== "Automatic") overrideSettings.forge_unet_storage_dtype = dtype;
+      if (Object.keys(overrideSettings).length) requestPayload.override_settings = overrideSettings;
+      const distilledCfgText = String(body.forgeNeoDistilledCfg ?? "").trim();
+      if (distilledCfgText) requestPayload.distilled_cfg_scale = boundedNumber(distilledCfgText, 3.5, 0, 30);
+      const refinerCheckpoint = String(body.forgeNeoRefinerCheckpoint || "").trim();
+      if (refinerCheckpoint) requestPayload.refiner_checkpoint = refinerCheckpoint;
+      const refinerSwitchText = String(body.forgeNeoRefinerSwitchAt ?? "").trim();
+      if (refinerSwitchText) requestPayload.refiner_switch_at = boundedNumber(refinerSwitchText, 0.8, 0, 1);
+      Object.assign(requestPayload, parseOptionalJsonObject(body.forgeNeoPayloadJson, "Forge Neo txt2img追加JSON"));
+    } catch (error) {
+      return sendJson(res, 400, { error: error.message });
+    }
+  }
+  if (!requestPayload.scheduler) delete requestPayload.scheduler;
+  try {
+    const response = await fetch(forgeEndpoint(baseUrl, "/sdapi/v1/txt2img"), {
+      method: "POST",
+      headers: forgeHeaders(apiKey, {
+        accept: "application/json",
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify(requestPayload),
+      signal: AbortSignal.timeout(12 * 60 * 1000)
+    });
+    const payload = await forgeJson(response);
+    if (!response.ok) {
+      return sendJson(res, response.status, {
+        error: readableProviderError(payload) || `${label} が ${response.status} を返しました。`,
+        providerPayload: scrubForgePayload(payload),
+        request: requestPayload
+      });
+    }
+    const sourceImages = Array.isArray(payload.images) ? payload.images : [];
+    if (!sourceImages.length) {
+      return sendJson(res, 502, {
+        error: `${label}の生成結果に画像がありませんでした。`,
+        providerPayload: scrubForgePayload(payload),
+        request: requestPayload
+      });
+    }
+    const generationId = crypto.randomUUID();
+    const images = [];
+    for (let index = 0; index < sourceImages.length; index += 1) {
+      images.push(await saveForgeImage({
+        image: sourceImages[index],
+        workName,
+        title,
+        generationId,
+        index,
+        label
+      }));
+    }
+    sendJson(res, 200, {
+      id: generationId,
+      status: "succeeded",
+      progress: 100,
+      images,
+      providerPayload: scrubForgePayload(payload),
+      request: requestPayload
+    });
+  } catch (error) {
+    sendJson(res, 502, { error: `${label} への生成投入に失敗しました: ${error.message}` });
+  }
+}
+
 async function handleComfyCheck(req, res) {
   const { baseUrl, apiKey } = await readJson(req, 1024 * 1024);
   try {
@@ -4337,6 +4685,18 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/comfy/status") {
       return await handleComfyStatus(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/forge/check") {
+      return await handleForgeCheck(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/forge/models") {
+      return await handleForgeModels(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/forge/create") {
+      return await handleForgeCreate(req, res);
     }
 
     if (req.method === "POST" && url.pathname === "/api/seedance/create") {
