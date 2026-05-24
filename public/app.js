@@ -766,6 +766,8 @@ const activeImageJobStatuses = ["submitting", "submitted", "pending", "queued", 
 
 const activeVideoJobStatuses = ["submitting", "submitted", "pending", "queued", "running", "processing"];
 
+const comfyLoraSlotLimit = 10;
+
 const generationHistoryPageSize = 10;
 
 const generationHistoryConfigs = {
@@ -2124,14 +2126,15 @@ function emptyComfyLora() {
   return { name: "", strengthModel: 1, strengthClip: 1 };
 }
 
-function normalizedComfyLoras(value = [], minSlots = 3) {
+function normalizedComfyLoras(value = [], minSlots = comfyLoraSlotLimit) {
   const source = Array.isArray(value) ? value : [];
-  const items = source.slice(0, 3).map((item) => ({
+  const items = source.slice(0, comfyLoraSlotLimit).map((item) => ({
     name: String(item?.name || item?.loraName || "").trim(),
     strengthModel: boundedSettingNumber(item?.strengthModel ?? item?.strength_model ?? 1, 1, -2, 2),
     strengthClip: boundedSettingNumber(item?.strengthClip ?? item?.strength_clip ?? 1, 1, -2, 2)
   }));
-  while (items.length < minSlots) items.push(emptyComfyLora());
+  const slotCount = Math.min(comfyLoraSlotLimit, Math.max(0, minSlots, items.length));
+  while (items.length < slotCount) items.push(emptyComfyLora());
   return items;
 }
 
@@ -12576,15 +12579,11 @@ function bindImageAgent() {
     "#image-forge-neo-payload-json",
     "#image-prompt-text",
     "#image-negative-prompt",
-    "#image-lora-name-0",
-    "#image-lora-name-1",
-    "#image-lora-name-2",
-    "#image-lora-model-0",
-    "#image-lora-model-1",
-    "#image-lora-model-2",
-    "#image-lora-clip-0",
-    "#image-lora-clip-1",
-    "#image-lora-clip-2",
+    ...Array.from({ length: comfyLoraSlotLimit }, (_, index) => [
+      `#image-lora-name-${index}`,
+      `#image-lora-model-${index}`,
+      `#image-lora-clip-${index}`
+    ]).flat(),
     "#image-reference-key-0",
     "#image-reference-key-1",
     "#image-reference-key-2",

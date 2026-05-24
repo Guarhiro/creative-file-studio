@@ -2005,12 +2005,25 @@ textarea {
 
 .comfy-reference-row {
   display: grid;
-  grid-template-columns: minmax(190px, 1.4fr) minmax(110px, 0.75fr) minmax(100px, 0.6fr) minmax(120px, 0.8fr);
+  grid-template-columns: minmax(0, 1fr) minmax(88px, 104px) minmax(72px, 84px);
   gap: 10px;
   align-items: end;
 }
 
+.comfy-reference-row label,
+.comfy-reference-row input,
+.comfy-reference-row select {
+  min-width: 0;
+}
+
+.comfy-reference-row input,
+.comfy-reference-row select {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
 .reference-slot-preview {
+  grid-column: 1 / -1;
   min-height: 42px;
   display: grid;
   grid-template-columns: 42px minmax(0, 1fr);
@@ -2032,10 +2045,20 @@ textarea {
 
 .comfy-lora-row {
   display: grid;
-  grid-template-columns: minmax(220px, 2fr) minmax(120px, 1fr) minmax(120px, 1fr);
+  grid-template-columns: minmax(0, 1fr) repeat(2, minmax(82px, 92px));
   gap: 10px;
   align-items: end;
   margin-top: 8px;
+}
+
+.comfy-lora-row label,
+.comfy-lora-row input {
+  min-width: 0;
+}
+
+.comfy-lora-row input {
+  padding-left: 8px;
+  padding-right: 8px;
 }
 
 .workflow-visual {
