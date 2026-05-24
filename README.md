@@ -184,12 +184,13 @@ ZIPに含めないもの:
 - 生成方式としてComfyUI、Forge、Forge Neo、Draw Thingsを選択
 - ComfyUI互換APIに送信し、ローカルGPUまたはクラウドGPUを生成ごとに選択
 - Forge / Forge Neo / Draw Things選択時は `/sdapi/v1/txt2img` に送信
+- Draw Thingsでは生成に使うモデルをDraw Things側で事前にダウンロードまたはインポートしておく必要があります。Cloud Compute / Server Offloadを使う場合も、モデルと実行先はDraw Things側で選択します
 - API Format workflow JSONを設定し、Positive、Negative、Seed、Size、Steps、CFG、Sampler、モデル（Checkpoint）のNode IDを指定
 - workflow JSONはJSON編集とビジュアル確認を切り替え、Node IDの差し替え対象や接続を確認
 - 幅、高さ、Steps、CFG、Sampler、Scheduler、Batch、Seed、モデル（Checkpoint）を画面から指定
 - Forge NeoではVAE/Text Encoderなどの追加Module、Diffusion in Low Bits、Distilled CFG / Shift、Refiner、override_settings JSON、txt2img追加JSONを指定
-- LoRA名、Model強度、CLIP強度を指定し、ComfyUIではLoraLoaderとして読み込み、Forge / Forge Neo / Draw Thingsでは `<lora:name:strength>` をプロンプトに追加
-- ComfyUI、Forge、Forge Neoのモデル（Checkpoint） / Sampler / LoRA一覧を取得し、Forge NeoではModule候補も入力候補として表示。Draw ThingsではHTTP Serverから取得できる現在設定を候補として表示
+- LoRA名、Model強度、CLIP強度を指定し、ComfyUIではLoraLoaderとして読み込み、Forge / Forge Neoでは `<lora:name:strength>` をプロンプトに追加。Draw ThingsではLoRAファイル名をtxt2imgの `loras` 配列として送信
+- ComfyUI、Forge、Forge Neoのモデル（Checkpoint） / Sampler / LoRA一覧を取得し、Forge NeoではModule候補も入力候補として表示。Draw ThingsではHTTP Serverから取得できる現在設定、LoRA APIが返すLoRA、このMacのDraw Things保存先にあるLoRAファイルを候補として表示
 - 生成前にworkflowのNode ID、LoRA接続、モデル（Checkpoint） / LoRA名を事前チェック
 - Comfy設定をプリセットとして保存し、立ち絵、背景、表情差分など用途別に呼び出し
 - 画像一覧、キャラ立ち絵、その他情報、追加アップロード画像をComfy参照画像として選択
@@ -330,10 +331,11 @@ ZIPに含めないもの:
 - Forge Neo詳細: VAE/Text Encoderなどの追加Module、Diffusion in Low Bits、Distilled CFG / Shift、Refiner checkpoint / switch、override_settings JSON、txt2img追加JSONを保存します。
 - Draw Things URL: Draw ThingsのHTTP Serverを有効にし、`http://127.0.0.1:7860` などを指定します。
 - Draw Things APIキー: 必要な環境だけ保存します。通常のローカルHTTP Serverでは空欄で使えます。
+- Draw Thingsのモデル: 生成に使うモデルはDraw Things側で事前にダウンロードまたはインポートしておきます。Cloud Compute / Server Offloadを使う場合も、Creative File StudioではなくDraw Things側でモデルと実行先を選んでください。
 - Workflow JSON: ComfyUIの `Save (API Format)` で保存したJSONを貼り付けます。
 - Node ID: Positive、Negative、Seed、Size、Steps、CFG、Sampler、モデル（Checkpoint）の入力を書き換えるノード番号を指定します。
 
-画像生成画面では、作品、キャラ、生成方式、ComfyUI選択時のGPU、幅、高さ、Steps、CFG、Sampler、Scheduler、Batch、Seed、モデル（Checkpoint）を指定できます。Forge / Forge Neo / Draw Things選択時の初期対応はtxt2imgです。Draw Thingsでモデル（Checkpoint）を空欄にすると、Draw Things側の現在設定を使います。Forge Neo選択時は追加Module、Low Bits、Distilled CFG / Shift、Refiner、JSON拡張も生成ごとに指定できます。参照画像Nodeを使う生成はComfyUIを選択してください。エージェントに相談してプロンプト案を作ることも、プロンプト欄へ直接入力することもできます。生成比較モードをONにすると、Seed、CFG、Stepsのいずれかを軸に複数ジョブを投入し、比較結果から採用した案を生成設定へ戻せます。
+画像生成画面では、作品、キャラ、生成方式、ComfyUI選択時のGPU、幅、高さ、Steps、CFG、Sampler、Scheduler、Batch、Seed、モデル（Checkpoint）を指定できます。Forge / Forge Neo / Draw Things選択時の初期対応はtxt2imgです。Draw Thingsでモデル（Checkpoint）を空欄にすると、Draw Things側の現在設定を使います。Draw Thingsでは生成に使うモデルを事前にDraw Things側でダウンロードまたはインポートしておく必要があります。Cloud Compute / Server Offloadを使う場合もDraw Things側でモデルと実行先を選んでから送信してください。Forge Neo選択時は追加Module、Low Bits、Distilled CFG / Shift、Refiner、JSON拡張も生成ごとに指定できます。参照画像Nodeを使う生成はComfyUIを選択してください。エージェントに相談してプロンプト案を作ることも、プロンプト欄へ直接入力することもできます。生成比較モードをONにすると、Seed、CFG、Stepsのいずれかを軸に複数ジョブを投入し、比較結果から採用した案を生成設定へ戻せます。
 
 生成が完了すると、画像は `data/uploads/<作品名>/_画像生成/` に保存され、画像一覧と画像整理に自動登録されます。キャラ指定ありで生成した場合は、そのキャラの画像として登録されます。
 

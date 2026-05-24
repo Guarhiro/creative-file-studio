@@ -286,6 +286,7 @@ const screenHelpContent = {
           { term: "エージェント", description: "作りたい構図や雰囲気を会話で伝え、選択中の生成方式へ送るプロンプト案を作ります。" },
           { term: "送信用プロンプト", description: "手動編集できます。ComfyUIではworkflowへ差し込み、Forge、Forge Neo、Draw Thingsではtxt2imgへ送信します。" },
           { term: "参照画像", description: "ComfyUI選択時にLoadImage系NodeのIDと入力名を指定し、選択した画像でworkflowの画像入力を差し替えます。" },
+          { term: "Draw Things", description: "生成に使うモデルはDraw Things側で事前にダウンロードまたはインポートしておきます。Cloud ComputeやServer Offloadを使う場合もDraw Things側でモデルと実行先を選んでから送信します。" },
           { term: "生成履歴", description: "進行中ステータス、完成画像、保存先、再利用用のプロンプトを確認でき、選択削除と一括削除ができます。" }
         ]
       },
@@ -8949,7 +8950,7 @@ function renderImageAgent() {
           ` : ""}
           <div class="full comfy-lora-list">
             <div class="field-label">LoRA</div>
-            ${isForgeImageProvider(provider) ? `<div class="meta">${escapeHtml(imageProviderLabel(provider))}ではLoRA名をプロンプト末尾の <code>&lt;lora:name:strength&gt;</code> として送ります。</div>` : ""}
+            ${provider === "drawthings" ? `<div class="meta">Draw ThingsではLoRAファイル名をtxt2imgの <code>loras</code> 配列として送ります。候補はHTTP APIまたはこのMacのDraw Things保存先から取得します。</div>` : isForgeImageProvider(provider) ? `<div class="meta">${escapeHtml(imageProviderLabel(provider))}ではLoRA名をプロンプト末尾の <code>&lt;lora:name:strength&gt;</code> として送ります。</div>` : ""}
             ${renderComfyLoraRows("image", controls.loras || settings.loras)}
           </div>
           ${provider === "comfy" ? `
@@ -8966,7 +8967,7 @@ function renderImageAgent() {
               </div>
               ${renderComfyReferenceSlotRows("image", controls.referenceSlots || settings.referenceSlots, { includeReference: true })}
             </div>
-          ` : `<div class="full meta">${escapeHtml(imageProviderLabel(provider))}の初期対応はtxt2imgです。参照画像Nodeを使う生成はComfyUIを選択してください。</div>`}
+          ` : `<div class="full meta">${provider === "drawthings" ? "Draw Thingsの初期対応はtxt2imgです。生成に使うモデルはDraw Things側で事前にダウンロードまたはインポートし、Cloud Compute / Server Offloadを使う場合もDraw Things側でモデルと実行先を選んでください。参照画像Nodeを使う生成はComfyUIを選択してください。" : `${escapeHtml(imageProviderLabel(provider))}の初期対応はtxt2imgです。参照画像Nodeを使う生成はComfyUIを選択してください。`}</div>`}
           ${renderComfyModelDatalists(provider)}
           ${renderComfyModelStatus(provider)}
           ${provider === "comfy" ? renderComfyValidationResult() : ""}
@@ -11421,7 +11422,7 @@ function renderComfyModelStatus(provider = activeImageProvider()) {
   if (state.comfyModelStatus === "loading") return `<div class="full meta">${escapeHtml(label)}のモデル一覧を取得中です。</div>`;
   if (state.comfyModelStatus === "failed") return `<div class="full meta danger-text">${escapeHtml(state.comfyModelError || `${label}のモデル一覧を取得できませんでした。`)}</div>`;
   if (imageProviderFromValue(provider) === "drawthings" && !checkpoints.length && !loras.length && !samplers.length && !modules.length) {
-    return `<div class="full meta">Draw ThingsではHTTP Serverから取得できる現在設定だけを候補として表示します。モデル（Checkpoint）を空欄にするとDraw Things側の現在設定を使います。</div>`;
+    return `<div class="full meta">Draw Thingsでは生成に使うモデルを事前にダウンロードまたはインポートしておく必要があります。HTTP Serverから取得できる現在設定、LoRA APIが返すLoRA、このMacのDraw Things保存先にあるLoRAファイルを候補として表示します。モデル（Checkpoint）を空欄にするとDraw Things側の現在設定を使います。</div>`;
   }
   if (!checkpoints.length && !loras.length && !samplers.length && !modules.length) return `<div class="full meta">モデル一覧を取得すると、モデル（Checkpoint）、Sampler、LoRA名を候補から選べます。</div>`;
   const updated = state.comfyModels?.updatedAt ? ` / ${new Date(state.comfyModels.updatedAt).toLocaleString("ja-JP")}` : "";
@@ -11556,7 +11557,7 @@ function renderComfySettings() {
   const forgeBaseUrlValue = provider === "drawthings" ? settings.drawThingsBaseUrl : provider === "forge-neo" ? settings.forgeNeoBaseUrl : settings.forgeBaseUrl;
   const forgeApiKeyValue = provider === "drawthings" ? drawThingsApiKey() : provider === "forge-neo" ? forgeNeoApiKey() : forgeApiKey();
   const forgeApiHelp = provider === "drawthings"
-    ? `Draw ThingsのHTTP Serverを有効にし、<code>/sdapi/v1/txt2img</code> へ送信します。Draw Things側の現在設定を使う場合、モデル（Checkpoint）は空欄にしてください。参照画像NodeとWorkflow JSONはComfyUI選択時だけ使います。`
+    ? `Draw ThingsのHTTP Serverを有効にし、<code>/sdapi/v1/txt2img</code> へ送信します。生成に使うモデルはDraw Things側で事前にダウンロードまたはインポートしておきます。Cloud Compute / Server Offloadを使う場合もDraw Things側でモデルと実行先を選び、モデル（Checkpoint）は空欄にしてください。参照画像NodeとWorkflow JSONはComfyUI選択時だけ使います。`
     : `${escapeHtml(forgeProduct)}を <code>--api</code> 付きで起動し、<code>/sdapi/v1/txt2img</code> へ送信します。参照画像NodeとWorkflow JSONはComfyUI選択時だけ使います。`;
   return `
     <section class="panel settings-panel">

@@ -3923,7 +3923,16 @@ function extractForgeSamplers(payload = []) {
 function extractForgeLoras(payload = []) {
   const source = Array.isArray(payload) ? payload : payload?.loras || payload?.data || [];
   return [...new Set(source
-    .map((item) => item?.alias || item?.name || item?.path || "")
+    .map((item) => typeof item === "string" ? item : item?.alias || item?.name || item?.model_name || item?.filename || item?.file || item?.path || "")
+    .map((item) => String(item || "").trim())
+    .filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function extractDrawThingsLoras(payload = []) {
+  const source = Array.isArray(payload) ? payload : payload?.loras || payload?.data || [];
+  return [...new Set(source
+    .map((item) => typeof item === "string" ? item : item?.file || item?.filename || item?.model || item?.model_name || item?.name || item?.alias || item?.path || "")
     .map((item) => String(item || "").trim())
     .filter(Boolean))]
     .sort((a, b) => a.localeCompare(b));
@@ -3957,6 +3966,37 @@ function extractDrawThingsOptionHints(payload = {}, patterns = []) {
   };
   visit(payload);
   return [...new Set(matches)].sort((a, b) => a.localeCompare(b));
+}
+
+async function readJsonFileIfExists(filePath, fallback = []) {
+  try {
+    return JSON.parse(await fs.readFile(filePath, "utf8"));
+  } catch {
+    return fallback;
+  }
+}
+
+function drawThingsDocumentsDir() {
+  const home = os.homedir();
+  return home ? path.join(home, "Library", "Containers", "com.liuliu.draw-things", "Data", "Documents") : "";
+}
+
+async function localDrawThingsLoras() {
+  const documentsDir = drawThingsDocumentsDir();
+  if (!documentsDir) return [];
+  const modelsDir = path.join(documentsDir, "Models");
+  const cacheDir = path.join(path.dirname(documentsDir), "Library", "Caches", "net");
+  const [customLoras, communityLoras, modelFiles] = await Promise.all([
+    readJsonFileIfExists(path.join(modelsDir, "custom_lora.json"), []),
+    readJsonFileIfExists(path.join(cacheDir, "loras.json"), []),
+    fs.readdir(modelsDir).catch(() => [])
+  ]);
+  const modelFileSet = new Set(modelFiles);
+  return [...new Set([
+    ...extractDrawThingsLoras(customLoras),
+    ...extractDrawThingsLoras((Array.isArray(communityLoras) ? communityLoras : []).filter((item) => modelFileSet.has(item?.file))),
+    ...modelFiles.filter((name) => /(^|[_\-.])lora([_\-.]|$)/i.test(name) && /\.(ckpt|safetensors|pt|bin)$/i.test(name))
+  ])].sort((a, b) => a.localeCompare(b));
 }
 
 function parseOptionalJsonObject(value, label) {
@@ -4007,6 +4047,20 @@ function forgePromptWithLoras(prompt, loras = []) {
     })
     .filter(Boolean);
   return [String(prompt || "").trim(), ...tokens].filter(Boolean).join(", ");
+}
+
+function drawThingsLoraPayload(loras = []) {
+  return normalizedComfyLoras(loras)
+    .map((item) => {
+      const file = String(item.name || "").trim();
+      if (!file) return null;
+      return {
+        mode: "base",
+        file,
+        weight: boundedNumber(item.strengthModel, 1, -10, 10)
+      };
+    })
+    .filter(Boolean);
 }
 
 function parseForgeImagePayload(value) {
@@ -4093,14 +4147,19 @@ async function handleForgeModels(req, res) {
   if (!baseUrl) return sendJson(res, 400, { error: `${label} のURLが未設定です。` });
   try {
     if (isDrawThingsProviderLabel(label)) {
-      const options = await fetchForgeJson(baseUrl, apiKey, "/sdapi/v1/options", 20000, label);
+      const [options, apiLoras, fileLoras] = await Promise.all([
+        fetchForgeJson(baseUrl, apiKey, "/sdapi/v1/options", 20000, label),
+        fetchForgeJson(baseUrl, apiKey, "/sdapi/v1/loras", 20000, label).catch(() => []),
+        localDrawThingsLoras().catch(() => [])
+      ]);
+      const loras = [...new Set([...extractDrawThingsLoras(apiLoras), ...fileLoras])].sort((a, b) => a.localeCompare(b));
       return sendJson(res, 200, {
         ok: true,
         checkpoints: extractDrawThingsOptionHints(options, [/model/i, /checkpoint/i]),
         samplers: extractDrawThingsOptionHints(options, [/sampler/i]),
-        loras: [],
+        loras,
         modules: [],
-        providerPayload: options,
+        providerPayload: { options, loras: apiLoras, localLoras: fileLoras },
         updatedAt: new Date().toISOString()
       });
     }
@@ -4134,7 +4193,7 @@ async function handleForgeCreate(req, res) {
   const isForgeNeo = label === "Forge Neo";
   const isDrawThings = isDrawThingsProviderLabel(label);
   const requestPayload = {
-    prompt: forgePromptWithLoras(prompt, body.loras),
+    prompt: isDrawThings ? String(prompt || "").trim() : forgePromptWithLoras(prompt, body.loras),
     negative_prompt: String(negativePrompt || ""),
     width: boundedNumber(body.width, 1024, 64, 4096, true),
     height: boundedNumber(body.height, 1024, 64, 4096, true),
@@ -4152,6 +4211,8 @@ async function handleForgeCreate(req, res) {
     delete requestPayload.override_settings_restore_afterwards;
     requestPayload.sampler_name = drawThingsSamplerName(requestPayload.sampler_name);
     if (checkpoint) requestPayload.model = String(checkpoint).trim();
+    const loras = drawThingsLoraPayload(body.loras);
+    if (loras.length) requestPayload.loras = loras;
   } else if (checkpoint) {
     requestPayload.override_settings = { sd_model_checkpoint: String(checkpoint).trim() };
   }
