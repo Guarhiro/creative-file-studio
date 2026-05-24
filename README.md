@@ -36,6 +36,34 @@ npm start
 
 ブラウザで `http://localhost:4173` を開きます。
 
+### 同じネットワークのスマホから接続
+
+Mac/Windowsの起動スクリプトから起動した場合、同じWi-Fi内のスマホからもアクセスできます。Macでは起動時に表示される `http://<MacのIP>:4173` のURLをスマホのブラウザで開きます。
+
+スマホ接続で使える範囲:
+
+- 作品とキャラの閲覧、追加、編集
+- 保存済み画像、音声、動画の閲覧
+- 画像、音声、動画ファイルのダウンロード
+- 画像生成、音声生成、動画生成の指示と履歴確認
+- 画像編集のうち、背景除去とアスペクト比変換
+
+スマホ接続では、設定画面は表示されません。設定内の項目変更、Finder表示、画像取込、音声編集、動画GIF化、履歴削除、ローカルAIのセットアップはMac/Windows本体のブラウザから行います。スマホから作品やキャラを保存しても、アプリ設定は上書きされません。
+
+スマホから生成指示を出す場合は、Mac/Windows側の `.env` にAPIキーを入れておくと、スマホ側に設定画面を出さずに生成できます。
+
+```bash
+OPENROUTER_API_KEY=sk-or-v1-...
+SEEDANCE_API_KEY=...
+REPLICATE_API_TOKEN=...
+ELEVENLABS_API_KEY=...
+COMFY_API_KEY=...
+FORGE_API_KEY=...
+FORGE_NEO_API_KEY=...
+DRAWTHINGS_API_KEY=...
+REMOVEBG_API_KEY=...
+```
+
 ### Windowsで起動
 
 `start-windows.bat` をダブルクリックします。

@@ -45,6 +45,17 @@ button {
   white-space: nowrap;
 }
 
+a.ghost {
+  min-height: 38px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
 button:hover {
   filter: brightness(1.04);
 }
@@ -418,6 +429,12 @@ button:disabled {
   font-size: 12px;
 }
 
+.inline-download-button {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
@@ -525,7 +542,8 @@ button:disabled {
   min-width: 0;
 }
 
-.card-actions button {
+.card-actions button,
+.card-actions a {
   width: 100%;
   padding: 0 8px;
   overflow: hidden;
@@ -533,6 +551,7 @@ button:disabled {
 }
 
 .asset-card button,
+.asset-card a,
 .asset-card select {
   width: 100%;
   min-width: 0;

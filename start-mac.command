@@ -7,12 +7,22 @@ exec > >(tee "${LOG_FILE}") 2>&1
 
 START_PORT="${PORT:-4173}"
 PORT="${START_PORT}"
+HOST="${HOST:-0.0.0.0}"
 URL="http://localhost:${PORT}"
 
 echo "Creative File Studio"
 echo "Project: $(pwd)"
 echo "Log: ${LOG_FILE}"
 echo "URL: ${URL}"
+if [ "${HOST}" = "0.0.0.0" ]; then
+  echo "Smartphone URL candidates:"
+  for iface in en0 en1 en2; do
+    IP="$(ipconfig getifaddr "${iface}" 2>/dev/null || true)"
+    if [ -n "${IP}" ]; then
+      echo "  http://${IP}:${PORT}"
+    fi
+  done
+fi
 echo
 
 if ! command -v node >/dev/null 2>&1; then
@@ -93,7 +103,18 @@ if is_port_busy "${PORT}"; then
 fi
 
 export PORT
+export HOST
 echo "サーバーを ${URL} で起動します。終了するには Ctrl + C を押してください。"
+if [ "${HOST}" = "0.0.0.0" ]; then
+  echo "Smartphone URL candidates:"
+  for iface in en0 en1 en2; do
+    IP="$(ipconfig getifaddr "${iface}" 2>/dev/null || true)"
+    if [ -n "${IP}" ]; then
+      echo "  http://${IP}:${PORT}"
+    fi
+  done
+  echo "同じネットワークのスマホからは、このURLを開いてください。"
+fi
 (sleep 2; open "${URL}") &
 node server.js
 

@@ -10,6 +10,7 @@ import { pipeline } from "node:stream/promises";
 import os from "node:os";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+await loadDotEnv(path.join(__dirname, ".env"));
 const publicDir = path.join(__dirname, "public");
 const dataDir = path.join(__dirname, "data");
 const uploadDir = path.join(dataDir, "uploads");
@@ -30,6 +31,7 @@ const backgroundRemoverVenvDir = path.join(__dirname, "vendor", "backgroundremov
 const backgroundRemoverHomeDir = path.join(dataDir, "backgroundremover-home");
 const localIrodoriAppDir = "/Users/guarhiro/Documents/irodori TTSアプリ";
 const port = Number(process.env.PORT || 4173);
+const host = process.env.HOST || "127.0.0.1";
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -198,6 +200,122 @@ function sendJson(res, status, value) {
 function sendText(res, status, value) {
   res.writeHead(status, { "content-type": "text/plain; charset=utf-8" });
   res.end(value);
+}
+
+async function loadDotEnv(filePath) {
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    for (const line of raw.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) continue;
+      const index = trimmed.indexOf("=");
+      const key = trimmed.slice(0, index).trim();
+      let value = trimmed.slice(index + 1).trim();
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || process.env[key] !== undefined) continue;
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      process.env[key] = value;
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+}
+
+function envValue(...names) {
+  for (const name of names) {
+    const value = String(process.env[name] || "").trim();
+    if (value) return value;
+  }
+  return "";
+}
+
+function apiKeyFromRequest(value, ...envNames) {
+  return String(value || "").trim() || envValue(...envNames);
+}
+
+function normalizedRemoteAddress(req) {
+  return String(req.socket?.remoteAddress || "")
+    .replace(/^::ffff:/, "")
+    .trim();
+}
+
+function isLoopbackAddress(address) {
+  const value = String(address || "").trim();
+  return value === "::1" || value === "localhost" || value === "0:0:0:0:0:0:0:1" || value.startsWith("127.");
+}
+
+function clientAccess(req) {
+  const remoteAddress = normalizedRemoteAddress(req);
+  const isLocal = isLoopbackAddress(remoteAddress);
+  return {
+    remoteAddress,
+    mode: isLocal ? "desktop" : "lan",
+    canUseSettings: isLocal,
+    canRevealFiles: isLocal
+  };
+}
+
+function networkUrls() {
+  const urls = [];
+  for (const interfaces of Object.values(os.networkInterfaces())) {
+    for (const item of interfaces || []) {
+      if (item.family === "IPv4" && !item.internal) {
+        urls.push(`http://${item.address}:${port}`);
+      }
+    }
+  }
+  return [...new Set(urls)];
+}
+
+const lanAllowedApiRoutes = new Set([
+  "GET /api/session",
+  "GET /api/db",
+  "PUT /api/db",
+  "POST /api/upload",
+  "POST /api/media-upload",
+  "POST /api/move-upload",
+  "POST /api/remove-bg",
+  "POST /api/rembg/status",
+  "POST /api/rembg/remove",
+  "POST /api/backgroundremover/status",
+  "POST /api/backgroundremover/image",
+  "POST /api/openrouter/chat",
+  "GET /api/openrouter/models",
+  "POST /api/openrouter/video-models",
+  "POST /api/openrouter/speech",
+  "POST /api/elevenlabs/speech",
+  "POST /api/voicebox/profiles",
+  "POST /api/voicebox/speech",
+  "POST /api/irodori/status",
+  "POST /api/irodori/speech",
+  "GET /api/exchange-rate/usd-jpy",
+  "GET /api/seedance/guide",
+  "POST /api/seedance/create",
+  "POST /api/seedance/status",
+  "POST /api/comfy/check",
+  "POST /api/comfy/models",
+  "POST /api/comfy/validate",
+  "POST /api/comfy/create",
+  "POST /api/comfy/status",
+  "POST /api/forge/check",
+  "POST /api/forge/models",
+  "POST /api/forge/create"
+]);
+
+function isLanAllowedApi(req, url) {
+  return lanAllowedApiRoutes.has(`${req.method} ${url.pathname}`);
+}
+
+function blockLanApiIfNeeded(req, res, url) {
+  const access = clientAccess(req);
+  if (access.mode !== "lan" || !url.pathname.startsWith("/api/")) return false;
+  if (isLanAllowedApi(req, url)) return false;
+  sendJson(res, 403, {
+    error: "スマホ接続ではこの操作は使えません。Mac本体のブラウザから操作してください。",
+    mobileRestricted: true
+  });
+  return true;
 }
 
 function readableProviderError(value) {
@@ -990,7 +1108,9 @@ async function handleMediaUpload(req, res) {
 }
 
 async function handleRemoveBackground(req, res) {
-  const { apiKey, dataUrl, name, size = "auto" } = await readJson(req, 64 * 1024 * 1024);
+  const body = await readJson(req, 64 * 1024 * 1024);
+  const { dataUrl, name, size = "auto" } = body;
+  const apiKey = apiKeyFromRequest(body.apiKey, "REMOVEBG_API_KEY", "REMOVE_BG_API_KEY");
   if (!apiKey) return sendJson(res, 400, { error: "remove.bg API キーが未設定です。" });
   let parsed;
   try {
@@ -2034,7 +2154,9 @@ async function handleDeleteUpload(req, res) {
 }
 
 async function handleOpenRouter(req, res) {
-  const { apiKey, model, messages, response_format, temperature = 0.2, max_tokens = 1800 } = await readJson(req);
+  const body = await readJson(req);
+  const { model, messages, response_format, temperature = 0.2, max_tokens = 1800 } = body;
+  const apiKey = apiKeyFromRequest(body.apiKey, "OPENROUTER_API_KEY");
   if (!apiKey) return sendJson(res, 400, { error: "OpenRouter API キーが未設定です。" });
   if (!model) return sendJson(res, 400, { error: "OpenRouter model が未設定です。" });
   if (!Array.isArray(messages)) return sendJson(res, 400, { error: "messages が必要です。" });
@@ -2105,7 +2227,8 @@ async function handleOpenRouterModels(req, res) {
 }
 
 async function handleOpenRouterVideoModels(req, res) {
-  const { apiKey } = await readJson(req).catch(() => ({}));
+  const body = await readJson(req).catch(() => ({}));
+  const apiKey = apiKeyFromRequest(body.apiKey, "OPENROUTER_API_KEY");
   try {
     const headers = {
       "accept": "application/json",
@@ -2218,6 +2341,13 @@ function seedanceProviderFromBaseUrl(value) {
   const text = String(value || "");
   if (text.includes("replicate.com")) return "replicate";
   return text.includes("openrouter.ai") ? "openrouter" : "official";
+}
+
+function seedanceApiKeyFromRequest(value, baseUrl) {
+  const provider = seedanceProviderFromBaseUrl(baseUrl);
+  if (provider === "openrouter") return apiKeyFromRequest(value, "OPENROUTER_API_KEY", "SEEDANCE_API_KEY");
+  if (provider === "replicate") return apiKeyFromRequest(value, "REPLICATE_API_TOKEN", "REPLICATE_API_KEY", "SEEDANCE_API_KEY");
+  return apiKeyFromRequest(value, "SEEDANCE_API_KEY", "BYTEPLUS_API_KEY");
 }
 
 function normalizeSeedanceStatus(status) {
@@ -2515,7 +2645,6 @@ function pcmToWavBuffer(pcmBuffer, { sampleRate = 24000, channels = 1, bitDepth 
 async function handleOpenRouterSpeech(req, res) {
   const body = await readJson(req, 2 * 1024 * 1024);
   const {
-    apiKey,
     model = "google/gemini-3.1-flash-tts-preview",
     input,
     voice = "Kore",
@@ -2523,6 +2652,7 @@ async function handleOpenRouterSpeech(req, res) {
     speed,
     title = "generated-audio"
   } = body;
+  const apiKey = apiKeyFromRequest(body.apiKey, "OPENROUTER_API_KEY");
   const cleanInput = String(input || "").trim();
   const cleanFormat = modelRequiresPcmAudio(model) ? "pcm" : responseFormat === "pcm" ? "pcm" : "mp3";
   if (!apiKey) return sendJson(res, 400, { error: "OpenRouter API キーが未設定です。" });
@@ -2599,7 +2729,8 @@ async function handleOpenRouterSpeech(req, res) {
 }
 
 async function handleElevenLabsVoices(req, res) {
-  const { apiKey } = await readJson(req, 256 * 1024);
+  const body = await readJson(req, 256 * 1024);
+  const apiKey = apiKeyFromRequest(body.apiKey, "ELEVENLABS_API_KEY");
   if (!apiKey) return sendJson(res, 400, { error: "ElevenLabs API キーが未設定です。" });
   try {
     const response = await fetch("https://api.elevenlabs.io/v2/voices?page_size=100", {
@@ -2639,7 +2770,8 @@ async function handleElevenLabsVoices(req, res) {
 }
 
 async function handleElevenLabsModels(req, res) {
-  const { apiKey } = await readJson(req, 256 * 1024);
+  const body = await readJson(req, 256 * 1024);
+  const apiKey = apiKeyFromRequest(body.apiKey, "ELEVENLABS_API_KEY");
   if (!apiKey) return sendJson(res, 400, { error: "ElevenLabs API キーが未設定です。" });
   try {
     const response = await fetch("https://api.elevenlabs.io/v1/models", {
@@ -2685,7 +2817,6 @@ async function handleElevenLabsModels(req, res) {
 async function handleElevenLabsSpeech(req, res) {
   const body = await readJson(req, 2 * 1024 * 1024);
   const {
-    apiKey,
     voiceId,
     modelId = "eleven_multilingual_v2",
     input,
@@ -2695,6 +2826,7 @@ async function handleElevenLabsSpeech(req, res) {
     seed,
     voiceSettings = {}
   } = body;
+  const apiKey = apiKeyFromRequest(body.apiKey, "ELEVENLABS_API_KEY");
   const cleanInput = String(input || "").trim();
   const cleanVoiceId = String(voiceId || "").trim();
   const cleanModelId = String(modelId || "eleven_multilingual_v2").trim() || "eleven_multilingual_v2";
@@ -3873,6 +4005,13 @@ function forgeHeaders(apiKey = "", extra = {}) {
   return headers;
 }
 
+function forgeApiKeyFromRequest(value, provider) {
+  const label = forgeProviderLabel(provider);
+  if (label === "Draw Things") return apiKeyFromRequest(value, "DRAWTHINGS_API_KEY", "DRAW_THINGS_API_KEY");
+  if (label === "Forge Neo") return apiKeyFromRequest(value, "FORGE_NEO_API_KEY", "FORGE_API_KEY");
+  return apiKeyFromRequest(value, "FORGE_API_KEY");
+}
+
 async function forgeJson(response) {
   const text = await response.text();
   try {
@@ -4105,7 +4244,9 @@ async function saveForgeImage({ image, workName, title, generationId, index, lab
 }
 
 async function handleForgeCheck(req, res) {
-  const { baseUrl, apiKey, provider } = await readJson(req, 1024 * 1024);
+  const body = await readJson(req, 1024 * 1024);
+  const { baseUrl, provider } = body;
+  const apiKey = forgeApiKeyFromRequest(body.apiKey, provider);
   const label = forgeProviderLabel(provider);
   try {
     let response;
@@ -4142,7 +4283,9 @@ async function fetchForgeJson(baseUrl, apiKey, pathname, timeoutMs = 20000, labe
 }
 
 async function handleForgeModels(req, res) {
-  const { baseUrl, apiKey, provider } = await readJson(req, 1024 * 1024);
+  const body = await readJson(req, 1024 * 1024);
+  const { baseUrl, provider } = body;
+  const apiKey = forgeApiKeyFromRequest(body.apiKey, provider);
   const label = forgeProviderLabel(provider);
   if (!baseUrl) return sendJson(res, 400, { error: `${label} のURLが未設定です。` });
   try {
@@ -4184,7 +4327,8 @@ async function handleForgeModels(req, res) {
 
 async function handleForgeCreate(req, res) {
   const body = await readJson(req, 12 * 1024 * 1024);
-  const { baseUrl, apiKey, prompt, negativePrompt, checkpoint, workName, title } = body;
+  const { baseUrl, prompt, negativePrompt, checkpoint, workName, title } = body;
+  const apiKey = forgeApiKeyFromRequest(body.apiKey, body.provider);
   const label = forgeProviderLabel(body.provider);
   if (!baseUrl) return sendJson(res, 400, { error: `${label} のURLが未設定です。` });
   if (!prompt) return sendJson(res, 400, { error: "画像生成プロンプトが必要です。" });
@@ -4291,7 +4435,9 @@ async function handleForgeCreate(req, res) {
 }
 
 async function handleComfyCheck(req, res) {
-  const { baseUrl, apiKey } = await readJson(req, 1024 * 1024);
+  const body = await readJson(req, 1024 * 1024);
+  const { baseUrl } = body;
+  const apiKey = apiKeyFromRequest(body.apiKey, "COMFY_API_KEY", "COMFY_CLOUD_API_KEY");
   try {
     let response;
     try {
@@ -4315,7 +4461,9 @@ async function handleComfyCheck(req, res) {
 }
 
 async function handleComfyModels(req, res) {
-  const { baseUrl, apiKey } = await readJson(req, 1024 * 1024);
+  const body = await readJson(req, 1024 * 1024);
+  const { baseUrl } = body;
+  const apiKey = apiKeyFromRequest(body.apiKey, "COMFY_API_KEY", "COMFY_CLOUD_API_KEY");
   if (!baseUrl) return sendJson(res, 400, { error: "ComfyUI のURLが未設定です。" });
   try {
     const objectInfo = await fetchComfyObjectInfo(baseUrl, apiKey);
@@ -4334,9 +4482,10 @@ async function handleComfyValidate(req, res) {
   const body = await readJson(req, 12 * 1024 * 1024);
   const modelInfo = { checkpoints: [], loras: [] };
   const modelWarnings = [];
+  const apiKey = apiKeyFromRequest(body.apiKey, "COMFY_API_KEY", "COMFY_CLOUD_API_KEY");
   if (body.baseUrl) {
     try {
-      Object.assign(modelInfo, extractComfyModels(await fetchComfyObjectInfo(body.baseUrl, body.apiKey)));
+      Object.assign(modelInfo, extractComfyModels(await fetchComfyObjectInfo(body.baseUrl, apiKey)));
     } catch (error) {
       modelWarnings.push(`ComfyUIモデル一覧を取得できませんでした: ${error.message}`);
     }
@@ -4352,7 +4501,8 @@ async function handleComfyValidate(req, res) {
 
 async function handleComfyCreate(req, res) {
   const body = await readJson(req, 12 * 1024 * 1024);
-  const { baseUrl, apiKey } = body;
+  const { baseUrl } = body;
+  const apiKey = apiKeyFromRequest(body.apiKey, "COMFY_API_KEY", "COMFY_CLOUD_API_KEY");
   if (!baseUrl) return sendJson(res, 400, { error: "ComfyUI のURLが未設定です。" });
   if (!body.prompt) return sendJson(res, 400, { error: "画像生成プロンプトが必要です。" });
   try {
@@ -4423,7 +4573,9 @@ async function handleComfyCreate(req, res) {
 }
 
 async function handleComfyStatus(req, res) {
-  const { baseUrl, apiKey, promptId, workName, title } = await readJson(req, 1024 * 1024);
+  const body = await readJson(req, 1024 * 1024);
+  const { baseUrl, promptId, workName, title } = body;
+  const apiKey = apiKeyFromRequest(body.apiKey, "COMFY_API_KEY", "COMFY_CLOUD_API_KEY");
   if (!baseUrl) return sendJson(res, 400, { error: "ComfyUI のURLが未設定です。" });
   if (!promptId) return sendJson(res, 400, { error: "promptId が必要です。" });
   try {
@@ -4499,7 +4651,6 @@ async function handleSeedanceGuide(req, res) {
 async function handleSeedanceCreate(req, res) {
   const body = await readJson(req, 90 * 1024 * 1024);
   const {
-    apiKey,
     baseUrl,
     model,
     prompt,
@@ -4513,6 +4664,7 @@ async function handleSeedanceCreate(req, res) {
     returnLastFrame = false,
     references = []
   } = body;
+  const apiKey = seedanceApiKeyFromRequest(body.apiKey, baseUrl);
   if (!apiKey) return sendJson(res, 400, { error: "Seedance API キーが未設定です。" });
   if (!model) return sendJson(res, 400, { error: "Seedance model が未設定です。" });
   if (!prompt && !references.length) return sendJson(res, 400, { error: "プロンプトまたは参照素材が必要です。" });
@@ -4608,7 +4760,9 @@ async function handleSeedanceCreate(req, res) {
 }
 
 async function handleSeedanceStatus(req, res) {
-  const { apiKey, baseUrl, taskId } = await readJson(req);
+  const body = await readJson(req);
+  const { baseUrl, taskId } = body;
+  const apiKey = seedanceApiKeyFromRequest(body.apiKey, baseUrl);
   if (!apiKey) return sendJson(res, 400, { error: "Seedance API キーが未設定です。" });
   if (!taskId) return sendJson(res, 400, { error: "taskId が必要です。" });
   try {
@@ -4653,6 +4807,20 @@ async function handleSeedanceStatus(req, res) {
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
+    const access = clientAccess(req);
+
+    if (req.method === "GET" && url.pathname === "/api/session") {
+      return sendJson(res, 200, {
+        mode: access.mode,
+        remoteAddress: access.remoteAddress,
+        canUseSettings: access.canUseSettings,
+        canRevealFiles: access.canRevealFiles,
+        allowedViews: access.mode === "lan" ? ["studio", "gallery", "image", "audio", "video", "edit", "edit-aspect"] : null,
+        networkUrls: networkUrls()
+      });
+    }
+
+    if (blockLanApiIfNeeded(req, res, url)) return;
 
     if (req.method === "GET" && url.pathname === "/api/db") {
       return sendJson(res, 200, await readDb());
@@ -4660,7 +4828,11 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "PUT" && url.pathname === "/api/db") {
       const db = await readJson(req);
-      await writeDb({ ...emptyDb, ...db, schemaVersion: 1 });
+      const currentDb = await readDb();
+      const nextDb = access.mode === "lan"
+        ? { ...emptyDb, ...db, settings: currentDb.settings, schemaVersion: 1 }
+        : { ...emptyDb, ...db, schemaVersion: 1 };
+      await writeDb(nextDb);
       return sendJson(res, 200, { ok: true });
     }
 
@@ -4881,6 +5053,13 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(port, "127.0.0.1", () => {
+server.listen(port, host, () => {
   console.log(`Creative File Studio: http://localhost:${port}`);
+  if (host === "0.0.0.0" || host === "::") {
+    const urls = networkUrls();
+    if (urls.length) {
+      console.log("Smartphone access on the same network:");
+      urls.forEach((url) => console.log(`  ${url}`));
+    }
+  }
 });

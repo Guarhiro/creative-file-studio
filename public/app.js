@@ -3,6 +3,13 @@ const modalTemplate = document.querySelector("#modal-template");
 
 const state = {
   db: null,
+  session: {
+    mode: "desktop",
+    canUseSettings: true,
+    canRevealFiles: true,
+    allowedViews: null,
+    networkUrls: []
+  },
   view: "studio",
   selectedWorkId: null,
   galleryWorkId: null,
@@ -199,6 +206,32 @@ const navItems = [
   { id: "prompt", label: "Prompt Lab" },
   { id: "settings", label: "設定" }
 ];
+
+const mobileAllowedViewIds = new Set(["studio", "gallery", "image", "audio", "video", "edit", "edit-aspect"]);
+const isLanClient = () => state.session?.mode === "lan";
+const canUseSettings = () => state.session?.canUseSettings !== false;
+const canRevealFiles = () => state.session?.canRevealFiles !== false;
+const canUseDestructiveActions = () => !isLanClient();
+const canUseView = (viewId) => canUseSettings() || mobileAllowedViewIds.has(viewId);
+
+function visibleNavItems() {
+  return navItems
+    .map((item) => {
+      if (item.children?.length) {
+        const children = item.children.filter((child) => canUseView(child.id));
+        if (!children.length) return null;
+        return { ...item, children, defaultView: children.some((child) => child.id === item.defaultView) ? item.defaultView : children[0].id };
+      }
+      return canUseView(item.id) ? item : null;
+    })
+    .filter(Boolean);
+}
+
+function ensureAllowedView() {
+  if (!canUseView(state.view)) {
+    state.view = "studio";
+  }
+}
 
 const screenHelpContent = {
   studio: {
@@ -1897,6 +1930,14 @@ function renderGenerationHistoryPager(kind, pageInfo, total) {
 }
 
 function renderGenerationHistoryActions(kind, allItems, pageItems, pageInfo) {
+  if (!canUseDestructiveActions()) {
+    return `
+      <div class="generation-history-actions">
+        <span class="meta">${generationHistoryRangeText(pageInfo, allItems.length)}</span>
+        ${renderGenerationHistoryPager(kind, pageInfo, allItems.length)}
+      </div>
+    `;
+  }
   const selectedItems = selectedGenerationHistoryItems(kind, allItems);
   const selectedPageItems = selectedGenerationHistoryItems(kind, pageItems, { prune: false });
   const allPageSelected = pageItems.length > 0 && selectedPageItems.length === pageItems.length;
@@ -1913,6 +1954,7 @@ function renderGenerationHistoryActions(kind, allItems, pageItems, pageInfo) {
 }
 
 function renderGenerationHistoryCheckbox(kind, item) {
+  if (!canUseDestructiveActions()) return "";
   return `
     <label class="history-select-row">
       <input type="checkbox" data-action="toggle-${kind}-history-selection" data-id="${escapeHtml(item.id)}" ${isGenerationHistorySelected(kind, item.id) ? "checked" : ""}>
@@ -3389,7 +3431,17 @@ async function revealAudio(url) {
 }
 
 function renderAudioFinderButton(url) {
-  return url ? `<button type="button" class="ghost inline-finder-button" data-action="reveal-audio" data-url="${escapeHtml(url)}">Finder</button>` : "";
+  return url && canRevealFiles() ? `<button type="button" class="ghost inline-finder-button" data-action="reveal-audio" data-url="${escapeHtml(url)}">Finder</button>` : "";
+}
+
+function renderDownloadButton(url, label = "DL") {
+  if (!url) return "";
+  const filename = fileNameFromUrl(url, "download");
+  return `<a class="ghost inline-download-button" href="${escapeHtml(url)}" download="${escapeHtml(filename)}">${escapeHtml(label)}</a>`;
+}
+
+function renderAssetFinderButton(asset) {
+  return asset?.url && canRevealFiles() ? `<button class="ghost" data-action="reveal-asset" data-id="${escapeHtml(asset.id)}">Finder</button>` : "";
 }
 
 function isUploadUrlReferenced(url, excludingAssetId = null) {
@@ -3749,6 +3801,7 @@ function preserveLiveTextDrafts() {
 
 function render(options = {}) {
   if (options.preserveLiveTextDrafts !== false) preserveLiveTextDrafts();
+  ensureAllowedView();
   const [title, sub] = currentTitle();
   app.innerHTML = `
     <div class="app-shell">
@@ -3758,7 +3811,7 @@ function render(options = {}) {
           <span>local creator archive</span>
         </div>
         <nav class="nav">
-          ${navItems.map(renderNavItem).join("")}
+          ${visibleNavItems().map(renderNavItem).join("")}
         </nav>
         <div class="sidebar-meta">
           ${state.db.works.length} 作品 / ${state.db.characters.length} キャラ / ${state.db.worldItems?.length || 0} その他 / ${state.db.assets.length} 画像 / ${state.db.imageJobs?.length || 0} 画像生成 / ${state.db.audioItems?.length || 0} 音声 / ${state.db.videoJobs?.length || 0} 動画
@@ -3874,11 +3927,12 @@ function openCurrentHelpModal() {
 }
 
 function renderView() {
+  ensureAllowedView();
   if (state.view === "studio") return renderStudio();
   if (state.view === "import") return renderImport();
   if (state.view === "gallery") return renderGallery();
   if (state.view === "image") return renderImageAgent();
-  if (state.view === "edit") return renderImageEditor();
+  if (state.view === "edit") return renderImageEditor({ includeVideoPanel: !isLanClient() });
   if (state.view === "edit-aspect") return renderImageEditor({ forcedProvider: "aspect", hideProviderChooser: true, includeVideoPanel: false });
   if (state.view === "edit-gif") return renderVideoGifConverter();
   if (state.view === "audio") return renderAudioAgent();
@@ -4084,7 +4138,7 @@ function renderWorldSheetRow(sheet, activeSheetId) {
         <button class="ghost" data-action="use-world-sheet" data-sheet-id="${sheet.id}" ${active ? "disabled" : ""}>表示</button>
         <button class="ghost" data-action="edit-world-sheet" data-sheet-id="${sheet.id}">編集</button>
         <button class="ghost" data-action="restructure-world-sheet" data-sheet-id="${sheet.id}">再構造化</button>
-        <button class="ghost danger-outline" data-action="delete-world-sheet" data-sheet-id="${sheet.id}">削除</button>
+        ${canUseDestructiveActions() ? `<button class="ghost danger-outline" data-action="delete-world-sheet" data-sheet-id="${sheet.id}">削除</button>` : ""}
       </div>
     </div>
   `;
@@ -4400,10 +4454,11 @@ function renderAssetCard(asset) {
           ${workChars.length ? `<optgroup label="キャラ">${workChars.map((candidate) => `<option value="char:${candidate.id}" ${selectedSubject === `char:${candidate.id}` ? "selected" : ""}>${escapeHtml(candidate.name)}</option>`).join("")}</optgroup>` : ""}
           ${workWorldItems.length ? `<optgroup label="その他情報">${workWorldItems.map((item) => `<option value="world:${item.id}" ${selectedSubject === `world:${item.id}` ? "selected" : ""}>${escapeHtml(worldItemCategoryLabel(item.category))}: ${escapeHtml(item.name)}</option>`).join("")}</optgroup>` : ""}
         </select>
-        <button class="ghost" data-action="classify-one" data-id="${asset.id}" ${asset.worldItemId || isAssetClassifying(asset) ? "disabled" : ""}>AIキャラ判定</button>
-        <button class="ghost" data-action="reveal-asset" data-id="${asset.id}">Finder</button>
+        ${canUseDestructiveActions() ? `<button class="ghost" data-action="classify-one" data-id="${asset.id}" ${asset.worldItemId || isAssetClassifying(asset) ? "disabled" : ""}>AIキャラ判定</button>` : ""}
+        ${renderDownloadButton(asset.url)}
+        ${renderAssetFinderButton(asset)}
         <button class="ghost" data-action="view-asset" data-id="${asset.id}">詳細</button>
-        <button class="ghost danger-outline" data-action="delete-asset-history" data-id="${asset.id}">履歴削除</button>
+        ${canUseDestructiveActions() ? `<button class="ghost danger-outline" data-action="delete-asset-history" data-id="${asset.id}">履歴削除</button>` : ""}
       </div>
     </article>
   `;
@@ -4446,12 +4501,12 @@ function renderGallery() {
             <h2 class="section-title">${allAssets.length} 画像</h2>
             <div class="meta">${galleryWorkId ? escapeHtml(byId(state.db.works, galleryWorkId)?.name || "") : "全作品"}</div>
           </div>
-          <div class="group gallery-selection-actions">
+          ${canUseDestructiveActions() ? `<div class="group gallery-selection-actions">
             <span class="meta">${selectedAssets.length ? `${selectedAssets.length} 件選択中` : "未選択"}</span>
             <button class="ghost" data-action="gallery-select-all" ${assets.length && !allPageSelected ? "" : "disabled"}>画面内を全選択</button>
             <button class="ghost" data-action="gallery-clear-selection" ${selectedAssets.length ? "" : "disabled"}>選択解除</button>
             <button class="ghost danger-outline" data-action="delete-selected-gallery-assets" ${selectedAssets.length ? "" : "disabled"}>選択を完全削除</button>
-          </div>
+          </div>` : ""}
           ${state.galleryFiltersCollapsed ? `<button class="ghost" data-action="toggle-gallery-filters">表示条件</button>` : ""}
         </div>
         ${renderImageClassificationSummary(allAssets)}
@@ -4562,10 +4617,10 @@ function renderGalleryAsset(asset) {
     <article class="asset-card ${selected ? "asset-selected" : ""}">
       <img class="asset-thumb" src="${escapeHtml(asset.url)}" alt="" loading="lazy" decoding="async">
       <div class="body">
-        <label class="asset-select">
+        ${canUseDestructiveActions() ? `<label class="asset-select">
           <input type="checkbox" data-action="select-gallery-asset" data-id="${asset.id}" ${selected ? "checked" : ""}>
           <span>選択</span>
-        </label>
+        </label>` : ""}
         <div>
           <div class="asset-name">${escapeHtml(asset.name)}</div>
           <div class="meta">${escapeHtml(work?.name || "未分類")} / ${escapeHtml(subjectLabelForAsset(asset))}</div>
@@ -4573,9 +4628,10 @@ function renderGalleryAsset(asset) {
         </div>
         ${renderImageClassificationStatus(asset)}
         <div class="card-actions">
-          <button class="ghost" data-action="reveal-asset" data-id="${asset.id}">Finder</button>
+          ${renderDownloadButton(asset.url)}
+          ${renderAssetFinderButton(asset)}
           <button class="ghost" data-action="view-asset" data-id="${asset.id}">詳細</button>
-          <button class="ghost danger-outline" data-action="delete-asset-completely" data-id="${asset.id}">完全削除</button>
+          ${canUseDestructiveActions() ? `<button class="ghost danger-outline" data-action="delete-asset-completely" data-id="${asset.id}">完全削除</button>` : ""}
         </div>
       </div>
     </article>
@@ -5129,6 +5185,7 @@ function renderAudioEditOutput(output) {
       <div>
         <div class="audio-file-heading">
           <span class="char-name">${escapeHtml(output.name || "編集音声")}</span>
+          ${renderDownloadButton(output.url)}
           ${renderAudioFinderButton(output.url)}
           ${renderAudioEditReuseButton({
             url: output.url,
@@ -5690,9 +5747,11 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
               <button class="ghost" data-action="manual-image-edit-remove-inside" ${selectedSource ? "" : "disabled"}>境界の内側を除去</button>
             </div>
           ` : provider === "removebg" ? `
+            ${canUseSettings() ? `
             <label>remove.bg APIキー
               <input id="image-edit-removebg-key" type="password" value="${escapeHtml(removeBgApiKey())}" placeholder="remove.bg API key">
             </label>
+            ` : `<div class="full meta">remove.bgはMac側の.envに保存したAPIキーを使用します。</div>`}
           ` : provider === "rembg" ? `
             <label class="full">rembgモデル
               <select id="image-edit-rembg-model">${renderRembgModelOptions(state.imageEditRembgModel)}</select>
@@ -5707,7 +5766,7 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
             </label>
             <div class="full toolbar">
               <button class="ghost" data-action="check-rembg" ${isRembgBusy ? "disabled" : ""}>rembg確認</button>
-              <button class="ghost" data-action="setup-rembg" ${isRembgBusy ? "disabled" : ""}>rembgをセットアップ</button>
+              ${canUseSettings() ? `<button class="ghost" data-action="setup-rembg" ${isRembgBusy ? "disabled" : ""}>rembgをセットアップ</button>` : ""}
             </div>
             <div class="full meta">${escapeHtml(rembgStatusText())}</div>
           ` : provider === "backgroundremover" ? `
@@ -5723,7 +5782,7 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
             </label>
             <div class="full toolbar">
               <button class="ghost" data-action="check-backgroundremover" ${isBackgroundRemoverBusy ? "disabled" : ""}>backgroundremover確認</button>
-              <button class="ghost" data-action="setup-backgroundremover" ${isBackgroundRemoverBusy ? "disabled" : ""}>backgroundremoverをセットアップ</button>
+              ${canUseSettings() ? `<button class="ghost" data-action="setup-backgroundremover" ${isBackgroundRemoverBusy ? "disabled" : ""}>backgroundremoverをセットアップ</button>` : ""}
             </div>
             <div class="full meta">${escapeHtml(backgroundRemoverStatusText())}</div>
           ` : `
@@ -8759,9 +8818,11 @@ function renderComfyPresetControls(prefix) {
       </label>
       <div class="toolbar slim-toolbar">
         <button class="ghost" data-action="apply-comfy-preset" ${presets.length ? "" : "disabled"}>適用</button>
-        <button class="ghost" data-action="save-comfy-preset">現在値を保存</button>
-        <button class="ghost" data-action="update-comfy-preset" ${presets.length ? "" : "disabled"}>上書き</button>
-        <button class="ghost danger" data-action="delete-comfy-preset" ${presets.length ? "" : "disabled"}>削除</button>
+        ${canUseSettings() ? `
+          <button class="ghost" data-action="save-comfy-preset">現在値を保存</button>
+          <button class="ghost" data-action="update-comfy-preset" ${presets.length ? "" : "disabled"}>上書き</button>
+          <button class="ghost danger" data-action="delete-comfy-preset" ${presets.length ? "" : "disabled"}>削除</button>
+        ` : ""}
       </div>
       <div class="meta">${presets.length ? `${presets.length} 件のプリセット` : "立ち絵、背景、表情差分などの設定を保存できます。"}</div>
     </div>
@@ -8978,7 +9039,7 @@ function renderImageAgent() {
             <button class="ghost" data-action="load-comfy-models" ${state.comfyModelStatus === "loading" ? "disabled" : ""}>モデル一覧取得</button>
             ${provider === "comfy" ? `<button class="ghost" data-action="validate-comfy-workflow">事前チェック</button>` : ""}
           </div>
-          <div class="full meta">${escapeHtml(imageProviderLabel(provider))}${provider === "comfy" ? ` / ${escapeHtml(imageGpuLabel(gpuMode))}` : ""}: ${escapeHtml(endpoint || "設定画面でURLを指定してください。")}</div>
+          <div class="full meta">${escapeHtml(imageProviderLabel(provider))}${provider === "comfy" ? ` / ${escapeHtml(imageGpuLabel(gpuMode))}` : ""}: ${escapeHtml(isLanClient() ? "Mac側の画像生成設定を使用中" : endpoint || "設定画面でURLを指定してください。")}</div>
         </div>
       </section>
       <section class="video-main">
@@ -9095,10 +9156,11 @@ function renderImageJob(job) {
       <div class="result-text">${escapeHtml(compactPromptText(job.prompt, 900))}</div>
       ${job.negativePrompt ? `<div class="meta">Negative</div><div class="result-text">${escapeHtml(compactPromptText(job.negativePrompt, 600))}</div>` : ""}
       <div class="card-actions">
+        ${job.images?.[0]?.url ? renderDownloadButton(job.images[0].url) : ""}
         <button class="ghost" data-action="refresh-image-job" data-id="${job.id}" ${!job.providerTaskId || ["succeeded", "cancelled"].includes(status) ? "disabled" : ""}>更新</button>
         <button class="ghost" data-action="adopt-image-job" data-id="${job.id}">採用</button>
         <button class="ghost" data-action="copy-image-job-prompt" data-id="${job.id}">プロンプト</button>
-        <button class="ghost danger-outline" data-action="delete-image-history" data-id="${job.id}">履歴削除</button>
+        ${canUseDestructiveActions() ? `<button class="ghost danger-outline" data-action="delete-image-history" data-id="${job.id}">履歴削除</button>` : ""}
       </div>
       ${job.images?.map((image) => image.localPath ? `<div class="meta">保存先: ${escapeHtml(image.localPath)}</div>` : "").join("") || ""}
       ${job.error ? `<div class="meta danger-text">${escapeHtml(job.error)}</div>` : ""}
@@ -9121,7 +9183,7 @@ function openImageJobImagePreview(jobId, imageIndex = 0) {
         ${image.localPath ? `<div class="meta">保存先: ${escapeHtml(image.localPath)}</div>` : ""}
       </div>
     `,
-    `<span></span><button class="accent" data-action="close-modal">閉じる</button>`
+    `<span>${renderDownloadButton(image.url)}</span><button class="accent" data-action="close-modal">閉じる</button>`
   );
 }
 
@@ -10642,6 +10704,7 @@ function renderAudioItem(audio, options = {}) {
       <div>
         <div class="audio-file-heading">
           <span class="char-name">${escapeHtml(audio.title || "生成音声")}</span>
+          ${renderDownloadButton(audio.url)}
           ${renderAudioFinderButton(audio.url)}
           ${options.allowAudioEditReuse && audio.provider === "audio-edit" ? renderAudioEditReuseButton({
             url: audio.url,
@@ -10658,7 +10721,7 @@ function renderAudioItem(audio, options = {}) {
       <div class="result-text">${escapeHtml(compactPromptText(audio.input, 900))}</div>
       ${audio.agentNote ? `<div class="meta">${escapeHtml(audio.agentNote)}</div>` : ""}
       ${audio.localPath ? `<div class="meta">保存先: ${escapeHtml(audio.localPath)}</div>` : ""}
-      ${historyKind ? `
+      ${historyKind && canUseDestructiveActions() ? `
         <div class="card-actions">
           <button class="ghost danger-outline" data-action="delete-${historyKind}-history" data-id="${escapeHtml(audio.id)}">履歴削除</button>
         </div>
@@ -11218,10 +11281,11 @@ function renderVideoJob(job) {
       ${job.localUrl ? `<video class="generated-video" controls src="${escapeHtml(job.localUrl)}"></video>` : ""}
       <div class="result-text">${escapeHtml(compactPromptText(job.prompt, 900))}</div>
       <div class="card-actions">
+        ${job.localUrl ? renderDownloadButton(job.localUrl) : ""}
         <button class="ghost" data-action="refresh-video-job" data-id="${job.id}" ${!job.providerTaskId || ["succeeded", "failed", "expired", "cancelled"].includes(status) ? "disabled" : ""}>更新</button>
         <button class="ghost" data-action="copy-video-job-prompt" data-id="${job.id}">プロンプト</button>
         ${status === "succeeded" && job.settings?.returnLastFrame && job.localUrl && !job.lastFrameUrl ? `<button class="ghost" data-action="save-video-last-frame" data-id="${job.id}">最終フレーム保存</button>` : ""}
-        <button class="ghost danger-outline" data-action="delete-video-history" data-id="${job.id}">履歴削除</button>
+        ${canUseDestructiveActions() ? `<button class="ghost danger-outline" data-action="delete-video-history" data-id="${job.id}">履歴削除</button>` : ""}
       </div>
       ${job.localPath ? `<div class="meta">保存先: ${escapeHtml(job.localPath)}</div>` : ""}
       ${job.lastFrameUrl ? `<div class="meta">最終フレーム: ${escapeHtml(job.lastFrameLocalPath || job.lastFrameUrl)}</div>` : ""}
@@ -11864,13 +11928,15 @@ function renderSettings() {
 function bindCommon() {
   document.querySelectorAll("[data-nav-parent]").forEach((button) => {
     button.addEventListener("click", () => {
-      state.view = button.dataset.defaultView || button.dataset.navParent;
+      const nextView = button.dataset.defaultView || button.dataset.navParent;
+      state.view = canUseView(nextView) ? nextView : "studio";
       render();
     });
   });
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.addEventListener("click", () => {
-      state.view = button.dataset.view;
+      const nextView = button.dataset.view;
+      state.view = canUseView(nextView) ? nextView : "studio";
       render();
     });
   });
@@ -11887,6 +11953,7 @@ function bindCommon() {
 }
 
 function bindView() {
+  ensureAllowedView();
   if (state.view === "studio") bindStudio();
   if (state.view === "import") bindImport();
   if (state.view === "gallery") bindGallery();
@@ -13730,7 +13797,7 @@ function openWorkModal(work = null) {
         <label class="full">メモ<textarea id="work-description">${escapeHtml(work?.description || "")}</textarea></label>
       </div>
     `,
-    `<div>${editing ? `<button class="danger" data-action="delete-work">削除</button>` : ""}</div><button data-action="save-work">保存</button>`,
+    `<div>${editing && canUseDestructiveActions() ? `<button class="danger" data-action="delete-work">削除</button>` : ""}</div><button data-action="save-work">保存</button>`,
     (modal, close) => {
       modal.querySelector("[data-action='save-work']").addEventListener("click", async () => {
         const payload = {
@@ -13798,7 +13865,7 @@ function openWorldItemModal(item = null) {
         <label class="full">メモ<textarea id="world-item-memo">${escapeHtml(item?.memo || "")}</textarea></label>
       </div>
     `,
-    `<div>${editing && !item.autoCreated ? `<button class="danger" data-action="delete-world-item">削除</button>` : ""}</div><button data-action="save-world-item">保存</button>`,
+    `<div>${editing && !item.autoCreated && canUseDestructiveActions() ? `<button class="danger" data-action="delete-world-item">削除</button>` : ""}</div><button data-action="save-world-item">保存</button>`,
     (modal, close) => {
       modal.querySelector("#world-item-reference").addEventListener("change", async (event) => {
         const file = event.target.files[0];
@@ -13884,7 +13951,7 @@ function openCharacterModal(char = null) {
         <label class="full">メモ<textarea id="char-memo">${escapeHtml(char?.memo || "")}</textarea></label>
       </div>
     `,
-    `<div>${editing ? `<button class="danger" data-action="delete-character">削除</button>` : ""}</div><div class="group"><button class="ghost" data-action="extract-character-prompt">立ち絵からプロンプト抽出</button><button data-action="save-character">保存</button></div>`,
+    `<div>${editing && canUseDestructiveActions() ? `<button class="danger" data-action="delete-character">削除</button>` : ""}</div><div class="group"><button class="ghost" data-action="extract-character-prompt">立ち絵からプロンプト抽出</button><button data-action="save-character">保存</button></div>`,
     (modal, close) => {
       modal.querySelector("#char-portrait").addEventListener("change", async (event) => {
         const file = event.target.files[0];
@@ -14457,7 +14524,7 @@ function openWorldSettingModal(work, sheetId = null) {
         }, null, 2))}</textarea></label>
       </div>
     `,
-    `<div><button class="danger" data-action="clear-world-setting">${sheet ? "このシートを削除" : "初期化"}</button></div><button data-action="save-world-setting">保存</button>`,
+    `<div>${canUseDestructiveActions() ? `<button class="danger" data-action="clear-world-setting">${sheet ? "このシートを削除" : "初期化"}</button>` : ""}</div><button data-action="save-world-setting">保存</button>`,
     (modal, close) => {
       modal.querySelector("[data-action='save-world-setting']").addEventListener("click", async () => {
         try {
@@ -14522,7 +14589,7 @@ function openWorldSettingModal(work, sheetId = null) {
           toast(error.message);
         }
       });
-      modal.querySelector("[data-action='clear-world-setting']").addEventListener("click", async () => {
+      modal.querySelector("[data-action='clear-world-setting']")?.addEventListener("click", async () => {
         const ok = window.confirm(sheet ? "この設定シートを履歴から削除します。画像ファイル本体は削除しません。" : "この作品の世界観設定を初期化します。保存済みの設定内容は消えます。");
         if (!ok) return;
         if (sheet) rebuildWorldSettingAfterSheetRemoval(work, sheet.id);
@@ -14556,28 +14623,30 @@ function openCharacterAudioModal(char) {
 
 function openAssetModal(asset) {
   const dimensions = assetDimensionLabel(asset);
+  const readOnly = !canUseDestructiveActions();
   openModal(
     "画像詳細",
     `
       <div class="split">
         <img class="asset-thumb" src="${escapeHtml(asset.url)}" alt="">
         <div class="form-grid">
-          <label class="full">名前<input value="${escapeHtml(asset.name)}" id="asset-name"></label>
+          <label class="full">名前<input value="${escapeHtml(asset.name)}" id="asset-name" ${readOnly ? "readonly" : ""}></label>
           <label class="full">プロンプト形式
-            <select id="asset-prompt-format">
+            <select id="asset-prompt-format" ${readOnly ? "disabled" : ""}>
               <option value="natural" ${(asset.aiPromptFormat || "natural") === "natural" ? "selected" : ""}>自然言語</option>
               <option value="tags" ${asset.aiPromptFormat === "tags" ? "selected" : ""}>タグ</option>
             </select>
           </label>
-          <label class="full">AI抽出プロンプト<textarea id="asset-prompt">${escapeHtml(asset.aiPrompt || "")}</textarea></label>
-          <label class="full">AI理由<textarea id="asset-reason">${escapeHtml(asset.aiReason || "")}</textarea></label>
+          <label class="full">AI抽出プロンプト<textarea id="asset-prompt" ${readOnly ? "readonly" : ""}>${escapeHtml(asset.aiPrompt || "")}</textarea></label>
+          <label class="full">AI理由<textarea id="asset-reason" ${readOnly ? "readonly" : ""}>${escapeHtml(asset.aiReason || "")}</textarea></label>
           <div class="full meta">割当: ${escapeHtml(subjectLabelForAsset(asset))}</div>
           <div class="full meta">画像情報: ${escapeHtml(dimensions || "未取得")}</div>
         </div>
       </div>
     `,
-    `<div></div><button data-action="save-asset-detail">保存</button>`,
+    `<div>${renderDownloadButton(asset.url)}</div>${readOnly ? `<button data-action="close-modal">閉じる</button>` : `<button data-action="save-asset-detail">保存</button>`}`,
     (modal, close) => {
+      if (readOnly) return;
       modal.querySelector("[data-action='save-asset-detail']").addEventListener("click", async () => {
         asset.name = modal.querySelector("#asset-name").value.trim() || asset.name;
         asset.aiPromptFormat = modal.querySelector("#asset-prompt-format").value;
@@ -14593,6 +14662,11 @@ function openAssetModal(asset) {
 
 async function boot() {
   try {
+    state.session = {
+      ...state.session,
+      ...(await getJson("/api/session").catch(() => ({})))
+    };
+    ensureAllowedView();
     state.db = await getJson("/api/db");
     state.selectedWorkId = state.db.works[0]?.id || null;
     state.imageWorkId = state.selectedWorkId;
