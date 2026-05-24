@@ -278,13 +278,13 @@ const screenHelpContent = {
   },
   image: {
     title: "画像生成のヘルプ",
-    lead: "ComfyUI、Forge、Forge Neoへ生成指示を送り、生成画像を作品フォルダと画像一覧へ保存する画面です。",
+    lead: "ComfyUI、Forge、Forge Neo、Draw Thingsへ生成指示を送り、生成画像を作品フォルダと画像一覧へ保存する画面です。",
     sections: [
       {
         title: "使い方",
         items: [
           { term: "エージェント", description: "作りたい構図や雰囲気を会話で伝え、選択中の生成方式へ送るプロンプト案を作ります。" },
-          { term: "送信用プロンプト", description: "手動編集できます。ComfyUIではworkflowへ差し込み、Forge系ではtxt2imgへ送信します。" },
+          { term: "送信用プロンプト", description: "手動編集できます。ComfyUIではworkflowへ差し込み、Forge、Forge Neo、Draw Thingsではtxt2imgへ送信します。" },
           { term: "参照画像", description: "ComfyUI選択時にLoadImage系NodeのIDと入力名を指定し、選択した画像でworkflowの画像入力を差し替えます。" },
           { term: "生成履歴", description: "進行中ステータス、完成画像、保存先、再利用用のプロンプトを確認でき、選択削除と一括削除ができます。" }
         ]
@@ -292,7 +292,7 @@ const screenHelpContent = {
       {
         title: "設定値の意味",
         items: [
-          { term: "生成方式", description: "ComfyUI、Forge、Forge Neoを選びます。URLは設定画面で管理します。" },
+          { term: "生成方式", description: "ComfyUI、Forge、Forge Neo、Draw Thingsを選びます。URLは設定画面で管理します。" },
           { term: "GPU", description: "ComfyUI選択時にローカルGPUまたはクラウドGPUのURLを選びます。" },
           { term: "幅 / 高さ", description: "生成画像のピクセルサイズです。大きいほど重くなります。" },
           { term: "Steps", description: "生成の反復回数です。増やすと時間がかかりますが、細部が安定しやすくなります。" },
@@ -724,6 +724,7 @@ const comfyDefaultSettings = {
   cloudBaseUrl: "",
   forgeBaseUrl: "http://127.0.0.1:7860",
   forgeNeoBaseUrl: "http://127.0.0.1:7860",
+  drawThingsBaseUrl: "http://127.0.0.1:7860",
   forgeNeoModules: [],
   forgeNeoDtype: "Automatic",
   forgeNeoDistilledCfg: "",
@@ -1150,6 +1151,7 @@ const elevenLabsApiKey = () => localStorage.getItem("elevenlabs_api_key") || "";
 const comfyCloudApiKey = () => localStorage.getItem("comfy_cloud_api_key") || "";
 const forgeApiKey = () => localStorage.getItem("forge_api_key") || "";
 const forgeNeoApiKey = () => localStorage.getItem("forge_neo_api_key") || "";
+const drawThingsApiKey = () => localStorage.getItem("drawthings_api_key") || "";
 const removeBgApiKey = () => localStorage.getItem("removebg_api_key") || "";
 const isOpenRouterSeedanceBaseUrl = (value = state.db?.settings?.seedanceBaseUrl) => String(value || "").includes("openrouter.ai");
 const isReplicateSeedanceBaseUrl = (value = state.db?.settings?.seedanceBaseUrl) => String(value || "").includes("replicate.com");
@@ -1159,6 +1161,7 @@ const seedanceProviderLabel = (baseUrl = state.db?.settings?.seedanceBaseUrl) =>
   isOpenRouterSeedanceBaseUrl(baseUrl) ? "OpenRouter" : isReplicateSeedanceBaseUrl(baseUrl) ? "Replicate" : "Seedance";
 const imageProviderFromValue = (value) => {
   const text = String(value || "").trim().toLowerCase();
+  if (["drawthings", "draw-things", "draw_things", "draw things"].includes(text)) return "drawthings";
   if (["forge-neo", "forge_neo", "forgeneo", "neo"].includes(text)) return "forge-neo";
   if (text === "forge") return "forge";
   return "comfy";
@@ -1166,6 +1169,7 @@ const imageProviderFromValue = (value) => {
 const isForgeImageProvider = (provider) => imageProviderFromValue(provider) !== "comfy";
 const imageProviderLabel = (provider) => {
   const value = imageProviderFromValue(provider);
+  if (value === "drawthings") return "Draw Things";
   if (value === "forge-neo") return "Forge Neo";
   if (value === "forge") return "Forge";
   return "ComfyUI";
@@ -1180,12 +1184,14 @@ const activeComfyApiKey = (gpuMode = activeComfySettings().gpuMode) => gpuMode =
 const activeImageBaseUrl = (provider = activeImageProvider(), gpuMode = activeComfySettings().gpuMode) => {
   const settings = activeComfySettings();
   const normalized = imageProviderFromValue(provider);
+  if (normalized === "drawthings") return settings.drawThingsBaseUrl;
   if (normalized === "forge-neo") return settings.forgeNeoBaseUrl;
   if (normalized === "forge") return settings.forgeBaseUrl;
   return activeComfyBaseUrl(gpuMode);
 };
 const activeImageApiKey = (provider = activeImageProvider(), gpuMode = activeComfySettings().gpuMode) => {
   const normalized = imageProviderFromValue(provider);
+  if (normalized === "drawthings") return drawThingsApiKey();
   if (normalized === "forge-neo") return forgeNeoApiKey() || forgeApiKey();
   if (normalized === "forge") return forgeApiKey();
   return activeComfyApiKey(gpuMode);
@@ -2249,6 +2255,7 @@ function normalizedComfySettings(value = {}) {
     cloudBaseUrl: String(source.cloudBaseUrl || "").trim(),
     forgeBaseUrl: String(source.forgeBaseUrl || comfyDefaultSettings.forgeBaseUrl).trim() || comfyDefaultSettings.forgeBaseUrl,
     forgeNeoBaseUrl: String(source.forgeNeoBaseUrl || comfyDefaultSettings.forgeNeoBaseUrl).trim() || comfyDefaultSettings.forgeNeoBaseUrl,
+    drawThingsBaseUrl: String(source.drawThingsBaseUrl || comfyDefaultSettings.drawThingsBaseUrl).trim() || comfyDefaultSettings.drawThingsBaseUrl,
     forgeNeoModules: normalizedForgeNeoModules(source.forgeNeoModules || source.forgeNeoAdditionalModules || source.modules),
     forgeNeoDtype: normalizedForgeNeoDtype(source.forgeNeoDtype || source.forgeNeoUnetDtype),
     forgeNeoDistilledCfg: String(source.forgeNeoDistilledCfg ?? "").trim(),
@@ -3199,6 +3206,7 @@ function readableError(value) {
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   if (Array.isArray(value)) return value.map(readableError).filter(Boolean).join(" / ");
   if (typeof value === "object") {
+    if (String(value.error || "").trim() === "HTTPException" && value.detail) return readableError(value.detail);
     const nested = readableError(value.message)
       || readableError(value.error)
       || readableError(value.detail)
@@ -3264,9 +3272,52 @@ async function saveDb() {
   await postJson("/api/db", state.db, "PUT");
 }
 
+function lastPathSegment(value = "") {
+  const text = String(value || "").split(/[?#]/)[0].replace(/\\/g, "/");
+  const segment = text.split("/").filter(Boolean).pop() || "";
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+function syncImageJobImageUploadReference(oldUrl, moved = {}, options = {}) {
+  const nextUrl = moved.url || "";
+  const nextPath = moved.path || moved.localPath || "";
+  const sourceJobId = options.sourceJobId || "";
+  const nextFileName = lastPathSegment(nextUrl);
+  if (!oldUrl || !nextUrl || !Array.isArray(state.db?.imageJobs)) return false;
+  let changed = false;
+  state.db.imageJobs.forEach((job) => {
+    if (!Array.isArray(job.images)) return;
+    job.images.forEach((image) => {
+      if (!image) return;
+      const sameUrl = image.url === oldUrl || image.url === nextUrl;
+      const sameGeneratedAsset = sourceJobId
+        && job.id === sourceJobId
+        && (job.images.length === 1
+          || lastPathSegment(image.url) === nextFileName
+          || lastPathSegment(image.localPath) === nextFileName
+          || image.filename === nextFileName);
+      if (!sameUrl && !sameGeneratedAsset) return;
+      if (image.url !== nextUrl) {
+        image.url = nextUrl;
+        changed = true;
+      }
+      if (nextPath && image.localPath !== nextPath) {
+        image.localPath = nextPath;
+        changed = true;
+      }
+    });
+  });
+  return changed;
+}
+
 async function relocateAsset(asset) {
   const char = characterForAsset(asset);
   const worldItem = worldItemForAsset(asset);
+  const oldUrl = asset.url;
   if (char) {
     asset.workId = char.workId;
     asset.worldItemId = null;
@@ -3282,6 +3333,7 @@ async function relocateAsset(asset) {
   });
   asset.url = moved.url;
   asset.localPath = moved.path;
+  return { moved, imageJobsChanged: syncImageJobImageUploadReference(oldUrl, moved, { sourceJobId: asset.sourceJobId }) };
 }
 
 async function relocateUploadUrl(uploadUrl, work, char) {
@@ -3350,6 +3402,7 @@ function isUploadUrlReferencedOutsideAssetIds(url, excludingAssetIds = new Set()
         || (setting.sheets || []).some((sheet) => sheet.sourceImageUrl === url);
     })
     || (state.db.worldItems || []).some((item) => item.referenceUrl === url)
+    || (state.db.imageJobs || []).some((job) => (job.images || []).some((image) => image.url === url))
     || state.db.assets.some((asset) => !excludingAssetIds.has(asset.id) && asset.url === url);
 }
 
@@ -3509,8 +3562,9 @@ async function normalizeStoredUploads() {
   for (const asset of state.db.assets) {
     try {
       const oldUrl = asset.url;
-      await relocateAsset(asset);
-      if (asset.url !== oldUrl) changed = true;
+      const oldLocalPath = asset.localPath || "";
+      const result = await relocateAsset(asset);
+      if (asset.url !== oldUrl || (asset.localPath || "") !== oldLocalPath || result?.imageJobsChanged) changed = true;
     } catch {
       // Missing files stay visible in metadata so the user can repair them later.
     }
@@ -3762,7 +3816,7 @@ function currentTitle() {
   if (state.view === "studio") return ["作品とキャラ", "作品単位でキャラ設定と立ち絵を管理します。"];
   if (state.view === "import") return ["画像取込", "複数画像を取り込み、AIでキャラ別に振り分けます。"];
   if (state.view === "gallery") return ["画像一覧", "作品ごと、キャラごとに保存済み画像を閲覧します。"];
-  if (state.view === "image") return ["画像生成", "ComfyUI、Forge、Forge Neoへ画像生成を送信します。"];
+  if (state.view === "image") return ["画像生成", "ComfyUI、Forge、Forge Neo、Draw Thingsへ画像生成を送信します。"];
   if (state.view === "edit") return ["背景除去", "背景除去と透過PNG変換を行います。"];
   if (state.view === "edit-aspect") return ["アスペクト比変換", "指定比率へ配置し、位置と拡大率を調整します。"];
   if (state.view === "edit-gif") return ["動画GIF化", "動画をGIFに変換して画像一覧へ保存します。"];
@@ -8654,7 +8708,8 @@ function applyComfyPreset(presetId) {
     localBaseUrl: current.localBaseUrl,
     cloudBaseUrl: current.cloudBaseUrl,
     forgeBaseUrl: current.forgeBaseUrl,
-    forgeNeoBaseUrl: current.forgeNeoBaseUrl
+    forgeNeoBaseUrl: current.forgeNeoBaseUrl,
+    drawThingsBaseUrl: current.drawThingsBaseUrl
   });
   state.db.settings.comfy = next;
   state.imageProvider = next.provider;
@@ -8766,7 +8821,7 @@ function renderImageCompareCard(job) {
   return `
     <article class="image-compare-card ${job.status}">
       <div class="compare-card-media">
-        ${image?.url ? `<img src="${escapeHtml(image.url)}" alt="">` : `<div class="empty compact">${escapeHtml(imageStatusLabel(job.status))}</div>`}
+        ${image?.url ? `<button class="generated-image-button compact" data-action="open-image-job-image" data-id="${escapeHtml(job.id)}" data-index="0"><img src="${escapeHtml(image.url)}" alt="${escapeHtml(image.filename || job.title || "生成画像")}"></button>` : `<div class="empty compact">${escapeHtml(imageStatusLabel(job.status))}</div>`}
       </div>
       <div class="compare-card-body">
         <div class="compare-badge">${escapeHtml(label)}</div>
@@ -8827,6 +8882,7 @@ function renderImageAgent() {
               <option value="comfy" ${provider === "comfy" ? "selected" : ""}>ComfyUI</option>
               <option value="forge" ${provider === "forge" ? "selected" : ""}>Forge</option>
               <option value="forge-neo" ${provider === "forge-neo" ? "selected" : ""}>Forge Neo</option>
+              <option value="drawthings" ${provider === "drawthings" ? "selected" : ""}>Draw Things</option>
             </select>
           </label>
           ${provider === "comfy" ? `
@@ -9027,7 +9083,11 @@ function renderImageJob(job) {
           <span style="width:${progress === null ? 38 : progress}%"></span>
         </div>
       ` : ""}
-      ${job.images?.length ? `<div class="generated-image-grid">${job.images.map((image) => `<img class="generated-image" src="${escapeHtml(image.url)}" alt="">`).join("")}</div>` : ""}
+      ${job.images?.length ? `<div class="generated-image-grid">${job.images.map((image, index) => `
+        <button class="generated-image-button" data-action="open-image-job-image" data-id="${escapeHtml(job.id)}" data-index="${index}">
+          <img class="generated-image" src="${escapeHtml(image.url)}" alt="${escapeHtml(image.filename || job.title || "生成画像")}">
+        </button>
+      `).join("")}</div>` : ""}
       <div class="result-text">${escapeHtml(compactPromptText(job.prompt, 900))}</div>
       ${job.negativePrompt ? `<div class="meta">Negative</div><div class="result-text">${escapeHtml(compactPromptText(job.negativePrompt, 600))}</div>` : ""}
       <div class="card-actions">
@@ -9040,6 +9100,25 @@ function renderImageJob(job) {
       ${job.error ? `<div class="meta danger-text">${escapeHtml(job.error)}</div>` : ""}
     </article>
   `;
+}
+
+function openImageJobImagePreview(jobId, imageIndex = 0) {
+  const job = byId(state.db.imageJobs || [], jobId);
+  const index = Number(imageIndex);
+  const image = job?.images?.[Number.isFinite(index) ? index : 0];
+  if (!job || !image?.url) return toast("拡大する生成画像が見つかりません。");
+  const title = image.filename || job.title || "生成画像";
+  openModal(
+    title,
+    `
+      <div class="image-preview-modal">
+        <img src="${escapeHtml(image.url)}" alt="${escapeHtml(title)}">
+        <div class="meta">${escapeHtml(job.title || "生成画像")} / ${escapeHtml(imageProviderLabel(job.provider))}${job.updatedAt ? ` / ${escapeHtml(new Date(job.updatedAt).toLocaleString("ja-JP"))}` : ""}</div>
+        ${image.localPath ? `<div class="meta">保存先: ${escapeHtml(image.localPath)}</div>` : ""}
+      </div>
+    `,
+    `<span></span><button class="accent" data-action="close-modal">閉じる</button>`
+  );
 }
 
 function buildImageAgentSystemPrompt() {
@@ -9735,7 +9814,7 @@ async function discardImageWaitingJobs() {
   activeJobs.forEach((job) => {
     job.status = "cancelled";
     if (job.providerTaskId) job.cancelledProviderTaskId = job.providerTaskId;
-    job.error = "ユーザー操作で待機状態を破棄しました。ComfyUI側の生成自体は停止できない場合があります。";
+    job.error = "ユーザー操作で待機状態を破棄しました。外部アプリ側の生成自体は停止できない場合があります。";
     job.updatedAt = new Date().toISOString();
   });
   await saveDb();
@@ -11341,6 +11420,9 @@ function renderComfyModelStatus(provider = activeImageProvider()) {
   const { checkpoints, loras, samplers, modules } = imageModelCatalog(provider);
   if (state.comfyModelStatus === "loading") return `<div class="full meta">${escapeHtml(label)}のモデル一覧を取得中です。</div>`;
   if (state.comfyModelStatus === "failed") return `<div class="full meta danger-text">${escapeHtml(state.comfyModelError || `${label}のモデル一覧を取得できませんでした。`)}</div>`;
+  if (imageProviderFromValue(provider) === "drawthings" && !checkpoints.length && !loras.length && !samplers.length && !modules.length) {
+    return `<div class="full meta">Draw ThingsではHTTP Serverから取得できる現在設定だけを候補として表示します。モデル（Checkpoint）を空欄にするとDraw Things側の現在設定を使います。</div>`;
+  }
   if (!checkpoints.length && !loras.length && !samplers.length && !modules.length) return `<div class="full meta">モデル一覧を取得すると、モデル（Checkpoint）、Sampler、LoRA名を候補から選べます。</div>`;
   const updated = state.comfyModels?.updatedAt ? ` / ${new Date(state.comfyModels.updatedAt).toLocaleString("ja-JP")}` : "";
   const moduleText = imageProviderFromValue(provider) === "forge-neo" ? ` / Module ${modules.length}件` : "";
@@ -11468,11 +11550,14 @@ function renderComfySettings() {
   const provider = imageProviderFromValue(settings.provider);
   const forgeSelected = isForgeImageProvider(provider);
   const forgeLabel = imageProviderLabel(provider);
-  const forgeProduct = provider === "forge-neo" ? "Stable Diffusion WebUI Forge Neo" : "Stable Diffusion WebUI Forge";
-  const forgeBaseUrlInputId = provider === "forge-neo" ? "setting-forge-neo-base-url" : "setting-forge-base-url";
-  const forgeApiKeyInputId = provider === "forge-neo" ? "setting-forge-neo-api-key" : "setting-forge-api-key";
-  const forgeBaseUrlValue = provider === "forge-neo" ? settings.forgeNeoBaseUrl : settings.forgeBaseUrl;
-  const forgeApiKeyValue = provider === "forge-neo" ? forgeNeoApiKey() : forgeApiKey();
+  const forgeProduct = provider === "drawthings" ? "Draw Things" : provider === "forge-neo" ? "Stable Diffusion WebUI Forge Neo" : "Stable Diffusion WebUI Forge";
+  const forgeBaseUrlInputId = provider === "drawthings" ? "setting-draw-things-base-url" : provider === "forge-neo" ? "setting-forge-neo-base-url" : "setting-forge-base-url";
+  const forgeApiKeyInputId = provider === "drawthings" ? "setting-draw-things-api-key" : provider === "forge-neo" ? "setting-forge-neo-api-key" : "setting-forge-api-key";
+  const forgeBaseUrlValue = provider === "drawthings" ? settings.drawThingsBaseUrl : provider === "forge-neo" ? settings.forgeNeoBaseUrl : settings.forgeBaseUrl;
+  const forgeApiKeyValue = provider === "drawthings" ? drawThingsApiKey() : provider === "forge-neo" ? forgeNeoApiKey() : forgeApiKey();
+  const forgeApiHelp = provider === "drawthings"
+    ? `Draw ThingsのHTTP Serverを有効にし、<code>/sdapi/v1/txt2img</code> へ送信します。Draw Things側の現在設定を使う場合、モデル（Checkpoint）は空欄にしてください。参照画像NodeとWorkflow JSONはComfyUI選択時だけ使います。`
+    : `${escapeHtml(forgeProduct)}を <code>--api</code> 付きで起動し、<code>/sdapi/v1/txt2img</code> へ送信します。参照画像NodeとWorkflow JSONはComfyUI選択時だけ使います。`;
   return `
     <section class="panel settings-panel">
       <div class="panel-header">
@@ -11490,6 +11575,7 @@ function renderComfySettings() {
             <option value="comfy" ${provider === "comfy" ? "selected" : ""}>ComfyUI</option>
             <option value="forge" ${provider === "forge" ? "selected" : ""}>Forge</option>
             <option value="forge-neo" ${provider === "forge-neo" ? "selected" : ""}>Forge Neo</option>
+            <option value="drawthings" ${provider === "drawthings" ? "selected" : ""}>Draw Things</option>
           </select>
         </label>
         ${provider === "comfy" ? `
@@ -11517,7 +11603,7 @@ function renderComfySettings() {
           <label class="full">${escapeHtml(forgeLabel)} APIキー
             <input id="${forgeApiKeyInputId}" type="password" placeholder="必要な環境だけ入力" value="${escapeHtml(forgeApiKeyValue)}">
           </label>
-          <div class="full meta">${escapeHtml(forgeProduct)}を <code>--api</code> 付きで起動し、<code>/sdapi/v1/txt2img</code> へ送信します。参照画像NodeとWorkflow JSONはComfyUI選択時だけ使います。</div>
+          <div class="full meta">${forgeApiHelp}</div>
           ${provider === "forge-neo" ? `
             <div class="full comfy-reference-panel">
               <div class="field-label">Forge Neo詳細</div>
@@ -12611,6 +12697,9 @@ function bindImageAgent() {
   document.querySelectorAll("[data-action='adopt-image-job']").forEach((button) => {
     button.addEventListener("click", () => adoptImageJob(button.dataset.id));
   });
+  document.querySelectorAll("[data-action='open-image-job-image']").forEach((button) => {
+    button.addEventListener("click", () => openImageJobImagePreview(button.dataset.id, button.dataset.index));
+  });
   bindGenerationHistoryControls("image", visibleImageHistoryItems);
 }
 
@@ -13384,6 +13473,7 @@ function comfySettingsFromDom() {
     cloudBaseUrl: document.querySelector("#setting-comfy-cloud-url") ? document.querySelector("#setting-comfy-cloud-url").value.trim() : current.cloudBaseUrl,
     forgeBaseUrl: document.querySelector("#setting-forge-base-url")?.value.trim() || current.forgeBaseUrl,
     forgeNeoBaseUrl: document.querySelector("#setting-forge-neo-base-url")?.value.trim() || current.forgeNeoBaseUrl,
+    drawThingsBaseUrl: document.querySelector("#setting-draw-things-base-url")?.value.trim() || current.drawThingsBaseUrl,
     forgeNeoModules: forgeNeoModulesFromDom("setting", current.forgeNeoModules),
     forgeNeoDtype: document.querySelector("#setting-forge-neo-dtype")?.value || current.forgeNeoDtype,
     forgeNeoDistilledCfg: document.querySelector("#setting-forge-neo-distilled-cfg")?.value.trim() ?? current.forgeNeoDistilledCfg,
@@ -13422,6 +13512,8 @@ function saveComfySettingsFromDom() {
   if (forgeKeyInput) localStorage.setItem("forge_api_key", forgeKeyInput.value.trim());
   const forgeNeoKeyInput = document.querySelector("#setting-forge-neo-api-key");
   if (forgeNeoKeyInput) localStorage.setItem("forge_neo_api_key", forgeNeoKeyInput.value.trim());
+  const drawThingsKeyInput = document.querySelector("#setting-draw-things-api-key");
+  if (drawThingsKeyInput) localStorage.setItem("drawthings_api_key", drawThingsKeyInput.value.trim());
   state.db.settings.comfy = comfySettingsFromDom();
   state.imageProvider = state.db.settings.comfy.provider;
   state.imageGpuMode = state.db.settings.comfy.gpuMode;

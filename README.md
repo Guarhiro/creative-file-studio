@@ -1,7 +1,7 @@
 # Creative File Studio
 
 ローカル環境で動く、創作支援向けのファイル管理アプリです。作品、キャラ設定、取り込み画像、世界観資料、生成プロンプト、画像生成、画像編集、音声、動画をまとめて扱えます。
-画像生成はComfyUI互換API、Stable Diffusion WebUI Forge、Forge Neoを選択でき、ComfyUIではローカルGPUとクラウドGPUを切り替え、Forge / Forge Neoではtxt2img APIに送信できます。画像編集は簡易ローカル処理、アスペクト比変換、手動フリーモード、ローカルAI rembg、ローカルAI backgroundremover、remove.bgクラウドAPIを切り替え、動画背景除去と動画GIF化も扱えます。動画生成は公式Seedance APIまたはOpenRouterの動画モデル、音声生成はOpenRouter TTS、ElevenLabs、Voicebox、ローカル Irodori-TTS を切り替えて使えます。音声編集ではmp3/wavの複数分割、不要範囲カット、音量変更、ピッチ変更ができます。
+画像生成はComfyUI互換API、Stable Diffusion WebUI Forge、Forge Neo、Draw Thingsを選択でき、ComfyUIではローカルGPUとクラウドGPUを切り替え、Forge / Forge Neo / Draw Thingsではtxt2img APIに送信できます。画像編集は簡易ローカル処理、アスペクト比変換、手動フリーモード、ローカルAI rembg、ローカルAI backgroundremover、remove.bgクラウドAPIを切り替え、動画背景除去と動画GIF化も扱えます。動画生成は公式Seedance APIまたはOpenRouterの動画モデル、音声生成はOpenRouter TTS、ElevenLabs、Voicebox、ローカル Irodori-TTS を切り替えて使えます。音声編集ではmp3/wavの複数分割、不要範囲カット、音量変更、ピッチ変更ができます。
 
 ## 初回セットアップ
 
@@ -181,15 +181,15 @@ ZIPに含めないもの:
 ### 画像生成
 
 - 作品情報、世界観、キャラ情報を読んだ画像生成エージェント
-- 生成方式としてComfyUI、Forge、Forge Neoを選択
+- 生成方式としてComfyUI、Forge、Forge Neo、Draw Thingsを選択
 - ComfyUI互換APIに送信し、ローカルGPUまたはクラウドGPUを生成ごとに選択
-- Forge / Forge Neo選択時はStable Diffusion WebUI Forge系の `/sdapi/v1/txt2img` に送信
+- Forge / Forge Neo / Draw Things選択時は `/sdapi/v1/txt2img` に送信
 - API Format workflow JSONを設定し、Positive、Negative、Seed、Size、Steps、CFG、Sampler、モデル（Checkpoint）のNode IDを指定
 - workflow JSONはJSON編集とビジュアル確認を切り替え、Node IDの差し替え対象や接続を確認
 - 幅、高さ、Steps、CFG、Sampler、Scheduler、Batch、Seed、モデル（Checkpoint）を画面から指定
 - Forge NeoではVAE/Text Encoderなどの追加Module、Diffusion in Low Bits、Distilled CFG / Shift、Refiner、override_settings JSON、txt2img追加JSONを指定
-- LoRA名、Model強度、CLIP強度を指定し、ComfyUIではLoraLoaderとして読み込み、Forge / Forge Neoでは `<lora:name:strength>` をプロンプトに追加
-- ComfyUI、Forge、Forge Neoのモデル（Checkpoint） / Sampler / LoRA一覧を取得し、Forge NeoではModule候補も入力候補として表示
+- LoRA名、Model強度、CLIP強度を指定し、ComfyUIではLoraLoaderとして読み込み、Forge / Forge Neo / Draw Thingsでは `<lora:name:strength>` をプロンプトに追加
+- ComfyUI、Forge、Forge Neoのモデル（Checkpoint） / Sampler / LoRA一覧を取得し、Forge NeoではModule候補も入力候補として表示。Draw ThingsではHTTP Serverから取得できる現在設定を候補として表示
 - 生成前にworkflowのNode ID、LoRA接続、モデル（Checkpoint） / LoRA名を事前チェック
 - Comfy設定をプリセットとして保存し、立ち絵、背景、表情差分など用途別に呼び出し
 - 画像一覧、キャラ立ち絵、その他情報、追加アップロード画像をComfy参照画像として選択
@@ -265,7 +265,7 @@ ZIPに含めないもの:
 - OpenRouter APIキー、ElevenLabs APIキー、Seedance/Replicate APIキー、ComfyUIクラウドAPIキーをブラウザのlocalStorageに保存
 - 画像判別、テキスト生成、世界観読み込み、画像生成エージェント、動画エージェント、音声エージェントのモデルを個別に設定
 - OpenRouterのモデル一覧と動画モデル対応設定を再取得
-- 画像生成APIとしてComfyUI、Forge、Forge Neoを選択し、ComfyUIのローカルURL / クラウドURL、Forge URL、Forge Neo URL、workflow、Node ID、既定生成値、LoRA、workflow表示モード、モデル候補取得、事前チェック、プリセットを設定
+- 画像生成APIとしてComfyUI、Forge、Forge Neo、Draw Thingsを選択し、ComfyUIのローカルURL / クラウドURL、Forge URL、Forge Neo URL、Draw Things URL、workflow、Node ID、既定生成値、LoRA、workflow表示モード、モデル候補取得、事前チェック、プリセットを設定
 - 画像編集画面からローカルAI rembg / backgroundremoverの状態確認とセットアップ
 - 動画生成プロバイダーを公式 / OpenRouter / Replicateから選択
 - VoiceboxのAPI URL、既定プロファイル、言語、Model sizeを設定
@@ -286,7 +286,7 @@ ZIPに含めないもの:
 - OpenRouter API キー: ブラウザの localStorage
 - ElevenLabs API キー: ブラウザの localStorage
 - Seedance API キー: ブラウザの localStorage
-- ComfyUI クラウドAPI キー、Forge API キー、Forge Neo API キー: ブラウザの localStorage
+- ComfyUI クラウドAPI キー、Forge API キー、Forge Neo API キー、Draw Things API キー: ブラウザの localStorage
 - remove.bg API キー: ブラウザの localStorage
 
 既存の `data/uploads/` 直下にある画像は、アプリ読み込み時に現在の作品・キャラ割当に合わせて自動で移動されます。未割当画像は `作品名/_未割当/` に入ります。
@@ -318,7 +318,7 @@ ZIPに含めないもの:
 
 設定画面の「画像生成API」セクションで以下を設定します。
 
-- 既定生成方式: ComfyUI、Forge、Forge Neoを選びます。画像生成画面でも生成ごとに切り替えできます。
+- 既定生成方式: ComfyUI、Forge、Forge Neo、Draw Thingsを選びます。画像生成画面でも生成ごとに切り替えできます。
 - 既定GPU: ComfyUI選択時にローカルGPUまたはクラウドGPUを選びます。画像生成画面でも生成ごとに切り替えできます。
 - ローカルComfyUI URL: Comfyアプリ内の「設定」→「サーバー設定」でホストとポートを確認し、`http://(ホスト):(ポート)` の形式で入力します。例 `http://127.0.0.1:8000`
 - クラウドComfyUI URL: ComfyUI互換の `/prompt`、`/history/{prompt_id}`、`/view`、`/system_stats` を公開しているURLを指定します。
@@ -328,14 +328,16 @@ ZIPに含めないもの:
 - Forge Neo URL: Stable Diffusion WebUI Forge Neoを `--api` 付きで起動し、`http://127.0.0.1:7860` などを指定します。
 - Forge Neo APIキー: 必要な環境だけ保存します。未設定時はForge APIキーをフォールバック利用します。
 - Forge Neo詳細: VAE/Text Encoderなどの追加Module、Diffusion in Low Bits、Distilled CFG / Shift、Refiner checkpoint / switch、override_settings JSON、txt2img追加JSONを保存します。
+- Draw Things URL: Draw ThingsのHTTP Serverを有効にし、`http://127.0.0.1:7860` などを指定します。
+- Draw Things APIキー: 必要な環境だけ保存します。通常のローカルHTTP Serverでは空欄で使えます。
 - Workflow JSON: ComfyUIの `Save (API Format)` で保存したJSONを貼り付けます。
 - Node ID: Positive、Negative、Seed、Size、Steps、CFG、Sampler、モデル（Checkpoint）の入力を書き換えるノード番号を指定します。
 
-画像生成画面では、作品、キャラ、生成方式、ComfyUI選択時のGPU、幅、高さ、Steps、CFG、Sampler、Scheduler、Batch、Seed、モデル（Checkpoint）を指定できます。Forge / Forge Neo選択時の初期対応はtxt2imgです。Forge Neo選択時は追加Module、Low Bits、Distilled CFG / Shift、Refiner、JSON拡張も生成ごとに指定できます。参照画像Nodeを使う生成はComfyUIを選択してください。エージェントに相談してプロンプト案を作ることも、プロンプト欄へ直接入力することもできます。生成比較モードをONにすると、Seed、CFG、Stepsのいずれかを軸に複数ジョブを投入し、比較結果から採用した案を生成設定へ戻せます。
+画像生成画面では、作品、キャラ、生成方式、ComfyUI選択時のGPU、幅、高さ、Steps、CFG、Sampler、Scheduler、Batch、Seed、モデル（Checkpoint）を指定できます。Forge / Forge Neo / Draw Things選択時の初期対応はtxt2imgです。Draw Thingsでモデル（Checkpoint）を空欄にすると、Draw Things側の現在設定を使います。Forge Neo選択時は追加Module、Low Bits、Distilled CFG / Shift、Refiner、JSON拡張も生成ごとに指定できます。参照画像Nodeを使う生成はComfyUIを選択してください。エージェントに相談してプロンプト案を作ることも、プロンプト欄へ直接入力することもできます。生成比較モードをONにすると、Seed、CFG、Stepsのいずれかを軸に複数ジョブを投入し、比較結果から採用した案を生成設定へ戻せます。
 
 生成が完了すると、画像は `data/uploads/<作品名>/_画像生成/` に保存され、画像一覧と画像整理に自動登録されます。キャラ指定ありで生成した場合は、そのキャラの画像として登録されます。
 
-「モデル一覧取得」で接続エラーが出る場合は、選択中の生成方式のアプリが起動していないか、設定したURL/ポートが違います。ComfyUIではブラウザで `http://(ホスト):(ポート)/system_stats`、Forge / Forge Neoでは `http://(ホスト):(ポート)/sdapi/v1/options` が開ける状態にしてから再取得してください。
+「モデル一覧取得」で接続エラーが出る場合は、選択中の生成方式のアプリが起動していないか、設定したURL/ポートが違います。ComfyUIではブラウザで `http://(ホスト):(ポート)/system_stats`、Forge / Forge Neo / Draw Thingsでは `http://(ホスト):(ポート)/sdapi/v1/options` が開ける状態にしてから再取得してください。
 
 ## 音声生成
 

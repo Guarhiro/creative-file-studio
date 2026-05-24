@@ -104,6 +104,7 @@ const emptyDb = {
       cloudBaseUrl: "",
       forgeBaseUrl: "http://127.0.0.1:7860",
       forgeNeoBaseUrl: "http://127.0.0.1:7860",
+      drawThingsBaseUrl: "http://127.0.0.1:7860",
       forgeNeoModules: [],
       forgeNeoDtype: "Automatic",
       forgeNeoDistilledCfg: "",
@@ -205,6 +206,7 @@ function readableProviderError(value) {
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   if (Array.isArray(value)) return value.map(readableProviderError).filter(Boolean).join(" / ");
   if (typeof value === "object") {
+    if (String(value.error || "").trim() === "HTTPException" && value.detail) return readableProviderError(value.detail);
     return readableProviderError(value.message)
       || readableProviderError(value.error)
       || readableProviderError(value.detail)
@@ -3836,11 +3838,17 @@ function normalizeForgeBaseUrl(value) {
 
 function forgeProviderLabel(value = "") {
   const text = String(value || "").trim().toLowerCase();
+  if (["drawthings", "draw-things", "draw_things", "draw things"].includes(text)) return "Draw Things";
   return text.includes("neo") ? "Forge Neo" : "Forge";
 }
 
 function forgeProductName(label = "Forge") {
+  if (label === "Draw Things") return "Draw Things";
   return label === "Forge Neo" ? "Stable Diffusion WebUI Forge Neo" : "Stable Diffusion WebUI Forge";
+}
+
+function isDrawThingsProviderLabel(label = "") {
+  return label === "Draw Things";
 }
 
 function forgeEndpoint(baseUrl, pathname = "") {
@@ -3883,7 +3891,13 @@ function forgeConnectionErrorMessage(baseUrl, error, label = "Forge") {
       ? ` (${error.message})`
       : "";
   if (error?.name === "AbortError" || error?.name === "TimeoutError") {
+    if (isDrawThingsProviderLabel(label)) {
+      return `${label}への接続がタイムアウトしました。設定URL ${urlText} でDraw ThingsのHTTP Serverが有効になっているか確認してください${detail}。`;
+    }
     return `${label}への接続がタイムアウトしました。設定URL ${urlText} で${productName}がAPI有効で起動しているか確認してください${detail}。`;
+  }
+  if (isDrawThingsProviderLabel(label)) {
+    return `${label}に接続できませんでした。設定URL ${urlText} でDraw Thingsを起動し、HTTP Serverを有効にしているか確認してください${detail}。`;
   }
   return `${label}に接続できませんでした。設定URL ${urlText} で${productName}が起動しているか、--api付きで起動しているか確認してください${detail}。`;
 }
@@ -3924,6 +3938,27 @@ function extractForgeModules(payload = []) {
     .sort((a, b) => a.localeCompare(b));
 }
 
+function extractDrawThingsOptionHints(payload = {}, patterns = []) {
+  const matches = [];
+  const visit = (value, key = "") => {
+    if (matches.length >= 60 || value === null || value === undefined) return;
+    if (typeof value === "string") {
+      const text = value.trim();
+      if (text && text.length <= 260 && patterns.some((pattern) => pattern.test(key))) matches.push(text);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item) => visit(item, key));
+      return;
+    }
+    if (typeof value === "object") {
+      Object.entries(value).forEach(([childKey, childValue]) => visit(childValue, childKey));
+    }
+  };
+  visit(payload);
+  return [...new Set(matches)].sort((a, b) => a.localeCompare(b));
+}
+
 function parseOptionalJsonObject(value, label) {
   if (!value) return {};
   if (typeof value === "object" && !Array.isArray(value)) return value;
@@ -3942,6 +3977,21 @@ function activeForgeNeoModules(value = []) {
   return (Array.isArray(value) ? value : String(value || "").split(/\r?\n|,/g))
     .map((item) => String(item?.filename || item?.model_name || item?.name || item || "").trim())
     .filter(Boolean);
+}
+
+function drawThingsSamplerName(value) {
+  const text = String(value || "").trim();
+  if (!text) return "Euler a";
+  const normalized = text.toLowerCase().replace(/\s+/g, " ");
+  if (normalized === "euler" || normalized === "euler a" || normalized === "euler-a") return "Euler a";
+  if (normalized === "dpm++ 2m") return "DPM++ 2M AYS";
+  if (normalized === "dpm++ 2m ays") return "DPM++ 2M AYS";
+  if (normalized === "dpm++ 2m karras") return "DPM++ 2M Karras";
+  if (normalized === "dpm++ sde") return "DPM++ SDE AYS";
+  if (normalized === "dpm++ sde karras") return "DPM++ SDE Karras";
+  if (normalized === "unipc") return "UniPC";
+  if (normalized === "lcm") return "LCM";
+  return text;
 }
 
 function forgeLoraTokenName(value) {
@@ -4018,7 +4068,7 @@ async function handleForgeCheck(req, res) {
     sendJson(res, 200, {
       ok: true,
       options: payload,
-      sdModelCheckpoint: payload.sd_model_checkpoint || ""
+      sdModelCheckpoint: payload.sd_model_checkpoint || payload.model || payload.model_name || ""
     });
   } catch (error) {
     sendJson(res, 502, { error: `${label} 接続確認に失敗しました: ${error.message}` });
@@ -4042,6 +4092,18 @@ async function handleForgeModels(req, res) {
   const label = forgeProviderLabel(provider);
   if (!baseUrl) return sendJson(res, 400, { error: `${label} のURLが未設定です。` });
   try {
+    if (isDrawThingsProviderLabel(label)) {
+      const options = await fetchForgeJson(baseUrl, apiKey, "/sdapi/v1/options", 20000, label);
+      return sendJson(res, 200, {
+        ok: true,
+        checkpoints: extractDrawThingsOptionHints(options, [/model/i, /checkpoint/i]),
+        samplers: extractDrawThingsOptionHints(options, [/sampler/i]),
+        loras: [],
+        modules: [],
+        providerPayload: options,
+        updatedAt: new Date().toISOString()
+      });
+    }
     const [models, samplers, loras, modules] = await Promise.all([
       fetchForgeJson(baseUrl, apiKey, "/sdapi/v1/sd-models", 20000, label),
       fetchForgeJson(baseUrl, apiKey, "/sdapi/v1/samplers", 20000, label).catch(() => []),
@@ -4070,6 +4132,7 @@ async function handleForgeCreate(req, res) {
   const seedText = String(body.seed ?? "").trim();
   const seed = Number(seedText);
   const isForgeNeo = label === "Forge Neo";
+  const isDrawThings = isDrawThingsProviderLabel(label);
   const requestPayload = {
     prompt: forgePromptWithLoras(prompt, body.loras),
     negative_prompt: String(negativePrompt || ""),
@@ -4081,10 +4144,15 @@ async function handleForgeCreate(req, res) {
     scheduler: String(body.scheduler || "").trim() || undefined,
     batch_size: boundedNumber(body.batchSize, 1, 1, 8, true),
     n_iter: 1,
-    seed: Number.isFinite(seed) && seed >= 0 ? Math.floor(seed) : -1,
+    seed: seedText && Number.isFinite(seed) && seed >= 0 ? Math.floor(seed) : -1,
     override_settings_restore_afterwards: true
   };
-  if (checkpoint) {
+  if (isDrawThings) {
+    delete requestPayload.scheduler;
+    delete requestPayload.override_settings_restore_afterwards;
+    requestPayload.sampler_name = drawThingsSamplerName(requestPayload.sampler_name);
+    if (checkpoint) requestPayload.model = String(checkpoint).trim();
+  } else if (checkpoint) {
     requestPayload.override_settings = { sd_model_checkpoint: String(checkpoint).trim() };
   }
   if (isForgeNeo) {
