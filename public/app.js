@@ -131,6 +131,8 @@ const state = {
   audioSelectedItemIds: [],
   audioEditWorkId: null,
   audioEditCharacterId: "",
+  audioEditHistoryPage: 1,
+  audioEditSelectedItemIds: [],
   audioEditFile: null,
   audioEditMode: "split",
   audioEditSplitPoints: ["5", "10"],
@@ -207,7 +209,7 @@ const navItems = [
   { id: "settings", label: "設定" }
 ];
 
-const mobileAllowedViewIds = new Set(["studio", "gallery", "image", "audio", "video", "edit", "edit-aspect"]);
+const mobileAllowedViewIds = new Set(["studio", "import", "gallery", "image", "audio", "video", "edit", "edit-aspect"]);
 const isLanClient = () => state.session?.mode === "lan";
 const canUseSettings = () => state.session?.canUseSettings !== false;
 const canRevealFiles = () => state.session?.canRevealFiles !== false;
@@ -465,6 +467,7 @@ const screenHelpContent = {
           { term: "ピッチ変更", description: "-12から+12半音で高さを指定し、ピッチ変更後の音声を1ファイルとして書き出します。" },
           { term: "波形と現在時間", description: "音声プレイヤーの下に波形と現在の再生時間を0.1秒単位で表示します。波形クリックでも再生位置を移動できます。" },
           { term: "再編集", description: "編集結果または音声編集履歴の再編集ボタンから、その音声を選択音声として読み込み直せます。" },
+          { term: "履歴削除", description: "音声編集履歴を個別削除、選択削除、一括削除できます。保存済み音声ファイル本体は削除しません。" },
           { term: "編集開始", description: "ffmpegで処理し、完了後に作品とキャラに紐づいた音声履歴へ登録します。" }
         ]
       },
@@ -816,6 +819,13 @@ const generationHistoryConfigs = {
     selectedKey: "audioSelectedItemIds",
     pageKey: "audioHistoryPage",
     label: "音声生成履歴",
+    activeStatuses: []
+  },
+  "audio-edit": {
+    dbKey: "audioItems",
+    selectedKey: "audioEditSelectedItemIds",
+    pageKey: "audioEditHistoryPage",
+    label: "音声編集履歴",
     activeStatuses: []
   },
   video: {
@@ -4217,6 +4227,7 @@ function renderImport() {
   const selectedImportCharacter = byId(state.db.characters, state.importCharacterId);
   const selectedImportWorldItem = workWorldItemById(state.importWorldItemId);
   const trashSources = state.db.settings.moveImportedSourcesToTrash === true;
+  const showSourceControls = canUseSettings();
   return `
     <div class="split">
       <section class="panel">
@@ -4252,16 +4263,18 @@ function renderImport() {
               <option value="tags" ${state.importPromptFormat === "tags" ? "selected" : ""}>タグ</option>
             </select>
           </label>
-          <label class="full">取り込み元ファイル
-            <select id="move-imported-sources">
-              <option value="off" ${trashSources ? "" : "selected"}>元ファイルを残す</option>
-              <option value="on" ${trashSources ? "selected" : ""}>取り込み後にゴミ箱へ移動</option>
-            </select>
-          </label>
-          <label class="full">取り込み元フォルダ
-            <input id="import-source-root" value="${escapeHtml(state.db.settings.importSourceRoot || "")}" placeholder="/Users/guarhiro/Downloads">
-          </label>
-          <div class="full meta">ゴミ箱移動ON時は、元パスが取得できる環境ではそのファイルを、通常ブラウザでは取り込み元フォルダ内の同名・同サイズ・同内容のファイルだけ移動します。</div>
+          ${showSourceControls ? `
+            <label class="full">取り込み元ファイル
+              <select id="move-imported-sources">
+                <option value="off" ${trashSources ? "" : "selected"}>元ファイルを残す</option>
+                <option value="on" ${trashSources ? "selected" : ""}>取り込み後にゴミ箱へ移動</option>
+              </select>
+            </label>
+            <label class="full">取り込み元フォルダ
+              <input id="import-source-root" value="${escapeHtml(state.db.settings.importSourceRoot || "")}" placeholder="/Users/guarhiro/Downloads">
+            </label>
+            <div class="full meta">ゴミ箱移動ON時は、元パスが取得できる環境ではそのファイルを、通常ブラウザでは取り込み元フォルダ内の同名・同サイズ・同内容のファイルだけ移動します。</div>
+          ` : ""}
           <div class="full meta">${
             selectedImportCharacter
               ? `手動指定中: ${escapeHtml(selectedImportCharacter.name)} に直接保存します。`
@@ -5218,8 +5231,7 @@ function renderAudioEditResult() {
 function audioEditHistoryItems() {
   return audioItemsForWork(state.audioEditWorkId)
     .filter((item) => item.provider === "audio-edit")
-    .filter((item) => !state.audioEditCharacterId || item.characterId === state.audioEditCharacterId)
-    .slice(0, 12);
+    .filter((item) => !state.audioEditCharacterId || item.characterId === state.audioEditCharacterId);
 }
 
 function audioEditControlsFromDom() {
@@ -7415,6 +7427,7 @@ async function runAudioEdit() {
       createdAt
     }));
     state.db.audioItems.unshift(...created);
+    resetGenerationHistoryPage("audio-edit");
     await saveDb();
     toast(result.mode === "split" ? `${created.length} 件に分割して保存しました。` : result.mode === "volume" ? "音量変更した音声を保存しました。" : result.mode === "pitch" ? "ピッチ変更した音声を保存しました。" : "不要部分をカットして保存しました。");
   } catch (error) {
@@ -10740,7 +10753,8 @@ function renderAudioEditor() {
   const file = state.audioEditFile;
   const durationText = file?.duration ? ` / 長さ ${formatAudioTime(file.duration)}` : "";
   const titleValue = state.audioEditTitle || audioEditDefaultTitle(file?.name || "");
-  const history = audioEditHistoryItems();
+  const allHistory = audioEditHistoryItems();
+  const { items: history, pageInfo: historyPageInfo } = getPagedGenerationHistoryItems("audio-edit", allHistory);
   return `
     <div class="video-layout audio-layout audio-edit-layout">
       <section class="panel">
@@ -10801,9 +10815,12 @@ function renderAudioEditor() {
           </div>
         </section>
         <section class="panel">
-          <div class="panel-header"><h2>音声編集履歴</h2></div>
+          <div class="panel-header generation-history-header">
+            <h2>音声編集履歴</h2>
+            ${renderGenerationHistoryActions("audio-edit", allHistory, history, historyPageInfo)}
+          </div>
           <div class="panel-body audio-history-list">
-            ${history.length ? history.map((item) => renderAudioItem(item, { allowAudioEditReuse: true })).join("") : `<div class="empty compact">音声編集の履歴はまだありません。</div>`}
+            ${history.length ? history.map((item) => renderAudioItem(item, { historyKind: "audio-edit", allowAudioEditReuse: true })).join("") : `<div class="empty compact">音声編集の履歴はまだありません。</div>`}
           </div>
         </section>
       </section>
@@ -12201,6 +12218,7 @@ async function loadImportFiles(files) {
 }
 
 async function trashImportedSourceFiles(created) {
+  if (isLanClient()) return;
   if (state.db.settings.moveImportedSourcesToTrash !== true || !created.length) return;
   const results = [];
   for (const item of created) {
@@ -12264,13 +12282,16 @@ async function runImport() {
   const workId = document.querySelector("#import-work")?.value || "";
   const selectedCharacterId = document.querySelector("#import-character")?.value || "";
   const selectedWorldItemId = document.querySelector("#import-world-item")?.value || "";
-  state.db.settings.moveImportedSourcesToTrash = document.querySelector("#move-imported-sources")?.value === "on";
-  state.db.settings.importSourceRoot = document.querySelector("#import-source-root")?.value.trim() || "";
+  if (canUseSettings()) {
+    state.db.settings.moveImportedSourcesToTrash = document.querySelector("#move-imported-sources")?.value === "on";
+    state.db.settings.importSourceRoot = document.querySelector("#import-source-root")?.value.trim() || "";
+  }
   const targetCharacter = byId(state.db.characters, selectedCharacterId);
   const targetWorldItem = workWorldItemById(selectedWorldItemId);
   const targetWorkId = targetCharacter?.workId || targetWorldItem?.workId || workId || null;
   const targetWork = byId(state.db.works, targetWorkId);
   const shouldAutoClassify = !targetCharacter && !targetWorldItem && state.importAutoClassify;
+  const targetSubjectValue = targetCharacter ? `char:${targetCharacter.id}` : targetWorldItem ? `world:${targetWorldItem.id}` : "";
   const created = [];
   state.importIsRunning = true;
   render();
@@ -12322,12 +12343,21 @@ async function runImport() {
     } else if (targetWorldItem) {
       toast(`${created.length} 件を ${worldItemCategoryLabel(targetWorldItem.category)}: ${targetWorldItem.name} に取り込みました。`);
     } else if (shouldAutoClassify && created.length) {
-      toastApiSubmitted("API送信を開始しました。反映までお待ちください。進行状況は画像整理画面から確認できます。");
+      toastApiSubmitted(isLanClient()
+        ? "API送信を開始しました。反映までお待ちください。進行状況は画像一覧で確認できます。"
+        : "API送信を開始しました。反映までお待ちください。進行状況は画像整理画面から確認できます。");
       state.importFiles = [];
       state.importIsRunning = false;
-      state.view = "library";
-      state.libraryStatus = "all";
-      resetLibraryPage();
+      if (isLanClient()) {
+        state.view = "gallery";
+        state.galleryWorkId = targetWorkId || "";
+        state.galleryCharacterId = "";
+        resetGalleryPage();
+      } else {
+        state.view = "library";
+        state.libraryStatus = "all";
+        resetLibraryPage();
+      }
       render();
       classifyImportedAssets(created, state.importPromptFormat).catch((error) => {
         toast(error.message);
@@ -12339,8 +12369,15 @@ async function runImport() {
     }
     state.importFiles = [];
     state.importIsRunning = false;
-    state.view = "library";
-    resetLibraryPage();
+    if (isLanClient()) {
+      state.view = "gallery";
+      state.galleryWorkId = targetWorkId || "";
+      state.galleryCharacterId = targetSubjectValue;
+      resetGalleryPage();
+    } else {
+      state.view = "library";
+      resetLibraryPage();
+    }
     render();
   } catch (error) {
     state.importIsRunning = false;
@@ -12936,6 +12973,8 @@ function bindAudioEditor() {
     if (state.audioEditCharacterId && !state.db.characters.some((char) => char.id === state.audioEditCharacterId && (!state.audioEditWorkId || char.workId === state.audioEditWorkId))) {
       state.audioEditCharacterId = "";
     }
+    resetGenerationHistoryPage("audio-edit");
+    clearGenerationHistorySelection("audio-edit");
     render();
   });
   document.querySelector("#audio-edit-character")?.addEventListener("change", (event) => {
@@ -12946,6 +12985,8 @@ function bindAudioEditor() {
       state.audioEditWorkId = char.workId;
       state.selectedWorkId = char.workId;
     }
+    resetGenerationHistoryPage("audio-edit");
+    clearGenerationHistorySelection("audio-edit");
     render();
   });
   ["#audio-edit-title", "#audio-edit-output-format"].forEach((selector) => {
@@ -13100,6 +13141,7 @@ function bindAudioEditor() {
   });
   document.querySelector("[data-action='check-audio-edit-ffmpeg']")?.addEventListener("click", () => checkAudioEditStatus());
   document.querySelector("[data-action='run-audio-edit']")?.addEventListener("click", runAudioEdit);
+  bindGenerationHistoryControls("audio-edit", audioEditHistoryItems);
 }
 
 function bindVideoAgent() {

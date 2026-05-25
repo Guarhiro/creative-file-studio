@@ -4815,7 +4815,7 @@ const server = http.createServer(async (req, res) => {
         remoteAddress: access.remoteAddress,
         canUseSettings: access.canUseSettings,
         canRevealFiles: access.canRevealFiles,
-        allowedViews: access.mode === "lan" ? ["studio", "gallery", "image", "audio", "video", "edit", "edit-aspect"] : null,
+        allowedViews: access.mode === "lan" ? ["studio", "import", "gallery", "image", "audio", "video", "edit", "edit-aspect"] : null,
         networkUrls: networkUrls()
       });
     }
