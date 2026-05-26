@@ -176,13 +176,14 @@ const state = {
   voiceboxProfiles: [],
   voiceboxProfileStatus: "idle",
   voiceboxProfileError: "",
-  comfyModels: { checkpoints: [], loras: [], samplers: [], schedulers: [], modules: [], provider: "comfy", updatedAt: "" },
+  comfyModels: { checkpoints: [], loras: [], vaes: [], samplers: [], schedulers: [], modules: [], provider: "comfy", updatedAt: "" },
   comfyModelStatus: "idle",
   comfyModelError: "",
   comfyValidation: null,
   modelLibraryQuery: "",
   modelLibraryType: "Checkpoint",
   modelLibraryBaseModel: "all",
+  modelLibraryLoraCategory: "all",
   modelLibraryAvailability: "all",
   modelLibrarySort: "Most Downloaded",
   modelLibraryPeriod: "Month",
@@ -196,8 +197,8 @@ const state = {
   modelLibrarySearchStatus: "idle",
   modelLibraryError: "",
   modelLibrarySelectedKey: "",
-  modelLibraryLocal: { checkpoints: [], loras: [], dirs: {}, updatedAt: "" },
-  modelLibraryProviderCatalog: { checkpoints: [], loras: [], samplers: [], modules: [], provider: "", status: "idle", error: "", updatedAt: "" },
+  modelLibraryLocal: { checkpoints: [], loras: [], vaes: [], dirs: {}, updatedAt: "" },
+  modelLibraryProviderCatalog: { checkpoints: [], loras: [], vaes: [], samplers: [], modules: [], provider: "", status: "idle", error: "", updatedAt: "" },
   modelLibraryDownloads: {},
   videoPricingStatus: "idle",
   videoPricingError: "",
@@ -914,7 +915,8 @@ const generationHistoryPageSize = 10;
 
 const modelLibraryTypes = [
   ["Checkpoint", "Checkpoint"],
-  ["LORA", "LoRA"]
+  ["LORA", "LoRA"],
+  ["VAE", "VAE"]
 ];
 
 const modelLibraryProviders = [
@@ -926,6 +928,9 @@ const modelLibraryProviders = [
 
 const modelLibraryBaseModelOptions = [
   ["all", "すべて"],
+  ["Flux", "Flux"],
+  ["Qwen", "Qwen"],
+  ["LTX", "LTX"],
   ["Illustrious", "Illustrious"],
   ["Pony", "Pony"],
   ["Anima", "Anima"],
@@ -933,6 +938,16 @@ const modelLibraryBaseModelOptions = [
   ["SDXL 1.0", "SDXL"],
   ["SD 1.5", "SD 1.5"],
   ["Other", "その他"]
+];
+
+const modelLibraryLoraCategoryOptions = [
+  ["all", "すべて"],
+  ["style", "Style"],
+  ["character", "Character"],
+  ["effects", "Effects"],
+  ["pose", "Pose"],
+  ["quality", "Quality"],
+  ["i2i", "i2i"]
 ];
 
 const modelLibrarySortOptions = ["Most Downloaded", "Highest Rated", "Newest"];
@@ -9095,17 +9110,24 @@ function renderImageCompareCard(job) {
 
 function modelLibraryTypeFromValue(value = "") {
   const text = String(value || "").trim().toLowerCase();
-  if (text === "lora") return "LORA";
+  if (["lora", "lo-ra"].includes(text)) return "LORA";
+  if (["vae", "vaes", "autoencoder"].includes(text)) return "VAE";
   return "Checkpoint";
 }
 
 function modelLibraryTypeLabel(type = state.modelLibraryType) {
-  return modelLibraryTypeFromValue(type) === "LORA" ? "LoRA" : "Checkpoint";
+  const value = modelLibraryTypeFromValue(type);
+  if (value === "LORA") return "LoRA";
+  if (value === "VAE") return "VAE";
+  return "Checkpoint";
 }
 
 function modelLibraryBaseModelFromValue(value = "") {
   const text = String(value || "").trim().toLowerCase();
   if (!text || ["all", "any", "すべて"].includes(text)) return "";
+  if (["flux", "flux.1", "flux1", "flux.1 d", "flux.1 dev", "flux1 dev", "flux dev", "flux.1 s", "flux.1 schnell", "flux1 schnell", "flux schnell"].includes(text)) return "Flux";
+  if (["qwen", "qwen image", "qwen-image", "qwen image edit", "qwen-image-edit", "qwen img"].includes(text)) return "Qwen";
+  if (["ltx", "ltxv", "ltx video", "ltx-video"].includes(text)) return "LTX";
   if (["illustrious", "illustius", "ilxl"].includes(text)) return "Illustrious";
   if (["pony", "ponyxl"].includes(text)) return "Pony";
   if (text === "anima") return "Anima";
@@ -9118,6 +9140,9 @@ function modelLibraryBaseModelFromValue(value = "") {
 
 function modelLibraryBaseModelFromText(...values) {
   const text = values.map((value) => String(value || "")).join(" ").toLowerCase();
+  if (/(^|[\s_.-])(flux(?:[\s_.-]*1)?|flux1)(?=$|[\s_.-])/.test(text)) return "Flux";
+  if (/(^|[\s_.-])qwen(?:[\s_.-]*(image|img|edit))?(?=$|[\s_.-])/.test(text)) return "Qwen";
+  if (/(^|[\s_.-])(ltxv?|ltx[\s_.-]*video)(?=$|[\s_.-])/.test(text)) return "LTX";
   if (/illustrious|illustius|(^|[\s_.-])ilxl(?=$|[\s_.-])/.test(text)) return "Illustrious";
   if (/pony/.test(text)) return "Pony";
   if (/(^|[\s_.-])anima(?=$|[\s_.-])/.test(text)) return "Anima";
@@ -9133,15 +9158,50 @@ function modelLibraryItemBaseModel(item = {}) {
     || modelLibraryBaseModelFromText(item.name, item.fileName, item.relativePath, item.versionName, item.creator, ...(item.tags || []), ...(item.trainedWords || []));
 }
 
+function modelLibraryLoraCategoryFromValue(value = "") {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text || ["all", "any", "すべて"].includes(text)) return "";
+  if (["style", "styles"].includes(text)) return "style";
+  if (["character", "characters", "char", "chars", "chaacter"].includes(text)) return "character";
+  if (["effects", "effect", "effexcts", "fx", "vfx"].includes(text)) return "effects";
+  if (["pose", "poses", "posture"].includes(text)) return "pose";
+  if (["quality", "qulity", "enhance", "enhancer"].includes(text)) return "quality";
+  if (["i2i", "img2img", "image2image", "image-to-image", "image to image"].includes(text)) return "i2i";
+  return "";
+}
+
+function modelLibraryLoraCategoryLabel(value = "") {
+  const category = modelLibraryLoraCategoryFromValue(value);
+  return modelLibraryLoraCategoryOptions.find(([option]) => option === category)?.[1] || "";
+}
+
+function modelLibraryLoraCategoryFromText(...values) {
+  const text = values.map((value) => String(value || "")).join(" ").toLowerCase();
+  if (/(^|[\s_.-])styles?(?=$|[\s_.-])|画風/.test(text)) return "style";
+  if (/(^|[\s_.-])(characters?|chars?)(?=$|[\s_.-])|キャラ/.test(text)) return "character";
+  if (/(^|[\s_.-])(effects?|effexcts|fx|vfx)(?=$|[\s_.-])|エフェクト/.test(text)) return "effects";
+  if (/(^|[\s_.-])(poses?|posture)(?=$|[\s_.-])|ポーズ/.test(text)) return "pose";
+  if (/(^|[\s_.-])(quality|qulity|enhance|enhancer|detailer)(?=$|[\s_.-])|品質/.test(text)) return "quality";
+  if (/(^|[\s_.-])(i2i|img2img|image2image|image[\s_.-]*to[\s_.-]*image)(?=$|[\s_.-])/.test(text)) return "i2i";
+  return "";
+}
+
+function modelLibraryItemLoraCategory(item = {}) {
+  if (modelLibraryTypeFromValue(item.type) !== "LORA") return "";
+  return modelLibraryLoraCategoryFromValue(item.category)
+    || modelLibraryLoraCategoryFromText(item.name, item.fileName, item.relativePath, item.versionName, item.creator, ...(item.tags || []), ...(item.trainedWords || []));
+}
+
 function modelLibraryCatalogForActiveProvider() {
   const target = activeModelLibraryProvider();
   const catalog = state.modelLibraryProviderCatalog || {};
   if (!target || modelLibraryProviderFromValue(catalog.provider) !== target) {
-    return { checkpoints: [], loras: [], samplers: [], modules: [] };
+    return { checkpoints: [], loras: [], vaes: [], samplers: [], modules: [] };
   }
   return {
     checkpoints: Array.isArray(catalog.checkpoints) ? catalog.checkpoints : [],
     loras: Array.isArray(catalog.loras) ? catalog.loras : [],
+    vaes: Array.isArray(catalog.vaes) ? catalog.vaes : [],
     samplers: Array.isArray(catalog.samplers) ? catalog.samplers : [],
     modules: Array.isArray(catalog.modules) ? catalog.modules : []
   };
@@ -9163,9 +9223,18 @@ function modelLibraryLocalItems(type = state.modelLibraryType) {
   if (!activeModelLibraryProvider()) return [];
   const localProvider = modelLibraryProviderFromValue(state.modelLibraryLocal?.provider || activeModelLibraryProvider());
   if (localProvider !== activeModelLibraryProvider()) return [];
-  return modelLibraryTypeFromValue(type) === "LORA"
-    ? (state.modelLibraryLocal.loras || [])
-    : (state.modelLibraryLocal.checkpoints || []);
+  const targetType = modelLibraryTypeFromValue(type);
+  if (targetType === "LORA") return state.modelLibraryLocal.loras || [];
+  if (targetType === "VAE") return state.modelLibraryLocal.vaes || [];
+  return state.modelLibraryLocal.checkpoints || [];
+}
+
+function modelLibraryProviderCatalogItems(type = state.modelLibraryType) {
+  const catalog = modelLibraryCatalogForActiveProvider();
+  const targetType = modelLibraryTypeFromValue(type);
+  if (targetType === "LORA") return catalog.loras;
+  if (targetType === "VAE") return catalog.vaes;
+  return catalog.checkpoints;
 }
 
 function modelLibraryInstalledNames(type = state.modelLibraryType) {
@@ -9176,9 +9245,7 @@ function modelLibraryInstalledNames(type = state.modelLibraryType) {
       if (text) names.add(text);
     });
   });
-  const catalog = modelLibraryCatalogForActiveProvider();
-  const remoteNames = modelLibraryTypeFromValue(type) === "LORA" ? catalog.loras : catalog.checkpoints;
-  remoteNames.forEach((name) => names.add(String(name || "").trim().toLowerCase()));
+  modelLibraryProviderCatalogItems(type).forEach((name) => names.add(String(name || "").trim().toLowerCase()));
   return names;
 }
 
@@ -9192,6 +9259,7 @@ function modelLibraryDisplayItems() {
   const type = modelLibraryTypeFromValue(state.modelLibraryType);
   const query = state.modelLibraryQuery.trim().toLowerCase();
   const baseModel = modelLibraryBaseModelFromValue(state.modelLibraryBaseModel);
+  const loraCategory = type === "LORA" ? modelLibraryLoraCategoryFromValue(state.modelLibraryLoraCategory) : "";
   const remote = (state.modelLibraryItems || []).filter((item) => modelLibraryTypeFromValue(item.type) === type);
   const remoteNames = new Set(remote.map((item) => String(item.fileName || item.name || "").trim().toLowerCase()).filter(Boolean));
   const local = modelLibraryLocalItems(type)
@@ -9209,11 +9277,13 @@ function modelLibraryDisplayItems() {
       item.fileName,
       item.creator,
       item.baseModel,
+      item.category,
       ...(item.tags || []),
       ...(item.trainedWords || [])
     ].join(" ").toLowerCase();
     if (query && !haystack.includes(query)) return false;
     if (baseModel && modelLibraryItemBaseModel(item) !== baseModel) return false;
+    if (loraCategory && modelLibraryItemLoraCategory(item) !== loraCategory) return false;
     if (state.modelLibraryAvailability === "downloaded" && !item.installed) return false;
     if (state.modelLibraryAvailability === "not-downloaded" && item.installed) return false;
     return true;
@@ -9292,15 +9362,16 @@ function renderModelLibrary() {
   const selected = findModelLibraryItem() || items[0] || null;
   if (selected && state.modelLibrarySelectedKey !== selected.key) state.modelLibrarySelectedKey = selected.key;
   const type = modelLibraryTypeFromValue(state.modelLibraryType);
+  const loraCategory = modelLibraryLoraCategoryFromValue(state.modelLibraryLoraCategory);
+  const baseAxisLabel = type === "LORA" ? "Base Model" : "モデル";
   const metadata = state.modelLibraryMetadata || {};
   const localCount = modelLibraryLocalItems(type).length;
-  const providerCatalog = modelLibraryCatalogForActiveProvider();
-  const providerCatalogCount = modelLibraryTypeFromValue(type) === "LORA" ? providerCatalog.loras.length : providerCatalog.checkpoints.length;
+  const providerCatalogCount = modelLibraryProviderCatalogItems(type).length;
   const providerCatalogStatus = state.modelLibraryProviderCatalog || {};
   const providerCatalogText = provider && providerCatalogStatus.status === "loaded" ? ` / 接続先 ${providerCatalogCount}件` : "";
   const standardDirs = state.modelLibraryLocal?.provider === provider ? (state.modelLibraryLocal.dirs || {}) : {};
   const standardDirMessage = provider
-    ? `${modelLibraryTypeLabel("Checkpoint")}: ${standardDirs.checkpointDir || "標準フォルダ未確認"} / LoRA: ${standardDirs.loraDir || "標準フォルダ未確認"}`
+    ? `${modelLibraryTypeLabel("Checkpoint")}: ${standardDirs.checkpointDir || "標準フォルダ未確認"} / LoRA: ${standardDirs.loraDir || "標準フォルダ未確認"} / VAE: ${standardDirs.vaeDir || "標準フォルダ未確認"}`
     : "ダウンロード前に保存先プラットフォームを選択してください。";
   return `
     <div class="model-library-shell">
@@ -9322,12 +9393,26 @@ function renderModelLibrary() {
           <div class="model-library-tabs">
             ${modelLibraryTypes.map(([value, label]) => `<button class="ghost ${type === value ? "active-toggle" : ""}" data-action="set-model-library-type" data-type="${escapeHtml(value)}">${escapeHtml(label)}</button>`).join("")}
           </div>
-          <div class="model-library-base-chips" aria-label="分類">
-            ${modelLibraryBaseModelOptions.map(([value, label]) => {
-              const active = modelLibraryBaseModelFromValue(state.modelLibraryBaseModel) === modelLibraryBaseModelFromValue(value);
-              return `<button class="ghost ${active ? "active-toggle" : ""}" data-action="set-model-library-base" data-base-model="${escapeHtml(value)}">${escapeHtml(label)}</button>`;
-            }).join("")}
+          <div class="model-library-axis full">
+            <div class="field-label">${escapeHtml(baseAxisLabel)}</div>
+            <div class="model-library-base-chips" aria-label="${escapeHtml(baseAxisLabel)}">
+              ${modelLibraryBaseModelOptions.map(([value, label]) => {
+                const active = modelLibraryBaseModelFromValue(state.modelLibraryBaseModel) === modelLibraryBaseModelFromValue(value);
+                return `<button class="ghost ${active ? "active-toggle" : ""}" data-action="set-model-library-base" data-base-model="${escapeHtml(value)}">${escapeHtml(label)}</button>`;
+              }).join("")}
+            </div>
           </div>
+          ${type === "LORA" ? `
+            <div class="model-library-axis full">
+              <div class="field-label">Category</div>
+              <div class="model-library-category-chips" aria-label="LoRA Category">
+                ${modelLibraryLoraCategoryOptions.map(([value, label]) => {
+                  const active = loraCategory === modelLibraryLoraCategoryFromValue(value);
+                  return `<button class="ghost ${active ? "active-toggle" : ""}" data-action="set-model-library-lora-category" data-lora-category="${escapeHtml(value)}">${escapeHtml(label)}</button>`;
+                }).join("")}
+              </div>
+            </div>
+          ` : ""}
           <label class="full">検索
             <input id="model-library-query" placeholder="モデル名、作者、タグ、トリガーワード" value="${escapeHtml(state.modelLibraryQuery)}">
           </label>
@@ -9451,12 +9536,20 @@ function setModelLibraryDownloadButtonsBusy(key, busy) {
   });
 }
 
+function modelLibraryPrimaryActionLabel(item = {}, long = false) {
+  const type = modelLibraryTypeFromValue(item.type);
+  if (type === "LORA") return long ? "LoRAを追加" : "LoRA追加";
+  if (type === "VAE") return long ? "VAE名をコピー" : "VAEコピー";
+  return long ? "このモデルを使う" : "使用";
+}
+
 function renderModelLibraryCard(item) {
   const selected = state.modelLibrarySelectedKey === item.key;
   const image = modelLibraryPreviewImage(item);
   const installed = modelLibraryItemInstalled(item);
   const providerSelected = Boolean(activeModelLibraryProvider());
   const baseModel = modelLibraryItemBaseModel(item);
+  const loraCategory = modelLibraryItemLoraCategory(item);
   const size = modelLibraryFileSizeText(item);
   return `
     <article class="model-card ${selected ? "selected" : ""}" data-action="select-model-library-item" data-key="${escapeHtml(item.key)}">
@@ -9470,12 +9563,13 @@ function renderModelLibraryCard(item) {
         <div class="tag-row">
           <span class="tag">${escapeHtml(modelLibraryTypeLabel(item.type))}</span>
           ${baseModel ? `<span class="tag">${escapeHtml(baseModel)}</span>` : ""}
+          ${loraCategory ? `<span class="tag">${escapeHtml(modelLibraryLoraCategoryLabel(loraCategory))}</span>` : ""}
           ${item.source === "local" ? `<span class="tag status-matched">Local</span>` : `<span class="tag">Civitai</span>`}
           ${size ? `<span class="tag">${escapeHtml(size)}</span>` : ""}
         </div>
       </div>
       <div class="model-card-actions">
-        <button class="ghost" data-action="apply-model-library-item" data-key="${escapeHtml(item.key)}">${modelLibraryTypeFromValue(item.type) === "LORA" ? "LoRA追加" : "使用"}</button>
+        <button class="ghost" data-action="apply-model-library-item" data-key="${escapeHtml(item.key)}">${escapeHtml(modelLibraryPrimaryActionLabel(item))}</button>
         ${item.downloadUrl && !installed ? `<button class="ghost" data-action="download-model-library-item" data-key="${escapeHtml(item.key)}" ${providerSelected ? "" : "disabled"}>${providerSelected ? "DL" : "保存先選択"}</button>` : ""}
       </div>
     </article>
@@ -9489,6 +9583,7 @@ function renderModelLibraryDetail(item) {
   const images = imageUrls.slice(0, 6);
   const previewImage = imageUrls[0] || "";
   const baseModel = modelLibraryItemBaseModel(item);
+  const loraCategory = modelLibraryItemLoraCategory(item);
   const size = modelLibraryFileSizeText(item);
   return `
     <div class="panel-header">
@@ -9501,10 +9596,10 @@ function renderModelLibraryDetail(item) {
       </div>
       <div>
         <h3>${escapeHtml(item.name || item.fileName || "名称未設定")}</h3>
-        <div class="meta">${escapeHtml([item.creator, item.versionName, baseModel].filter(Boolean).join(" / "))}</div>
+        <div class="meta">${escapeHtml([item.creator, item.versionName, baseModel, modelLibraryLoraCategoryLabel(loraCategory)].filter(Boolean).join(" / "))}</div>
       </div>
       <div class="model-detail-actions">
-        <button class="accent" data-action="apply-model-library-item" data-key="${escapeHtml(item.key)}">${modelLibraryTypeFromValue(item.type) === "LORA" ? "LoRAを追加" : "このモデルを使う"}</button>
+        <button class="accent" data-action="apply-model-library-item" data-key="${escapeHtml(item.key)}">${escapeHtml(modelLibraryPrimaryActionLabel(item, true))}</button>
         ${item.downloadUrl && !installed ? `<button class="ghost" data-action="download-model-library-item" data-key="${escapeHtml(item.key)}" ${providerSelected ? "" : "disabled"}>${providerSelected ? "ダウンロード" : "保存先を選択"}</button>` : ""}
         ${item.pageUrl ? `<a class="ghost" href="${escapeHtml(item.pageUrl)}" target="_blank" rel="noreferrer">配布ページ</a>` : ""}
       </div>
@@ -12587,10 +12682,11 @@ function renderComfyReferenceSlotRows(prefix, slots = [], { includeReference = f
 function imageModelCatalog(provider = activeImageProvider()) {
   const requestedProvider = imageProviderFromValue(provider);
   const storedProvider = imageProviderFromValue(state.comfyModels?.provider || "comfy");
-  if (storedProvider !== requestedProvider) return { checkpoints: [], loras: [], samplers: [], schedulers: [], modules: [] };
+  if (storedProvider !== requestedProvider) return { checkpoints: [], loras: [], vaes: [], samplers: [], schedulers: [], modules: [] };
   return {
     checkpoints: Array.isArray(state.comfyModels?.checkpoints) ? state.comfyModels.checkpoints : [],
     loras: Array.isArray(state.comfyModels?.loras) ? state.comfyModels.loras : [],
+    vaes: Array.isArray(state.comfyModels?.vaes) ? state.comfyModels.vaes : [],
     samplers: Array.isArray(state.comfyModels?.samplers) ? state.comfyModels.samplers : [],
     schedulers: Array.isArray(state.comfyModels?.schedulers) ? state.comfyModels.schedulers : [],
     modules: Array.isArray(state.comfyModels?.modules) ? state.comfyModels.modules : []
@@ -13840,8 +13936,8 @@ async function loadModelLibraryLocal({ silent = false, includeProviderCatalog = 
   if (!silent) updateModelLibraryControlsFromDom();
   const provider = activeModelLibraryProvider();
   if (!provider) {
-    state.modelLibraryLocal = { checkpoints: [], loras: [], dirs: {}, provider: "", updatedAt: "" };
-    state.modelLibraryProviderCatalog = { checkpoints: [], loras: [], samplers: [], modules: [], provider: "", status: "idle", error: "", updatedAt: "" };
+    state.modelLibraryLocal = { checkpoints: [], loras: [], vaes: [], dirs: {}, provider: "", updatedAt: "" };
+    state.modelLibraryProviderCatalog = { checkpoints: [], loras: [], vaes: [], samplers: [], modules: [], provider: "", status: "idle", error: "", updatedAt: "" };
     if (!silent) {
       toast("保存先プラットフォームを選択してください。");
       render();
@@ -13862,6 +13958,7 @@ async function loadModelLibraryLocal({ silent = false, includeProviderCatalog = 
       state.modelLibraryProviderCatalog = {
         checkpoints: [],
         loras: [],
+        vaes: [],
         samplers: [],
         modules: [],
         provider,
@@ -13873,6 +13970,7 @@ async function loadModelLibraryLocal({ silent = false, includeProviderCatalog = 
     state.modelLibraryLocal = {
       checkpoints: Array.isArray(result.checkpoints) ? result.checkpoints : [],
       loras: Array.isArray(result.loras) ? result.loras : [],
+      vaes: Array.isArray(result.vaes) ? result.vaes : [],
       dirs: result.dirs || {},
       provider: result.provider || provider,
       updatedAt: result.updatedAt || new Date().toISOString()
@@ -13881,6 +13979,7 @@ async function loadModelLibraryLocal({ silent = false, includeProviderCatalog = 
       state.modelLibraryProviderCatalog = {
         checkpoints: [],
         loras: [],
+        vaes: [],
         samplers: [],
         modules: [],
         provider,
@@ -13895,10 +13994,11 @@ async function loadModelLibraryLocal({ silent = false, includeProviderCatalog = 
     }
   } catch (error) {
     if (provider) {
-      state.modelLibraryLocal = { checkpoints: [], loras: [], dirs: {}, provider, updatedAt: "" };
+      state.modelLibraryLocal = { checkpoints: [], loras: [], vaes: [], dirs: {}, provider, updatedAt: "" };
       state.modelLibraryProviderCatalog = {
         checkpoints: [],
         loras: [],
+        vaes: [],
         samplers: [],
         modules: [],
         provider,
@@ -13914,7 +14014,7 @@ async function loadModelLibraryLocal({ silent = false, includeProviderCatalog = 
 async function loadModelLibraryProviderCatalog({ provider = activeModelLibraryProvider(), silent = false } = {}) {
   const target = modelLibraryProviderFromValue(provider);
   if (!target) {
-    state.modelLibraryProviderCatalog = { checkpoints: [], loras: [], samplers: [], modules: [], provider: "", status: "idle", error: "", updatedAt: "" };
+    state.modelLibraryProviderCatalog = { checkpoints: [], loras: [], vaes: [], samplers: [], modules: [], provider: "", status: "idle", error: "", updatedAt: "" };
     return state.modelLibraryProviderCatalog;
   }
   const settings = activeComfySettings();
@@ -13937,6 +14037,7 @@ async function loadModelLibraryProviderCatalog({ provider = activeModelLibraryPr
   state.modelLibraryProviderCatalog = {
     checkpoints: Array.isArray(result.checkpoints) ? result.checkpoints : [],
     loras: Array.isArray(result.loras) ? result.loras : [],
+    vaes: Array.isArray(result.vaes) ? result.vaes : [],
     samplers: Array.isArray(result.samplers) ? result.samplers : [],
     modules: Array.isArray(result.modules) ? result.modules : [],
     provider: target,
@@ -13965,6 +14066,7 @@ async function searchModelLibrary({ keepPage = false, skipControlRead = false } 
       query: state.modelLibraryQuery,
       type: state.modelLibraryType,
       baseModel: state.modelLibraryBaseModel,
+      tag: modelLibraryTypeFromValue(state.modelLibraryType) === "LORA" ? modelLibraryLoraCategoryFromValue(state.modelLibraryLoraCategory) : "",
       sort: state.modelLibrarySort,
       period: state.modelLibraryPeriod,
       page: state.modelLibraryPage,
@@ -14053,7 +14155,8 @@ async function applyModelLibraryItem(key) {
   const next = { ...settings };
   const libraryProvider = activeModelLibraryProvider();
   next.provider = libraryProvider;
-  if (modelLibraryTypeFromValue(item.type) === "LORA") {
+  const itemType = modelLibraryTypeFromValue(item.type);
+  if (itemType === "LORA") {
     const loras = normalizedComfyLoras(settings.loras);
     const existingIndex = loras.findIndex((lora) => lora.name === modelName);
     const targetIndex = existingIndex >= 0 ? existingIndex : loras.findIndex((lora) => !lora.name);
@@ -14064,6 +14167,8 @@ async function applyModelLibraryItem(key) {
       strengthClip: existingIndex >= 0 ? loras[targetIndex].strengthClip : 1
     };
     next.loras = loras;
+  } else if (itemType === "VAE") {
+    return copyText(modelName);
   } else {
     next.checkpoint = modelName;
   }
@@ -14077,7 +14182,7 @@ async function applyModelLibraryItem(key) {
     agentNote: `${modelLibraryProviderLabel(libraryProvider)}の${modelLibraryTypeLabel(item.type)}「${item.name || modelName}」を生成設定へ反映しました。`
   };
   await saveDb();
-  toast(modelLibraryTypeFromValue(item.type) === "LORA" ? "LoRAを生成設定へ追加しました。" : "モデルを生成設定へ反映しました。");
+  toast(itemType === "LORA" ? "LoRAを生成設定へ追加しました。" : "モデルを生成設定へ反映しました。");
   render();
 }
 
@@ -14117,8 +14222,8 @@ function bindModelLibrary() {
     });
     const provider = activeModelLibraryProvider();
     state.modelLibrarySelectedKey = "";
-    state.modelLibraryLocal = { checkpoints: [], loras: [], dirs: {}, provider: "", updatedAt: "" };
-    state.modelLibraryProviderCatalog = { checkpoints: [], loras: [], samplers: [], modules: [], provider, status: "idle", error: "", updatedAt: "" };
+    state.modelLibraryLocal = { checkpoints: [], loras: [], vaes: [], dirs: {}, provider: "", updatedAt: "" };
+    state.modelLibraryProviderCatalog = { checkpoints: [], loras: [], vaes: [], samplers: [], modules: [], provider, status: "idle", error: "", updatedAt: "" };
     render();
     try {
       await saveDb();
@@ -14146,6 +14251,14 @@ function bindModelLibrary() {
     button.addEventListener("click", () => {
       updateModelLibraryControlsFromDom();
       state.modelLibraryBaseModel = button.dataset.baseModel || "all";
+      state.modelLibrarySelectedKey = "";
+      searchModelLibrary();
+    });
+  });
+  document.querySelectorAll("[data-action='set-model-library-lora-category']").forEach((button) => {
+    button.addEventListener("click", () => {
+      updateModelLibraryControlsFromDom();
+      state.modelLibraryLoraCategory = button.dataset.loraCategory || "all";
       state.modelLibrarySelectedKey = "";
       searchModelLibrary();
     });
@@ -15209,6 +15322,7 @@ async function loadComfyModels({ silent = false } = {}) {
     state.comfyModels = {
       checkpoints: Array.isArray(result.checkpoints) ? result.checkpoints : [],
       loras: Array.isArray(result.loras) ? result.loras : [],
+      vaes: Array.isArray(result.vaes) ? result.vaes : [],
       samplers: Array.isArray(result.samplers) ? result.samplers : [],
       schedulers: Array.isArray(result.schedulers) ? result.schedulers : [],
       modules: Array.isArray(result.modules) ? result.modules : [],
@@ -15220,8 +15334,9 @@ async function loadComfyModels({ silent = false } = {}) {
     if (!silent) {
       render({ preserveLiveTextDrafts: true });
       const moduleText = provider === "forge-neo" ? ` / Module ${state.comfyModels.modules.length}件` : "";
+      const vaeText = state.comfyModels.vaes.length ? ` / VAE ${state.comfyModels.vaes.length}件` : "";
       const schedulerText = provider === "comfy" ? ` / Scheduler ${state.comfyModels.schedulers.length}件` : "";
-      toast(`${label}モデル一覧を取得しました。Checkpoint ${state.comfyModels.checkpoints.length}件 / Sampler ${state.comfyModels.samplers.length}件${schedulerText} / LoRA ${state.comfyModels.loras.length}件${moduleText}`);
+      toast(`${label}モデル一覧を取得しました。Checkpoint ${state.comfyModels.checkpoints.length}件 / Sampler ${state.comfyModels.samplers.length}件${schedulerText} / LoRA ${state.comfyModels.loras.length}件${vaeText}${moduleText}`);
     }
     return state.comfyModels;
   } catch (error) {

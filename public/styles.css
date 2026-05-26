@@ -1444,22 +1444,30 @@ textarea {
 }
 
 .model-library-tabs {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1.15fr 1fr 1fr;
+  gap: 6px;
 }
 
-.model-library-base-chips {
+.model-library-axis {
+  display: grid;
+  gap: 8px;
+}
+
+.model-library-base-chips,
+.model-library-category-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.model-library-base-chips button {
+.model-library-base-chips button,
+.model-library-category-chips button {
   flex: 1 1 92px;
   min-width: 0;
 }
 
 .model-library-control-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1fr;
 }
 
 .model-library-tabs button,

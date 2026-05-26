@@ -169,6 +169,7 @@ await fs.mkdir(videoDir, { recursive: true });
 await fs.mkdir(audioDir, { recursive: true });
 await fs.mkdir(path.join(modelLibraryDir, "checkpoints"), { recursive: true });
 await fs.mkdir(path.join(modelLibraryDir, "loras"), { recursive: true });
+await fs.mkdir(path.join(modelLibraryDir, "vaes"), { recursive: true });
 await fs.mkdir(rembgModelsDir, { recursive: true });
 await fs.mkdir(path.join(backgroundRemoverHomeDir, ".u2net"), { recursive: true });
 
@@ -3704,6 +3705,27 @@ async function saveGeneratedVideo(videoUrls, taskId, { apiKey = "", baseUrl = ""
 const modelDownloadJobs = new Map();
 const modelLibraryExtensions = new Set([".safetensors", ".ckpt", ".pt", ".pth", ".bin"]);
 const modelLibraryBaseModels = new Map([
+  ["flux", "Flux"],
+  ["flux.1", "Flux"],
+  ["flux1", "Flux"],
+  ["flux.1 d", "Flux"],
+  ["flux.1 dev", "Flux"],
+  ["flux1 dev", "Flux"],
+  ["flux dev", "Flux"],
+  ["flux.1 s", "Flux"],
+  ["flux.1 schnell", "Flux"],
+  ["flux1 schnell", "Flux"],
+  ["flux schnell", "Flux"],
+  ["qwen", "Qwen"],
+  ["qwen image", "Qwen"],
+  ["qwen-image", "Qwen"],
+  ["qwen image edit", "Qwen"],
+  ["qwen-image-edit", "Qwen"],
+  ["qwen img", "Qwen"],
+  ["ltx", "LTX"],
+  ["ltxv", "LTX"],
+  ["ltx video", "LTX"],
+  ["ltx-video", "LTX"],
   ["illustrious", "Illustrious"],
   ["illustius", "Illustrious"],
   ["ilxl", "Illustrious"],
@@ -3730,6 +3752,7 @@ const modelLibraryBaseModels = new Map([
 function modelLibraryTypeFromValue(value = "") {
   const text = String(value || "").trim().toLowerCase();
   if (["lora", "lo-ra"].includes(text)) return "LORA";
+  if (["vae", "vaes", "autoencoder"].includes(text)) return "VAE";
   if (["checkpoint", "checkpoints", "model", "models", "ckpt"].includes(text)) return "Checkpoint";
   if (["controlnet", "control-net"].includes(text)) return "Controlnet";
   if (["textualinversion", "textual-inversion", "embedding"].includes(text)) return "TextualInversion";
@@ -3739,6 +3762,7 @@ function modelLibraryTypeFromValue(value = "") {
 function modelLibraryKindFromType(value = "") {
   const type = modelLibraryTypeFromValue(value);
   if (type === "LORA") return "lora";
+  if (type === "VAE") return "vae";
   return "checkpoint";
 }
 
@@ -3746,6 +3770,38 @@ function normalizeModelLibraryBaseModel(value = "") {
   const text = String(value || "").trim();
   if (!text || ["all", "any", "すべて"].includes(text.toLowerCase())) return "";
   return modelLibraryBaseModels.get(text.toLowerCase()) || text;
+}
+
+function modelLibraryBaseModelQueryValues(value = "") {
+  const baseModel = normalizeModelLibraryBaseModel(value);
+  if (!baseModel) return [];
+  if (baseModel === "Flux") return ["Flux.1 D", "Flux.1 S", "Flux"];
+  if (baseModel === "Qwen") return ["Qwen Image", "Qwen Image Edit", "Qwen"];
+  if (baseModel === "LTX") return ["LTXV", "LTX Video", "LTX"];
+  return [baseModel];
+}
+
+function normalizeModelLibraryLoraCategory(value = "") {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text || ["all", "any", "すべて"].includes(text)) return "";
+  if (["style", "styles"].includes(text)) return "style";
+  if (["character", "characters", "char", "chars", "chaacter"].includes(text)) return "character";
+  if (["effects", "effect", "effexcts", "fx", "vfx"].includes(text)) return "effects";
+  if (["pose", "poses", "posture"].includes(text)) return "pose";
+  if (["quality", "qulity", "enhance", "enhancer"].includes(text)) return "quality";
+  if (["i2i", "img2img", "image2image", "image-to-image", "image to image"].includes(text)) return "i2i";
+  return "";
+}
+
+function inferModelLibraryLoraCategoryFromText(...values) {
+  const text = values.map((value) => String(value || "")).join(" ").toLowerCase();
+  if (/(^|[\s_.-])styles?(?=$|[\s_.-])|画風/.test(text)) return "style";
+  if (/(^|[\s_.-])(characters?|chars?)(?=$|[\s_.-])|キャラ/.test(text)) return "character";
+  if (/(^|[\s_.-])(effects?|effexcts|fx|vfx)(?=$|[\s_.-])|エフェクト/.test(text)) return "effects";
+  if (/(^|[\s_.-])(poses?|posture)(?=$|[\s_.-])|ポーズ/.test(text)) return "pose";
+  if (/(^|[\s_.-])(quality|qulity|enhance|enhancer|detailer)(?=$|[\s_.-])|品質/.test(text)) return "quality";
+  if (/(^|[\s_.-])(i2i|img2img|image2image|image[\s_.-]*to[\s_.-]*image)(?=$|[\s_.-])/.test(text)) return "i2i";
+  return "";
 }
 
 function modelLibraryProviderFromValue(value = "") {
@@ -3759,6 +3815,9 @@ function modelLibraryProviderFromValue(value = "") {
 
 function inferModelLibraryBaseModelFromText(...values) {
   const text = values.map((value) => String(value || "")).join(" ").toLowerCase();
+  if (/(^|[\s_.-])(flux(?:[\s_.-]*1)?|flux1)(?=$|[\s_.-])/.test(text)) return "Flux";
+  if (/(^|[\s_.-])qwen(?:[\s_.-]*(image|img|edit))?(?=$|[\s_.-])/.test(text)) return "Qwen";
+  if (/(^|[\s_.-])(ltxv?|ltx[\s_.-]*video)(?=$|[\s_.-])/.test(text)) return "LTX";
   if (/illustrious|illustius|(^|[\s_.-])ilxl(?=$|[\s_.-])/.test(text)) return "Illustrious";
   if (/pony/.test(text)) return "Pony";
   if (/(^|[\s_.-])anima(?=$|[\s_.-])/.test(text)) return "Anima";
@@ -3786,8 +3845,16 @@ async function firstExistingDirectory(candidates = []) {
 
 function modelLibraryStandardSubdir(kind = "checkpoint", provider = "") {
   const target = modelLibraryProviderFromValue(provider);
-  if (target === "comfy") return kind === "lora" ? ["models", "loras"] : ["models", "checkpoints"];
-  if (target === "forge" || target === "forge-neo") return kind === "lora" ? ["models", "Lora"] : ["models", "Stable-diffusion"];
+  if (target === "comfy") {
+    if (kind === "lora") return ["models", "loras"];
+    if (kind === "vae") return ["models", "vae"];
+    return ["models", "checkpoints"];
+  }
+  if (target === "forge" || target === "forge-neo") {
+    if (kind === "lora") return ["models", "Lora"];
+    if (kind === "vae") return ["models", "VAE"];
+    return ["models", "Stable-diffusion"];
+  }
   if (target === "drawthings") return ["Models"];
   return [];
 }
@@ -3919,7 +3986,7 @@ function civitaiSearchUrl(body = {}) {
   const tag = String(body.tag || "").trim();
   const cursor = String(body.cursor || "").trim();
   const type = modelLibraryTypeFromValue(body.type);
-  const baseModel = normalizeModelLibraryBaseModel(body.baseModel);
+  const baseModels = modelLibraryBaseModelQueryValues(body.baseModel);
   const sort = String(body.sort || "Most Downloaded").trim();
   const period = String(body.period || "Month").trim();
   if (cursor) {
@@ -3928,9 +3995,9 @@ function civitaiSearchUrl(body = {}) {
     params.set("page", String(boundedNumber(body.page, 1, 1, 1000, true)));
   }
   if (query) params.set("query", query);
-  if (tag) params.set("tag", tag);
+  if (tag) params.set("tag", normalizeModelLibraryLoraCategory(tag) || tag);
   if (type) params.set("types", type);
-  if (baseModel) params.set("baseModels", baseModel);
+  baseModels.forEach((baseModel) => params.append("baseModels", baseModel));
   if (["Highest Rated", "Most Downloaded", "Newest"].includes(sort)) params.set("sort", sort);
   if (["AllTime", "Year", "Month", "Week", "Day"].includes(period)) params.set("period", period);
   params.set("primaryFileOnly", "true");
@@ -3995,7 +4062,7 @@ function civitaiModelImages(model = {}, primaryVersion = {}) {
   return images;
 }
 
-function normalizeCivitaiModel(model = {}, { preferredBaseModel = "" } = {}) {
+function normalizeCivitaiModel(model = {}, { preferredBaseModel = "", preferredCategory = "" } = {}) {
   const version = civitaiPrimaryVersion(model, preferredBaseModel);
   const file = civitaiPrimaryFile(version);
   const type = modelLibraryTypeFromValue(model.type) || String(model.type || "Checkpoint");
@@ -4017,6 +4084,10 @@ function normalizeCivitaiModel(model = {}, { preferredBaseModel = "" } = {}) {
     mode: model.mode || "",
     versionName: String(version.name || "").trim(),
     baseModel: normalizeModelLibraryBaseModel(version.baseModel || file.metadata?.baseModel || preferredBaseModel),
+    category: type === "LORA"
+      ? (normalizeModelLibraryLoraCategory(preferredCategory)
+        || inferModelLibraryLoraCategoryFromText(model.name, version.name, model.creator?.username, ...(model.tags || []), ...(trainedWords || [])))
+      : "",
     description: stripHtml(model.description || version.description || ""),
     versionDescription: stripHtml(version.description || ""),
     trainedWords,
@@ -4081,6 +4152,7 @@ async function listModelLibraryFiles(dir, type, maxDepth = 4) {
         localPath: filePath,
         relativePath,
         baseModel: inferModelLibraryBaseModelFromText(entry.name, relativePath),
+        category: modelLibraryTypeFromValue(type) === "LORA" ? inferModelLibraryLoraCategoryFromText(entry.name, relativePath) : "",
         fileSizeKb: stat ? Math.round(stat.size / 1024) : 0,
         updatedAt: stat ? stat.mtime.toISOString() : "",
         installed: true
@@ -4091,25 +4163,37 @@ async function listModelLibraryFiles(dir, type, maxDepth = 4) {
   return items.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function modelLibraryFileNameLooksVae(value = "") {
+  return /(^|[_\-.])vae([_\-.]|$)/i.test(String(value || ""));
+}
+
 async function listDrawThingsModelLibraryFileGroups() {
   const documentsDir = drawThingsDocumentsDir();
-  if (!documentsDir) return { checkpoints: [], loras: [] };
+  if (!documentsDir) return { checkpoints: [], loras: [], vaes: [] };
   const modelsDir = path.join(documentsDir, "Models");
   const [items, loras] = await Promise.all([
     listModelLibraryFiles(modelsDir, "Checkpoint", 1),
     localDrawThingsLoras().catch(() => [])
   ]);
   const loraNames = new Set(loras.map((name) => String(name || "").trim()));
-  const groups = { checkpoints: [], loras: [] };
+  const groups = { checkpoints: [], loras: [], vaes: [] };
   items.forEach((item) => {
     const name = item.fileName || item.name || "";
     const knownLora = loraNames.has(name);
     const nameLooksLora = /(^|[_\-.])lora([_\-.]|$)/i.test(name);
+    const nameLooksVae = modelLibraryFileNameLooksVae(name) || modelLibraryFileNameLooksVae(item.relativePath);
     if (knownLora || nameLooksLora) {
       groups.loras.push({
         ...item,
         key: `local:LORA:${item.relativePath}`,
-        type: "LORA"
+        type: "LORA",
+        category: inferModelLibraryLoraCategoryFromText(item.name, item.relativePath)
+      });
+    } else if (nameLooksVae) {
+      groups.vaes.push({
+        ...item,
+        key: `local:VAE:${item.relativePath}`,
+        type: "VAE"
       });
     } else {
       groups.checkpoints.push(item);
@@ -4120,7 +4204,10 @@ async function listDrawThingsModelLibraryFileGroups() {
 
 async function listDrawThingsModelLibraryFiles(type) {
   const groups = await listDrawThingsModelLibraryFileGroups();
-  return modelLibraryTypeFromValue(type) === "LORA" ? groups.loras : groups.checkpoints;
+  const targetType = modelLibraryTypeFromValue(type);
+  if (targetType === "LORA") return groups.loras;
+  if (targetType === "VAE") return groups.vaes;
+  return groups.checkpoints;
 }
 
 async function handleModelLibraryLocal(req, res) {
@@ -4130,23 +4217,27 @@ async function handleModelLibraryLocal(req, res) {
   try {
     const checkpointDir = await resolveModelLibraryDir("checkpoint", "", provider);
     const loraDir = await resolveModelLibraryDir("lora", "", provider);
+    const vaeDir = await resolveModelLibraryDir("vae", "", provider);
     const useDrawThingsDefault = provider === "drawthings";
     let checkpoints = [];
     let loras = [];
+    let vaes = [];
     if (useDrawThingsDefault) {
-      ({ checkpoints, loras } = await listDrawThingsModelLibraryFileGroups());
+      ({ checkpoints, loras, vaes } = await listDrawThingsModelLibraryFileGroups());
     } else {
-      [checkpoints, loras] = await Promise.all([
+      [checkpoints, loras, vaes] = await Promise.all([
         listModelLibraryFiles(checkpointDir, "Checkpoint"),
-        listModelLibraryFiles(loraDir, "LORA")
+        listModelLibraryFiles(loraDir, "LORA"),
+        listModelLibraryFiles(vaeDir, "VAE")
       ]);
     }
     sendJson(res, 200, {
       ok: true,
       provider,
-      dirs: { checkpointDir, loraDir },
+      dirs: { checkpointDir, loraDir, vaeDir },
       checkpoints,
       loras,
+      vaes,
       updatedAt: new Date().toISOString()
     });
   } catch (error) {
@@ -4158,6 +4249,7 @@ async function handleModelLibrarySearch(req, res) {
   const body = await readJson(req, 1024 * 1024).catch(() => ({}));
   const apiKey = apiKeyFromRequest(body.apiKey, "CIVITAI_API_KEY");
   const preferredBaseModel = normalizeModelLibraryBaseModel(body.baseModel);
+  const preferredCategory = normalizeModelLibraryLoraCategory(body.tag);
   try {
     const response = await fetch(civitaiSearchUrl(body), {
       headers: modelLibraryHeaders(apiKey, { accept: "application/json" }),
@@ -4172,7 +4264,7 @@ async function handleModelLibrarySearch(req, res) {
     }
     const includeNsfw = body.includeNsfw === true;
     const items = (Array.isArray(payload.items) ? payload.items : [])
-      .map((model) => normalizeCivitaiModel(model, { preferredBaseModel }))
+      .map((model) => normalizeCivitaiModel(model, { preferredBaseModel, preferredCategory }))
       .filter((item) => includeNsfw || !modelLibraryMatureItem(item));
     sendJson(res, 200, {
       ok: true,
@@ -5083,6 +5175,15 @@ function extractForgeLoras(payload = []) {
     .sort((a, b) => a.localeCompare(b));
 }
 
+function extractForgeVaes(payload = []) {
+  const source = Array.isArray(payload) ? payload : payload?.vaes || payload?.data || [];
+  return [...new Set(source
+    .map((item) => typeof item === "string" ? item : item?.model_name || item?.filename || item?.name || item?.file || item?.path || "")
+    .map((item) => String(item || "").trim())
+    .filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b));
+}
+
 function extractDrawThingsLoras(payload = []) {
   const source = Array.isArray(payload) ? payload : payload?.loras || payload?.data || [];
   return [...new Set(source
@@ -5305,10 +5406,11 @@ async function handleForgeModels(req, res) {
   if (!baseUrl) return sendJson(res, 400, { error: `${label} のURLが未設定です。` });
   try {
     if (isDrawThingsProviderLabel(label)) {
-      const [options, apiLoras, fileLoras] = await Promise.all([
+      const [options, apiLoras, fileLoras, localModelGroups] = await Promise.all([
         fetchForgeJson(baseUrl, apiKey, "/sdapi/v1/options", 20000, label),
         fetchForgeJson(baseUrl, apiKey, "/sdapi/v1/loras", 20000, label).catch(() => []),
-        localDrawThingsLoras().catch(() => [])
+        localDrawThingsLoras().catch(() => []),
+        listDrawThingsModelLibraryFileGroups().catch(() => ({ vaes: [] }))
       ]);
       const loras = [...new Set([...extractDrawThingsLoras(apiLoras), ...fileLoras])].sort((a, b) => a.localeCompare(b));
       return sendJson(res, 200, {
@@ -5316,15 +5418,22 @@ async function handleForgeModels(req, res) {
         checkpoints: extractDrawThingsOptionHints(options, [/model/i, /checkpoint/i]),
         samplers: extractDrawThingsOptionHints(options, [/sampler/i]),
         loras,
+        vaes: [
+          ...new Set([
+            ...extractDrawThingsOptionHints(options, [/vae/i]),
+            ...(Array.isArray(localModelGroups.vaes) ? localModelGroups.vaes.map((item) => item.fileName || item.name || "") : [])
+          ].map((item) => String(item || "").trim()).filter(Boolean))
+        ].sort((a, b) => a.localeCompare(b)),
         modules: [],
         providerPayload: { options, loras: apiLoras, localLoras: fileLoras },
         updatedAt: new Date().toISOString()
       });
     }
-    const [models, samplers, loras, modules] = await Promise.all([
+    const [models, samplers, loras, vaes, modules] = await Promise.all([
       fetchForgeJson(baseUrl, apiKey, "/sdapi/v1/sd-models", 20000, label),
       fetchForgeJson(baseUrl, apiKey, "/sdapi/v1/samplers", 20000, label).catch(() => []),
       fetchForgeJson(baseUrl, apiKey, "/sdapi/v1/loras", 20000, label).catch(() => []),
+      fetchForgeJson(baseUrl, apiKey, "/sdapi/v1/sd-vae", 20000, label).catch(() => []),
       label === "Forge Neo" ? fetchForgeJson(baseUrl, apiKey, "/sdapi/v1/sd-modules", 20000, label).catch(() => []) : []
     ]);
     sendJson(res, 200, {
@@ -5332,6 +5441,7 @@ async function handleForgeModels(req, res) {
       checkpoints: extractForgeModels(models),
       samplers: extractForgeSamplers(samplers),
       loras: extractForgeLoras(loras),
+      vaes: extractForgeVaes(vaes),
       modules: extractForgeModules(modules),
       updatedAt: new Date().toISOString()
     });
