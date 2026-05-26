@@ -16,6 +16,7 @@ const dataDir = path.join(__dirname, "data");
 const uploadDir = path.join(dataDir, "uploads");
 const videoDir = path.join(dataDir, "videos");
 const audioDir = path.join(dataDir, "audios");
+const modelLibraryDir = path.join(dataDir, "model-library");
 const dbPath = path.join(dataDir, "db.json");
 const seedanceGuidePath = path.join(__dirname, "Seedance2.0_Prompt_Guide_v2.md");
 const irodoriSetupScriptPath = path.join(__dirname, "scripts", "setup-irodori.sh");
@@ -80,6 +81,7 @@ const emptyDb = {
     voiceboxProfileId: "",
     voiceboxLanguage: "ja",
     voiceboxModelSize: "1.7B",
+    animadexBaseUrl: "http://127.0.0.1:5000",
     irodoriAppDir: "vendor/Irodori-TTS",
     irodoriDefaults: {
       mode: "VoiceDesign",
@@ -137,6 +139,10 @@ const emptyDb = {
       referenceSlots: []
     },
     comfyPresets: [],
+    modelLibrary: {
+      checkpointDir: "",
+      loraDir: ""
+    },
     moveImportedSourcesToTrash: false,
     importSourceRoot: ""
   },
@@ -153,6 +159,8 @@ const emptyDb = {
 await fs.mkdir(uploadDir, { recursive: true });
 await fs.mkdir(videoDir, { recursive: true });
 await fs.mkdir(audioDir, { recursive: true });
+await fs.mkdir(path.join(modelLibraryDir, "checkpoints"), { recursive: true });
+await fs.mkdir(path.join(modelLibraryDir, "loras"), { recursive: true });
 await fs.mkdir(rembgModelsDir, { recursive: true });
 await fs.mkdir(path.join(backgroundRemoverHomeDir, ".u2net"), { recursive: true });
 
@@ -182,6 +190,10 @@ function normalizeDb(db = {}) {
       comfy: {
         ...emptyDb.settings.comfy,
         ...(db.settings?.comfy || {})
+      },
+      modelLibrary: {
+        ...emptyDb.settings.modelLibrary,
+        ...(db.settings?.modelLibrary || {})
       }
     },
     schemaVersion: 1
@@ -287,6 +299,8 @@ const lanAllowedApiRoutes = new Set([
   "POST /api/elevenlabs/speech",
   "POST /api/voicebox/profiles",
   "POST /api/voicebox/speech",
+  "POST /api/animadex/search",
+  "GET /api/animadex/media",
   "POST /api/irodori/status",
   "POST /api/irodori/speech",
   "GET /api/exchange-rate/usd-jpy",
@@ -2313,6 +2327,171 @@ async function handleUsdJpyRate(req, res) {
   sendJson(res, 502, { error: `USD/JPY レートの取得に失敗しました: ${errors.join(" / ")}` });
 }
 
+function normalizeAnimaDexBaseUrl(value = "") {
+  const input = String(value || "http://127.0.0.1:5000").trim() || "http://127.0.0.1:5000";
+  const raw = (/^https?:\/\//i.test(input) ? input : `http://${input}`).replace(/\/+$/g, "");
+  const parsed = new URL(raw);
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error("AnimaDex URL は http または https で指定してください。");
+  }
+  parsed.pathname = parsed.pathname.replace(/\/+$/g, "");
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.href.replace(/\/+$/g, "");
+}
+
+async function animaDexBaseUrlFromDb() {
+  const db = await readDb();
+  return normalizeAnimaDexBaseUrl(db.settings?.animadexBaseUrl);
+}
+
+function normalizeAnimaDexMode(value) {
+  return value === "artists" ? "artists" : "characters";
+}
+
+function normalizeAnimaDexSort(value, mode) {
+  if (value === "az" || value === "random") return value;
+  if (mode === "artists" && value === "score") return "score";
+  return "count";
+}
+
+function animaDexMediaPathAllowed(pathname = "") {
+  return /^\/(thumb|img)\/(characters|artists|copyrights)\//.test(pathname);
+}
+
+function animaDexProxyUrl(value = "", baseUrl = "") {
+  if (!value) return "";
+  try {
+    const base = new URL(`${baseUrl}/`);
+    const parsed = new URL(value, base);
+    if (parsed.origin !== base.origin || !animaDexMediaPathAllowed(parsed.pathname)) return "";
+    const params = new URLSearchParams({ path: parsed.pathname });
+    const version = parsed.searchParams.get("v");
+    if (version && /^\d+$/.test(version)) params.set("v", version);
+    return `/api/animadex/media?${params.toString()}`;
+  } catch {
+    return "";
+  }
+}
+
+function normalizeAnimaDexItem(item = {}, mode = "characters", baseUrl = "") {
+  const tags = Array.isArray(item.tags)
+    ? item.tags.map((tag) => String(tag || "").trim()).filter(Boolean)
+    : [];
+  return {
+    key: `${mode}:${String(item.slug || item.name || item.trigger || "").trim()}`,
+    mode,
+    slug: String(item.slug || "").trim(),
+    name: String(item.name || item.trigger || item.slug || "").trim(),
+    copyright: String(item.copyright || "").trim(),
+    copyrightName: String(item.copyright_name || "").trim(),
+    trigger: String(item.trigger || item.name || "").trim(),
+    tags,
+    count: Number(item.count || 0) || 0,
+    score: item.score === null || item.score === undefined ? null : Number(item.score),
+    sourceUrl: String(item.url || "").trim(),
+    thumbUrl: animaDexProxyUrl(item.thumb_url || item.thumbUrl, baseUrl),
+    imgUrl: animaDexProxyUrl(item.img_url || item.imgUrl, baseUrl),
+    loras: Array.isArray(item.loras) ? item.loras : []
+  };
+}
+
+function readableAnimaDexFetchError(error, baseUrl = "") {
+  if (error?.name === "TimeoutError") {
+    return `AnimaDex の応答が20秒以内に返りませんでした。設定URL: ${baseUrl}`;
+  }
+  const code = String(error?.cause?.code || error?.code || "").trim();
+  if (code === "ECONNREFUSED" || /fetch failed/i.test(String(error?.message || ""))) {
+    return `AnimaDexに接続できません。AnimaDex本体が起動しているか、設定画面のAnimaDex URL（現在: ${baseUrl}）を確認してください。`;
+  }
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN") {
+    return `AnimaDex URLのホスト名を解決できません。設定URL: ${baseUrl}`;
+  }
+  return `AnimaDexへの接続に失敗しました。設定URL: ${baseUrl} / ${error.message}`;
+}
+
+async function handleAnimaDexSearch(req, res) {
+  const body = await readJson(req, 128 * 1024).catch(() => ({}));
+  let baseUrl;
+  try {
+    baseUrl = await animaDexBaseUrlFromDb();
+  } catch (error) {
+    return sendJson(res, 400, { error: error.message });
+  }
+  const mode = normalizeAnimaDexMode(body.mode);
+  const sort = normalizeAnimaDexSort(body.sort, mode);
+  const page = Math.max(1, Math.min(999, Number.parseInt(body.page || "1", 10) || 1));
+  const query = String(body.q || body.query || "").trim().slice(0, 240);
+  const endpoint = new URL(`/api/${mode}/search`, `${baseUrl}/`);
+  endpoint.searchParams.set("q", query);
+  endpoint.searchParams.set("sort", sort);
+  endpoint.searchParams.set("page", String(page));
+  if (sort === "random" && body.seed) endpoint.searchParams.set("seed", String(body.seed).slice(0, 24));
+  try {
+    const response = await fetch(endpoint, {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(20000)
+    });
+    const payload = await comfyJson(response);
+    if (!response.ok) {
+      return sendJson(res, response.status, {
+        error: readableProviderError(payload) || `AnimaDex が ${response.status} を返しました。`,
+        providerPayload: payload
+      });
+    }
+    const results = (Array.isArray(payload.results) ? payload.results : [])
+      .map((item) => normalizeAnimaDexItem(item, mode, baseUrl));
+    sendJson(res, 200, {
+      ok: true,
+      source: "animadex",
+      baseUrl,
+      mode,
+      q: query,
+      sort,
+      page: Number(payload.page || page) || page,
+      pageSize: Number(payload.page_size || payload.pageSize || results.length) || results.length,
+      total: Number(payload.total || results.length) || 0,
+      pages: Number(payload.pages || 1) || 1,
+      results,
+      updatedAt: new Date().toISOString()
+    });
+  } catch (error) {
+    sendJson(res, 502, { error: `AnimaDex検索に失敗しました: ${readableAnimaDexFetchError(error, baseUrl)}` });
+  }
+}
+
+async function handleAnimaDexMedia(req, res, url) {
+  let baseUrl;
+  try {
+    baseUrl = await animaDexBaseUrlFromDb();
+  } catch (error) {
+    return sendText(res, 400, error.message);
+  }
+  const pathname = String(url.searchParams.get("path") || "");
+  if (!animaDexMediaPathAllowed(pathname)) return sendText(res, 403, "Forbidden");
+  const remoteUrl = new URL(pathname, `${baseUrl}/`);
+  const version = url.searchParams.get("v");
+  if (version && /^\d+$/.test(version)) remoteUrl.searchParams.set("v", version);
+  try {
+    const response = await fetch(remoteUrl, {
+      headers: { accept: "image/*,*/*;q=0.8" },
+      signal: AbortSignal.timeout(20000)
+    });
+    if (!response.ok) return sendText(res, response.status, "AnimaDex media not found");
+    const contentType = response.headers.get("content-type") || "application/octet-stream";
+    if (!contentType.startsWith("image/")) return sendText(res, 415, "Unsupported media type");
+    const buffer = Buffer.from(await response.arrayBuffer());
+    res.writeHead(200, {
+      "content-type": contentType,
+      "content-length": buffer.length,
+      "cache-control": "public, max-age=300"
+    });
+    res.end(buffer);
+  } catch (error) {
+    sendText(res, 502, readableAnimaDexFetchError(error, baseUrl));
+  }
+}
+
 function normalizeSeedanceBaseUrl(value) {
   const raw = String(value || "https://ark.ap-southeast.bytepluses.com/api/v3").trim().replace(/\/+$/g, "");
   if (raw.includes("replicate.com")) {
@@ -3436,6 +3615,464 @@ async function saveGeneratedVideo(videoUrls, taskId, { apiKey = "", baseUrl = ""
     throw new Error(`生成動画のダウンロードに失敗しました。${errors.length}件の取得候補を試しました: ${errors.join(" / ").slice(0, 520)}`);
   }
   throw new Error(errors[0] || "生成動画のダウンロードに失敗しました。");
+}
+
+const modelDownloadJobs = new Map();
+const modelLibraryExtensions = new Set([".safetensors", ".ckpt", ".pt", ".pth", ".bin"]);
+const modelLibraryBaseModels = new Map([
+  ["illustrious", "Illustrious"],
+  ["illustius", "Illustrious"],
+  ["ilxl", "Illustrious"],
+  ["pony", "Pony"],
+  ["ponyxl", "Pony"],
+  ["anima", "Anima"],
+  ["sdxl", "SDXL 1.0"],
+  ["sdxl 1.0", "SDXL 1.0"],
+  ["stable diffusion xl", "SDXL 1.0"],
+  ["sd 1.5", "SD 1.5"],
+  ["sd1.5", "SD 1.5"],
+  ["sd15", "SD 1.5"],
+  ["1.5", "SD 1.5"],
+  ["stable diffusion 1.5", "SD 1.5"]
+]);
+
+function modelLibraryTypeFromValue(value = "") {
+  const text = String(value || "").trim().toLowerCase();
+  if (["lora", "lo-ra"].includes(text)) return "LORA";
+  if (["checkpoint", "checkpoints", "model", "models", "ckpt"].includes(text)) return "Checkpoint";
+  if (["controlnet", "control-net"].includes(text)) return "Controlnet";
+  if (["textualinversion", "textual-inversion", "embedding"].includes(text)) return "TextualInversion";
+  return "";
+}
+
+function modelLibraryKindFromType(value = "") {
+  const type = modelLibraryTypeFromValue(value);
+  if (type === "LORA") return "lora";
+  return "checkpoint";
+}
+
+function normalizeModelLibraryBaseModel(value = "") {
+  const text = String(value || "").trim();
+  if (!text || ["all", "any", "すべて"].includes(text.toLowerCase())) return "";
+  return modelLibraryBaseModels.get(text.toLowerCase()) || text;
+}
+
+function inferModelLibraryBaseModelFromText(...values) {
+  const text = values.map((value) => String(value || "")).join(" ").toLowerCase();
+  if (/illustrious|illustius|(^|[\s_.-])ilxl(?=$|[\s_.-])/.test(text)) return "Illustrious";
+  if (/pony/.test(text)) return "Pony";
+  if (/(^|[\s_.-])anima(?=$|[\s_.-])/.test(text)) return "Anima";
+  if (/(^|[\s_.-])(sdxl|stable[\s_.-]*diffusion[\s_.-]*xl)(?=$|[\s_.-])/.test(text)) return "SDXL 1.0";
+  if (/(^|[\s_.-])(sd[\s_.-]*1[\s_.-]*5|sd15|stable[\s_.-]*diffusion[\s_.-]*1[\s_.-]*5)(?=$|[\s_.-])/.test(text)) return "SD 1.5";
+  return "";
+}
+
+function defaultModelLibraryDir(kind = "checkpoint") {
+  return path.join(modelLibraryDir, kind === "lora" ? "loras" : "checkpoints");
+}
+
+function expandUserPath(value = "") {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (text === "~") return os.homedir();
+  if (text.startsWith("~/")) return path.join(os.homedir(), text.slice(2));
+  return text;
+}
+
+function resolveModelLibraryDir(kind, requested = "") {
+  const expanded = expandUserPath(requested);
+  if (!expanded) return defaultModelLibraryDir(kind);
+  return path.resolve(expanded);
+}
+
+function safeModelFileName(value = "", fallback = "model.safetensors") {
+  const parsed = path.parse(path.basename(String(value || fallback).split("?")[0]));
+  const base = cleanFileNamePart(parsed.name, "model", 140);
+  const ext = String(parsed.ext || "").toLowerCase();
+  return `${base}${modelLibraryExtensions.has(ext) ? ext : ".safetensors"}`;
+}
+
+function fileNameFromContentDisposition(value = "") {
+  const text = String(value || "");
+  const encoded = text.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded.replace(/^"|"$/g, ""));
+    } catch {
+      return encoded.replace(/^"|"$/g, "");
+    }
+  }
+  return text.match(/filename="?([^";]+)"?/i)?.[1] || "";
+}
+
+function lastUrlPathSegment(value = "") {
+  const text = String(value || "").split(/[?#]/)[0].replace(/\\/g, "/");
+  const segment = text.split("/").filter(Boolean).pop() || "";
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+function modelLibraryHeaders(apiKey = "", extra = {}) {
+  const headers = { ...extra };
+  const key = String(apiKey || "").trim();
+  if (key) headers.authorization = `Bearer ${key}`;
+  return headers;
+}
+
+function stripHtml(value = "") {
+  return String(value || "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#039;/g, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function civitaiSearchUrl(body = {}) {
+  const params = new URLSearchParams();
+  params.set("limit", String(boundedNumber(body.limit, 24, 1, 80, true)));
+  const query = String(body.query || "").trim();
+  const tag = String(body.tag || "").trim();
+  const cursor = String(body.cursor || "").trim();
+  const type = modelLibraryTypeFromValue(body.type);
+  const baseModel = normalizeModelLibraryBaseModel(body.baseModel);
+  const sort = String(body.sort || "Most Downloaded").trim();
+  const period = String(body.period || "Month").trim();
+  if (cursor) {
+    params.set("cursor", cursor);
+  } else if (!query && !tag) {
+    params.set("page", String(boundedNumber(body.page, 1, 1, 1000, true)));
+  }
+  if (query) params.set("query", query);
+  if (tag) params.set("tag", tag);
+  if (type) params.set("types", type);
+  if (baseModel) params.set("baseModels", baseModel);
+  if (["Highest Rated", "Most Downloaded", "Newest"].includes(sort)) params.set("sort", sort);
+  if (["AllTime", "Year", "Month", "Week", "Day"].includes(period)) params.set("period", period);
+  params.set("primaryFileOnly", "true");
+  return `https://civitai.com/api/v1/models?${params.toString()}`;
+}
+
+function civitaiPrimaryVersion(model = {}, preferredBaseModel = "") {
+  const versions = Array.isArray(model.modelVersions) ? model.modelVersions : [];
+  const baseModel = normalizeModelLibraryBaseModel(preferredBaseModel);
+  if (baseModel) {
+    const matched = versions.find((version) => {
+      const file = civitaiPrimaryFile(version);
+      return normalizeModelLibraryBaseModel(version.baseModel || file.metadata?.baseModel) === baseModel;
+    });
+    if (matched) return matched;
+  }
+  return versions[0] || {};
+}
+
+function civitaiPrimaryFile(version = {}) {
+  const files = Array.isArray(version.files) ? version.files : [];
+  return files.find((file) => file.primary)
+    || files.find((file) => String(file.format || "").toLowerCase().includes("safe"))
+    || files[0]
+    || {};
+}
+
+function civitaiFileSizeKb(file = {}) {
+  const size = Number(file.sizeKb ?? file.sizeKB ?? file.size_kb ?? 0);
+  return Number.isFinite(size) ? size : 0;
+}
+
+function normalizeCivitaiImage(image = {}) {
+  return {
+    url: String(image.url || "").trim(),
+    width: Number(image.width || 0) || 0,
+    height: Number(image.height || 0) || 0,
+    type: String(image.type || "").trim(),
+    nsfw: image.nsfw === true || String(image.nsfw || "").toLowerCase() === "true",
+    meta: image.meta || null
+  };
+}
+
+function civitaiModelImages(model = {}, primaryVersion = {}) {
+  const versions = Array.isArray(model.modelVersions) ? model.modelVersions : [];
+  const primaryId = String(primaryVersion.id || "");
+  const ordered = [
+    primaryVersion,
+    ...versions.filter((version) => String(version.id || "") !== primaryId)
+  ].filter((version) => version && Object.keys(version).length);
+  const seen = new Set();
+  const images = [];
+  for (const version of ordered) {
+    for (const image of (Array.isArray(version.images) ? version.images : [])) {
+      const normalized = normalizeCivitaiImage(image);
+      if (!normalized.url || /^video/i.test(normalized.type) || seen.has(normalized.url)) continue;
+      seen.add(normalized.url);
+      images.push(normalized);
+      if (images.length >= 8) return images;
+    }
+  }
+  return images;
+}
+
+function normalizeCivitaiModel(model = {}, { preferredBaseModel = "" } = {}) {
+  const version = civitaiPrimaryVersion(model, preferredBaseModel);
+  const file = civitaiPrimaryFile(version);
+  const type = modelLibraryTypeFromValue(model.type) || String(model.type || "Checkpoint");
+  const versionId = String(version.id || "");
+  const modelId = String(model.id || "");
+  const images = civitaiModelImages(model, version);
+  const trainedWords = Array.isArray(version.trainedWords) ? version.trainedWords.map(String).filter(Boolean) : [];
+  return {
+    key: `civitai:${modelId}:${versionId || "latest"}`,
+    source: "civitai",
+    sourceLabel: "Civitai",
+    modelId,
+    versionId,
+    name: String(model.name || "").trim(),
+    type,
+    creator: String(model.creator?.username || "").trim(),
+    tags: Array.isArray(model.tags) ? model.tags.map(String).filter(Boolean).slice(0, 14) : [],
+    nsfw: model.nsfw === true,
+    mode: model.mode || "",
+    versionName: String(version.name || "").trim(),
+    baseModel: normalizeModelLibraryBaseModel(version.baseModel || file.metadata?.baseModel || preferredBaseModel),
+    description: stripHtml(model.description || version.description || ""),
+    versionDescription: stripHtml(version.description || ""),
+    trainedWords,
+    downloadUrl: String(version.downloadUrl || file.downloadUrl || "").trim(),
+    fileName: String(file.name || "").trim(),
+    fileSizeKb: civitaiFileSizeKb(file),
+    fileFormat: String(file.format || "").trim(),
+    pickleScanResult: String(file.pickleScanResult || "").trim(),
+    virusScanResult: String(file.virusScanResult || "").trim(),
+    stats: {
+      downloads: Number(model.stats?.downloadCount || version.stats?.downloadCount || 0) || 0,
+      favorites: Number(model.stats?.favoriteCount || 0) || 0,
+      rating: Number(model.stats?.rating || version.stats?.rating || 0) || 0,
+      ratingCount: Number(model.stats?.ratingCount || version.stats?.ratingCount || 0) || 0
+    },
+    allowNoCredit: model.allowNoCredit,
+    allowDerivatives: model.allowDerivatives,
+    allowDifferentLicenses: model.allowDifferentLicenses,
+    allowCommercialUse: model.allowCommercialUse || "",
+    images,
+    pageUrl: modelId ? `https://civitai.com/models/${encodeURIComponent(modelId)}` : ""
+  };
+}
+
+function modelLibraryMatureItem(item = {}) {
+  if (item.nsfw === true) return true;
+  const text = [item.name, ...(item.tags || [])].join(" ").toLowerCase();
+  return /(^|[\s_\-])(nsfw|nude|naked|porn|xxx|sex|vagina|boobs)([\s_\-]|$)/i.test(text);
+}
+
+async function listModelLibraryFiles(dir, type, maxDepth = 4) {
+  const root = path.resolve(dir);
+  const items = [];
+  async function visit(current, depth) {
+    if (depth > maxDepth) return;
+    let entries = [];
+    try {
+      entries = await fs.readdir(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+      const filePath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        await visit(filePath, depth + 1);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const ext = path.extname(entry.name).toLowerCase();
+      if (!modelLibraryExtensions.has(ext)) continue;
+      const stat = await fs.stat(filePath).catch(() => null);
+      const relativePath = path.relative(root, filePath);
+      items.push({
+        key: `local:${type}:${relativePath}`,
+        source: "local",
+        sourceLabel: "Local",
+        type,
+        name: entry.name,
+        versionName: "local",
+        fileName: entry.name,
+        localPath: filePath,
+        relativePath,
+        baseModel: inferModelLibraryBaseModelFromText(entry.name, relativePath),
+        fileSizeKb: stat ? Math.round(stat.size / 1024) : 0,
+        updatedAt: stat ? stat.mtime.toISOString() : "",
+        installed: true
+      });
+    }
+  }
+  await visit(root, 0);
+  return items.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function handleModelLibraryLocal(req, res) {
+  const body = await readJson(req, 1024 * 1024).catch(() => ({}));
+  const checkpointDir = resolveModelLibraryDir("checkpoint", body.checkpointDir);
+  const loraDir = resolveModelLibraryDir("lora", body.loraDir);
+  const [checkpoints, loras] = await Promise.all([
+    listModelLibraryFiles(checkpointDir, "Checkpoint"),
+    listModelLibraryFiles(loraDir, "LORA")
+  ]);
+  sendJson(res, 200, {
+    ok: true,
+    dirs: { checkpointDir, loraDir },
+    checkpoints,
+    loras,
+    updatedAt: new Date().toISOString()
+  });
+}
+
+async function handleModelLibrarySearch(req, res) {
+  const body = await readJson(req, 1024 * 1024).catch(() => ({}));
+  const apiKey = apiKeyFromRequest(body.apiKey, "CIVITAI_API_KEY");
+  const preferredBaseModel = normalizeModelLibraryBaseModel(body.baseModel);
+  try {
+    const response = await fetch(civitaiSearchUrl(body), {
+      headers: modelLibraryHeaders(apiKey, { accept: "application/json" }),
+      signal: AbortSignal.timeout(30000)
+    });
+    const payload = await comfyJson(response);
+    if (!response.ok) {
+      return sendJson(res, response.status, {
+        error: readableProviderError(payload) || `Civitai API が ${response.status} を返しました。`,
+        providerPayload: payload
+      });
+    }
+    const includeNsfw = body.includeNsfw === true;
+    const items = (Array.isArray(payload.items) ? payload.items : [])
+      .map((model) => normalizeCivitaiModel(model, { preferredBaseModel }))
+      .filter((item) => includeNsfw || !modelLibraryMatureItem(item));
+    sendJson(res, 200, {
+      ok: true,
+      source: "civitai",
+      items,
+      metadata: payload.metadata || {},
+      updatedAt: new Date().toISOString()
+    });
+  } catch (error) {
+    sendJson(res, 502, { error: `モデルカタログ検索に失敗しました: ${error.message}` });
+  }
+}
+
+function modelLibraryDownloadUrlAllowed(value = "") {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:"
+      && parsed.hostname.endsWith("civitai.com")
+      && parsed.pathname.startsWith("/api/download/models/");
+  } catch {
+    return false;
+  }
+}
+
+function modelDownloadSnapshot(job = {}) {
+  return {
+    id: job.id,
+    status: job.status,
+    type: job.type,
+    name: job.name,
+    fileName: job.fileName,
+    targetPath: job.targetPath,
+    receivedBytes: job.receivedBytes || 0,
+    totalBytes: job.totalBytes || 0,
+    error: job.error || "",
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt
+  };
+}
+
+async function runModelLibraryDownload(job, request) {
+  try {
+    job.status = "downloading";
+    job.updatedAt = new Date().toISOString();
+    const apiKey = apiKeyFromRequest(request.apiKey, "CIVITAI_API_KEY");
+    const response = await fetch(request.downloadUrl, {
+      headers: modelLibraryHeaders(apiKey),
+      signal: AbortSignal.timeout(60 * 60 * 1000)
+    });
+    if (!response.ok) {
+      const payload = await comfyJson(response).catch(() => ({}));
+      throw new Error(readableProviderError(payload) || `ダウンロード元が ${response.status} を返しました。`);
+    }
+    const type = modelLibraryTypeFromValue(request.type) || "Checkpoint";
+    const kind = modelLibraryKindFromType(type);
+    const targetDir = resolveModelLibraryDir(kind, request.targetDir);
+    await fs.mkdir(targetDir, { recursive: true });
+    const dispositionName = fileNameFromContentDisposition(response.headers.get("content-disposition") || "");
+    const requestedName = request.fileName || dispositionName || lastUrlPathSegment(request.downloadUrl) || `${request.name || "model"}.safetensors`;
+    const fileName = safeModelFileName(dispositionName || requestedName);
+    const targetPath = await uniqueFilePath(targetDir, fileName);
+    job.type = type;
+    job.fileName = path.basename(targetPath);
+    job.targetPath = targetPath;
+    job.totalBytes = Number(response.headers.get("content-length") || 0) || 0;
+    if (!response.body) {
+      const buffer = Buffer.from(await response.arrayBuffer());
+      job.receivedBytes = buffer.length;
+      await fs.writeFile(targetPath, buffer);
+    } else {
+      const stream = Readable.fromWeb(response.body);
+      stream.on("data", (chunk) => {
+        job.receivedBytes += chunk.length;
+        job.updatedAt = new Date().toISOString();
+      });
+      await pipeline(stream, createWriteStream(targetPath));
+    }
+    job.status = "completed";
+    job.updatedAt = new Date().toISOString();
+  } catch (error) {
+    job.status = "failed";
+    job.error = error.message;
+    job.updatedAt = new Date().toISOString();
+  }
+}
+
+async function handleModelLibraryDownload(req, res) {
+  const body = await readJson(req, 1024 * 1024);
+  if (!modelLibraryDownloadUrlAllowed(body.downloadUrl)) {
+    return sendJson(res, 400, { error: "対応していないダウンロードURLです。CivitaiのモデルダウンロードURLを指定してください。" });
+  }
+  const id = crypto.randomUUID();
+  const job = {
+    id,
+    status: "queued",
+    type: modelLibraryTypeFromValue(body.type) || "Checkpoint",
+    name: String(body.name || "").trim(),
+    fileName: safeModelFileName(body.fileName || body.name || "model.safetensors"),
+    targetPath: "",
+    receivedBytes: 0,
+    totalBytes: 0,
+    error: "",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  modelDownloadJobs.set(id, job);
+  runModelLibraryDownload(job, body);
+  sendJson(res, 200, { ok: true, job: modelDownloadSnapshot(job) });
+}
+
+async function handleModelLibraryDownloadStatus(req, res) {
+  const body = await readJson(req, 256 * 1024).catch(() => ({}));
+  const jobId = String(body.jobId || "").trim();
+  if (!jobId) {
+    return sendJson(res, 200, {
+      jobs: Array.from(modelDownloadJobs.values()).map(modelDownloadSnapshot)
+    });
+  }
+  const job = modelDownloadJobs.get(jobId);
+  if (!job) return sendJson(res, 404, { error: "ダウンロードジョブが見つかりません。" });
+  sendJson(res, 200, { job: modelDownloadSnapshot(job) });
 }
 
 function normalizeComfyBaseUrl(value) {
@@ -4964,8 +5601,32 @@ const server = http.createServer(async (req, res) => {
       return await handleUsdJpyRate(req, res);
     }
 
+    if (req.method === "POST" && url.pathname === "/api/animadex/search") {
+      return await handleAnimaDexSearch(req, res);
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/animadex/media") {
+      return await handleAnimaDexMedia(req, res, url);
+    }
+
     if (req.method === "GET" && url.pathname === "/api/seedance/guide") {
       return await handleSeedanceGuide(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/model-library/local") {
+      return await handleModelLibraryLocal(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/model-library/search") {
+      return await handleModelLibrarySearch(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/model-library/download") {
+      return await handleModelLibraryDownload(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/model-library/download-status") {
+      return await handleModelLibraryDownloadStatus(req, res);
     }
 
     if (req.method === "POST" && url.pathname === "/api/comfy/check") {
