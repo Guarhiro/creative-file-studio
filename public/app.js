@@ -929,8 +929,10 @@ const modelLibraryBaseModelOptions = [
   ["Illustrious", "Illustrious"],
   ["Pony", "Pony"],
   ["Anima", "Anima"],
+  ["NoobAI", "NoobAI"],
   ["SDXL 1.0", "SDXL"],
-  ["SD 1.5", "SD 1.5"]
+  ["SD 1.5", "SD 1.5"],
+  ["Other", "その他"]
 ];
 
 const modelLibrarySortOptions = ["Most Downloaded", "Highest Rated", "Newest"];
@@ -9107,8 +9109,10 @@ function modelLibraryBaseModelFromValue(value = "") {
   if (["illustrious", "illustius", "ilxl"].includes(text)) return "Illustrious";
   if (["pony", "ponyxl"].includes(text)) return "Pony";
   if (text === "anima") return "Anima";
+  if (["noobai", "noob ai", "noob-ai", "noob_ai"].includes(text)) return "NoobAI";
   if (["sdxl", "sdxl 1.0", "stable diffusion xl"].includes(text)) return "SDXL 1.0";
   if (["sd 1.5", "sd1.5", "sd15", "1.5", "stable diffusion 1.5"].includes(text)) return "SD 1.5";
+  if (["other", "others", "その他"].includes(text)) return "Other";
   return value;
 }
 
@@ -9117,8 +9121,10 @@ function modelLibraryBaseModelFromText(...values) {
   if (/illustrious|illustius|(^|[\s_.-])ilxl(?=$|[\s_.-])/.test(text)) return "Illustrious";
   if (/pony/.test(text)) return "Pony";
   if (/(^|[\s_.-])anima(?=$|[\s_.-])/.test(text)) return "Anima";
+  if (/(^|[\s_.-])noob[\s_.-]*ai(?=$|[\s_.-])|noobai/.test(text)) return "NoobAI";
   if (/(^|[\s_.-])(sdxl|stable[\s_.-]*diffusion[\s_.-]*xl)(?=$|[\s_.-])/.test(text)) return "SDXL 1.0";
   if (/(^|[\s_.-])(sd[\s_.-]*1[\s_.-]*5|sd15|stable[\s_.-]*diffusion[\s_.-]*1[\s_.-]*5)(?=$|[\s_.-])/.test(text)) return "SD 1.5";
+  if (/(^|[\s_.-])others?(?=$|[\s_.-])|その他/.test(text)) return "Other";
   return "";
 }
 

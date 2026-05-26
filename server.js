@@ -3710,6 +3710,10 @@ const modelLibraryBaseModels = new Map([
   ["pony", "Pony"],
   ["ponyxl", "Pony"],
   ["anima", "Anima"],
+  ["noobai", "NoobAI"],
+  ["noob ai", "NoobAI"],
+  ["noob-ai", "NoobAI"],
+  ["noob_ai", "NoobAI"],
   ["sdxl", "SDXL 1.0"],
   ["sdxl 1.0", "SDXL 1.0"],
   ["stable diffusion xl", "SDXL 1.0"],
@@ -3717,7 +3721,10 @@ const modelLibraryBaseModels = new Map([
   ["sd1.5", "SD 1.5"],
   ["sd15", "SD 1.5"],
   ["1.5", "SD 1.5"],
-  ["stable diffusion 1.5", "SD 1.5"]
+  ["stable diffusion 1.5", "SD 1.5"],
+  ["other", "Other"],
+  ["others", "Other"],
+  ["その他", "Other"]
 ]);
 
 function modelLibraryTypeFromValue(value = "") {
@@ -3755,8 +3762,10 @@ function inferModelLibraryBaseModelFromText(...values) {
   if (/illustrious|illustius|(^|[\s_.-])ilxl(?=$|[\s_.-])/.test(text)) return "Illustrious";
   if (/pony/.test(text)) return "Pony";
   if (/(^|[\s_.-])anima(?=$|[\s_.-])/.test(text)) return "Anima";
+  if (/(^|[\s_.-])noob[\s_.-]*ai(?=$|[\s_.-])|noobai/.test(text)) return "NoobAI";
   if (/(^|[\s_.-])(sdxl|stable[\s_.-]*diffusion[\s_.-]*xl)(?=$|[\s_.-])/.test(text)) return "SDXL 1.0";
   if (/(^|[\s_.-])(sd[\s_.-]*1[\s_.-]*5|sd15|stable[\s_.-]*diffusion[\s_.-]*1[\s_.-]*5)(?=$|[\s_.-])/.test(text)) return "SD 1.5";
+  if (/(^|[\s_.-])others?(?=$|[\s_.-])|その他/.test(text)) return "Other";
   return "";
 }
 

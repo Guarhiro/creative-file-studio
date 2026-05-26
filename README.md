@@ -387,7 +387,7 @@ AnimaDexの全リストはAnimaDex側のページングAPIから取得します�
 モデルライブラリ画面では、Checkpoint / LoRAを画面一杯のカード一覧で検索できます。Civitaiカタログの未保存モデルと、このMacに保存済みのモデルを同じ一覧に表示し、参考画像、説明、タグ、トリガーワード、ファイルサイズ、Scan情報、商用利用メモを詳細パネルで確認できます。
 
 - Checkpoint / LoRAをタブで切り替え
-- Illustrious / Pony / Anima / SDXL / SD 1.5 の分類でCivitai検索とローカル保存済みモデルを絞り込み
+- Illustrious / Pony / Anima / NoobAI / SDXL / SD 1.5 / その他 の分類でCivitai検索とローカル保存済みモデルを絞り込み
 - ダウンロード済、未ダウンロード、すべてで絞り込み
 - Civitaiの検索語、並び替え、期間、NSFW表示可否を指定
 - ダウンロード先として ComfyUI / Forge / Forge Neo / Draw Things の保存先プラットフォームを必ず選択。選択したプラットフォームの標準モデルフォルダへ保存し、画面内で標準保存先パスを確認できます
