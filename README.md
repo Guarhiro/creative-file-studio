@@ -222,7 +222,7 @@ ZIPに含めないもの:
 - ComfyUI、Forge、Forge Neoのモデル（Checkpoint） / Sampler / LoRA一覧を取得し、Forge NeoではModule候補も入力候補として表示。Draw ThingsではHTTP Serverから取得できる現在設定、LoRA APIが返すLoRA、このMacのDraw Things保存先にあるLoRAファイルを候補として表示
 - 画像生成画面のAnimaDexポップアップからキャラクターtrigger、タグ、アーティストtagを検索し、Promptへ追加
 - モデルライブラリ画面でCivitaiのCheckpoint / LoRAを検索し、参考画像、説明、トリガーワード、ファイルサイズ、Scan情報、商用利用メモを確認
-- 保存済み・未保存を同じ画面で絞り込み、Checkpoint保存先 / LoRA保存先へダウンロード。ComfyUIやForgeのモデルフォルダを保存先にすると、そのまま生成設定へ反映しやすくなります
+- 保存済み・未保存を同じ画面で絞り込み、ダウンロード時はComfyUI / Forge / Forge Neo / Draw Thingsの保存先プラットフォーム選択を必須化。選択したプラットフォームの標準モデルフォルダへ保存します。Draw Thingsはアプリ側にインポート済みのローカル資産も候補として取得します
 - 生成前にworkflowのNode ID、LoRA接続、モデル（Checkpoint） / LoRA名を事前チェック
 - Comfy設定をプリセットとして保存し、立ち絵、背景、表情差分など用途別に呼び出し
 - 画像一覧、キャラ立ち絵、その他情報、追加アップロード画像をComfy参照画像として選択
@@ -300,7 +300,7 @@ ZIPに含めないもの:
 - OpenRouterのモデル一覧と動画モデル対応設定を再取得
 - 画像生成APIとしてComfyUI、Forge、Forge Neo、Draw Thingsを選択し、ComfyUIのローカルURL / クラウドURL、Forge URL、Forge Neo URL、Draw Things URL、workflow、Node ID、既定生成値、LoRA、workflow表示モード、モデル候補取得、事前チェック、プリセットを設定
 - AnimaDexのURLを設定し、キャラクター/アーティスト検索を画像生成プロンプトに反映
-- モデルライブラリでCheckpoint / LoRAの保存先を指定し、Civitaiカタログ検索とローカル保存済みファイルを確認
+- モデルライブラリで保存先プラットフォームを指定し、Civitaiカタログ検索とローカル保存済みファイルを確認
 - 画像編集画面からローカルAI rembg / backgroundremoverの状態確認とセットアップ
 - 動画生成プロバイダーを公式 / OpenRouter / Replicateから選択
 - VoiceboxのAPI URL、既定プロファイル、言語、Model sizeを設定
@@ -313,7 +313,7 @@ ZIPに含めないもの:
 - 生成完了後に保存された画像: `data/uploads/作品名/_画像生成/`
 - 画像編集後に保存された画像: `data/uploads/作品名/_画像編集/`
 - Comfy参照画像として追加した画像: `data/uploads/作品名/_Comfy参照画像/`
-- モデルライブラリの既定保存先: `data/model-library/checkpoints/`、`data/model-library/loras/`
+- モデルライブラリの保存先: 選択したプラットフォームの標準モデルフォルダ
 - 生成完了後、または音声編集後に保存された音声: `data/audios/作品名/キャラクター名/`（キャラ未指定時は `_音声/`）
 - 動画生成用に追加した素材: `data/uploads/作品名/_動画生成_画像/`、`_動画生成_動画/`、`_動画生成_音声/`
 - 生成完了後に保存された動画: `data/videos/`
@@ -390,11 +390,11 @@ AnimaDexの全リストはAnimaDex側のページングAPIから取得します�
 - Illustrious / Pony / Anima / SDXL / SD 1.5 の分類でCivitai検索とローカル保存済みモデルを絞り込み
 - ダウンロード済、未ダウンロード、すべてで絞り込み
 - Civitaiの検索語、並び替え、期間、NSFW表示可否を指定
-- Checkpoint保存先 / LoRA保存先を指定。空欄の場合は `data/model-library/checkpoints/` と `data/model-library/loras/` に保存
+- ダウンロード先として ComfyUI / Forge / Forge Neo / Draw Things の保存先プラットフォームを必ず選択。選択したプラットフォームの標準モデルフォルダへ保存し、画面内で標準保存先パスを確認できます
 - ダウンロード進捗を画面内に表示
 - 「使用」または「LoRA追加」で画像生成設定へ反映
 
-ComfyUIやForgeで直接使いたい場合は、それぞれのモデルフォルダを保存先に指定してください。クラウド側はモデル名を生成設定へ反映できますが、実際に使えるかは接続先のクラウド環境に同じモデル/LoRAが配置されているかに依存します。
+ComfyUI、Forge、Forge Neo、Draw Thingsで直接使いたい場合は、モデルライブラリの保存先プラットフォームを該当アプリにしてダウンロードしてください。標準フォルダが見つからない場合は保存前にエラーを表示します。クラウド側はモデル名を生成設定へ反映できますが、実際に使えるかは接続先のクラウド環境に同じモデル/LoRAが配置されているかに依存します。
 
 ## 音声生成
 

@@ -197,6 +197,7 @@ const state = {
   modelLibraryError: "",
   modelLibrarySelectedKey: "",
   modelLibraryLocal: { checkpoints: [], loras: [], dirs: {}, updatedAt: "" },
+  modelLibraryProviderCatalog: { checkpoints: [], loras: [], samplers: [], modules: [], provider: "", status: "idle", error: "", updatedAt: "" },
   modelLibraryDownloads: {},
   videoPricingStatus: "idle",
   videoPricingError: "",
@@ -382,7 +383,7 @@ const screenHelpContent = {
       {
         title: "設定値の意味",
         items: [
-          { term: "保存先", description: "ComfyUIやForgeのモデルフォルダを指定すると、保存後にその生成方式から使いやすくなります。" },
+          { term: "保存先プラットフォーム", description: "ComfyUI、Forge、Forge Neo、Draw Thingsのいずれかを選ぶと、各アプリの標準フォルダへ保存します。" },
           { term: "Civitai APIキー", description: "必要なモデルや制限付きダウンロードで使います。ブラウザ内に保存します。" }
         ]
       }
@@ -857,6 +858,13 @@ const modelLibraryTypes = [
   ["LORA", "LoRA"]
 ];
 
+const modelLibraryProviders = [
+  ["comfy", "ComfyUI"],
+  ["forge", "Forge"],
+  ["forge-neo", "Forge Neo"],
+  ["drawthings", "Draw Things"]
+];
+
 const modelLibraryBaseModelOptions = [
   ["all", "すべて"],
   ["Illustrious", "Illustrious"],
@@ -1283,6 +1291,22 @@ const imageProviderLabel = (provider) => {
   if (value === "forge-neo") return "Forge Neo";
   if (value === "forge") return "Forge";
   return "ComfyUI";
+};
+const modelLibraryProviderFromValue = (value) => {
+  const text = String(value || "").trim().toLowerCase();
+  if (["comfy", "comfyui", "comfy-ui"].includes(text)) return "comfy";
+  if (text === "forge") return "forge";
+  if (["forge-neo", "forge_neo", "forgeneo", "neo"].includes(text)) return "forge-neo";
+  if (["drawthings", "draw-things", "draw_things", "draw things"].includes(text)) return "drawthings";
+  return "";
+};
+const modelLibraryProviderLabel = (provider) => {
+  const value = modelLibraryProviderFromValue(provider);
+  if (value === "comfy") return "ComfyUI";
+  if (value === "forge") return "Forge";
+  if (value === "forge-neo") return "Forge Neo";
+  if (value === "drawthings") return "Draw Things";
+  return "未選択";
 };
 const activeComfySettings = () => normalizedComfySettings(state.db?.settings?.comfy || {});
 const activeImageProvider = () => imageProviderFromValue(state.imageProvider || activeComfySettings().provider);
@@ -2429,12 +2453,12 @@ const comfyPresets = () => normalizedComfyPresets(state.db?.settings?.comfyPrese
 
 function normalizedModelLibrarySettings(value = {}) {
   return {
-    checkpointDir: String(value?.checkpointDir || "").trim(),
-    loraDir: String(value?.loraDir || "").trim()
+    provider: modelLibraryProviderFromValue(value?.provider)
   };
 }
 
-const activeModelLibrarySettings = () => normalizedModelLibrarySettings(state.db?.settings?.modelLibrary || {});
+const activeModelLibraryConfig = () => normalizedModelLibrarySettings(state.db?.settings?.modelLibrary || {});
+const activeModelLibraryProvider = () => activeModelLibraryConfig().provider;
 
 function normalizeSettings() {
   state.db.settings = {
@@ -2475,8 +2499,7 @@ function normalizeSettings() {
     comfy: { ...comfyDefaultSettings },
     comfyPresets: [],
     modelLibrary: {
-      checkpointDir: "",
-      loraDir: ""
+      provider: ""
     },
     moveImportedSourcesToTrash: false,
     importSourceRoot: "",
@@ -9045,11 +9068,24 @@ function modelLibraryItemBaseModel(item = {}) {
     || modelLibraryBaseModelFromText(item.name, item.fileName, item.relativePath, item.versionName, item.creator, ...(item.tags || []), ...(item.trainedWords || []));
 }
 
+function modelLibraryCatalogForActiveProvider() {
+  const target = activeModelLibraryProvider();
+  const catalog = state.modelLibraryProviderCatalog || {};
+  if (!target || modelLibraryProviderFromValue(catalog.provider) !== target) {
+    return { checkpoints: [], loras: [], samplers: [], modules: [] };
+  }
+  return {
+    checkpoints: Array.isArray(catalog.checkpoints) ? catalog.checkpoints : [],
+    loras: Array.isArray(catalog.loras) ? catalog.loras : [],
+    samplers: Array.isArray(catalog.samplers) ? catalog.samplers : [],
+    modules: Array.isArray(catalog.modules) ? catalog.modules : []
+  };
+}
+
 function modelLibrarySettingsFromDom() {
-  return normalizedModelLibrarySettings({
-    checkpointDir: document.querySelector("#model-library-checkpoint-dir")?.value ?? activeModelLibrarySettings().checkpointDir,
-    loraDir: document.querySelector("#model-library-lora-dir")?.value ?? activeModelLibrarySettings().loraDir
-  });
+  const current = activeModelLibraryConfig();
+  const provider = modelLibraryProviderFromValue(document.querySelector("#model-library-provider")?.value || current.provider);
+  return normalizedModelLibrarySettings({ ...current, provider });
 }
 
 function saveModelLibrarySettingsFromDom() {
@@ -9059,6 +9095,9 @@ function saveModelLibrarySettingsFromDom() {
 }
 
 function modelLibraryLocalItems(type = state.modelLibraryType) {
+  if (!activeModelLibraryProvider()) return [];
+  const localProvider = modelLibraryProviderFromValue(state.modelLibraryLocal?.provider || activeModelLibraryProvider());
+  if (localProvider !== activeModelLibraryProvider()) return [];
   return modelLibraryTypeFromValue(type) === "LORA"
     ? (state.modelLibraryLocal.loras || [])
     : (state.modelLibraryLocal.checkpoints || []);
@@ -9072,7 +9111,7 @@ function modelLibraryInstalledNames(type = state.modelLibraryType) {
       if (text) names.add(text);
     });
   });
-  const catalog = imageModelCatalog(activeImageProvider());
+  const catalog = modelLibraryCatalogForActiveProvider();
   const remoteNames = modelLibraryTypeFromValue(type) === "LORA" ? catalog.loras : catalog.checkpoints;
   remoteNames.forEach((name) => names.add(String(name || "").trim().toLowerCase()));
   return names;
@@ -9154,6 +9193,22 @@ function modelLibraryDownloadProgress(job = {}) {
   return `${Math.min(100, Math.round((received / total) * 100))}%`;
 }
 
+function modelLibraryDownloadMetrics(job = {}) {
+  const total = Math.max(0, Number(job.totalBytes || 0) || 0);
+  const received = Math.max(0, Number(job.receivedBytes || 0) || 0);
+  const percent = total ? Math.min(100, Math.round((received / total) * 100)) : 0;
+  return { total, received, percent };
+}
+
+function modelLibraryDownloadBytesText(job = {}) {
+  const { total, received } = modelLibraryDownloadMetrics(job);
+  if (total) return `${formatBytes(received)} / ${formatBytes(total)}`;
+  if (received) return `${formatBytes(received)} 受信済`;
+  if (job.status === "queued") return "準備中";
+  if (job.status === "downloading") return "接続中";
+  return "";
+}
+
 function modelLibraryCursorFromMetadata(metadata = {}) {
   if (metadata.nextCursor) return String(metadata.nextCursor);
   const nextPage = String(metadata.nextPage || "");
@@ -9166,14 +9221,22 @@ function modelLibraryCursorFromMetadata(metadata = {}) {
 }
 
 function renderModelLibrary() {
-  const settings = activeModelLibrarySettings();
+  const provider = activeModelLibraryProvider();
+  const providerLabel = modelLibraryProviderLabel(provider);
   const items = modelLibraryDisplayItems();
   const selected = findModelLibraryItem() || items[0] || null;
   if (selected && state.modelLibrarySelectedKey !== selected.key) state.modelLibrarySelectedKey = selected.key;
   const type = modelLibraryTypeFromValue(state.modelLibraryType);
   const metadata = state.modelLibraryMetadata || {};
   const localCount = modelLibraryLocalItems(type).length;
-  const downloadJobs = Object.values(state.modelLibraryDownloads || {});
+  const providerCatalog = modelLibraryCatalogForActiveProvider();
+  const providerCatalogCount = modelLibraryTypeFromValue(type) === "LORA" ? providerCatalog.loras.length : providerCatalog.checkpoints.length;
+  const providerCatalogStatus = state.modelLibraryProviderCatalog || {};
+  const providerCatalogText = provider && providerCatalogStatus.status === "loaded" ? ` / 接続先 ${providerCatalogCount}件` : "";
+  const standardDirs = state.modelLibraryLocal?.provider === provider ? (state.modelLibraryLocal.dirs || {}) : {};
+  const standardDirMessage = provider
+    ? `${modelLibraryTypeLabel("Checkpoint")}: ${standardDirs.checkpointDir || "標準フォルダ未確認"} / LoRA: ${standardDirs.loraDir || "標準フォルダ未確認"}`
+    : "ダウンロード前に保存先プラットフォームを選択してください。";
   return `
     <div class="model-library-shell">
       <section class="panel model-library-filter-panel">
@@ -9185,6 +9248,12 @@ function renderModelLibrary() {
           </div>
         </div>
         <div class="panel-body model-library-controls">
+          <label class="full">保存先プラットフォーム
+            <select id="model-library-provider" required>
+              <option value="" ${provider ? "" : "selected"}>選択してください</option>
+              ${modelLibraryProviders.map(([value, label]) => `<option value="${escapeHtml(value)}" ${provider === value ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
+            </select>
+          </label>
           <div class="model-library-tabs">
             ${modelLibraryTypes.map(([value, label]) => `<button class="ghost ${type === value ? "active-toggle" : ""}" data-action="set-model-library-type" data-type="${escapeHtml(value)}">${escapeHtml(label)}</button>`).join("")}
           </div>
@@ -9223,15 +9292,10 @@ function renderModelLibrary() {
             <input id="model-library-include-nsfw" type="checkbox" ${state.modelLibraryIncludeNsfw ? "checked" : ""}>
             <span>NSFWモデルも検索結果に含める</span>
           </label>
-          <details class="full model-library-paths">
+          <details class="full model-library-paths" open>
             <summary>保存先とAPIキー</summary>
             <div class="form-grid compact-grid">
-              <label class="full">Checkpoint保存先
-                <input id="model-library-checkpoint-dir" placeholder="空欄なら data/model-library/checkpoints" value="${escapeHtml(settings.checkpointDir)}">
-              </label>
-              <label class="full">LoRA保存先
-                <input id="model-library-lora-dir" placeholder="空欄なら data/model-library/loras" value="${escapeHtml(settings.loraDir)}">
-              </label>
+              <div class="full meta">${escapeHtml(standardDirMessage)}</div>
               <label class="full">Civitai APIキー
                 <input id="model-library-civitai-key" type="password" placeholder="必要な場合だけ入力" value="${escapeHtml(civitaiApiKey())}">
               </label>
@@ -9239,15 +9303,17 @@ function renderModelLibrary() {
           </details>
           <div class="model-library-summary">
             <strong>${escapeHtml(modelLibraryTypeLabel(type))}</strong>
-            <span>表示 ${items.length}件 / ローカル ${localCount}件${metadata.totalItems ? ` / Civitai ${Number(metadata.totalItems).toLocaleString("ja-JP")}件` : ""}</span>
+            <span>${escapeHtml(providerLabel)} / 表示 ${items.length}件 / ローカル ${localCount}件${providerCatalogText}${metadata.totalItems ? ` / Civitai ${Number(metadata.totalItems).toLocaleString("ja-JP")}件` : ""}</span>
           </div>
+          ${!provider ? `<div class="danger-text">保存先プラットフォームを選択すると、標準フォルダへの保存と保存済み判定が有効になります。</div>` : ""}
+          ${provider && providerCatalogStatus.status === "failed" ? `<div class="danger-text">${escapeHtml(providerCatalogStatus.error || `${providerLabel}のモデル一覧を取得できませんでした。`)}</div>` : ""}
           ${state.modelLibrarySearchStatus === "failed" ? `<div class="danger-text">${escapeHtml(state.modelLibraryError)}</div>` : ""}
-          ${downloadJobs.length ? `<div class="model-download-list">${downloadJobs.map(renderModelDownloadJob).join("")}</div>` : ""}
+          ${renderModelDownloadList()}
         </div>
       </section>
       <section class="model-library-main">
         <div class="model-library-resultbar">
-          <div class="meta">${state.modelLibrarySearchStatus === "loading" ? "カタログを検索中です。" : "参考画像から選んで、生成設定へ反映できます。"}</div>
+          <div class="meta">${state.modelLibrarySearchStatus === "loading" ? "カタログを検索中です。" : `${escapeHtml(providerLabel)}向けに選んで、生成設定へ反映できます。`}</div>
           <div class="group">
             <button class="ghost" data-action="model-library-prev" ${state.modelLibraryPage <= 1 && !state.modelLibraryCursorStack.length ? "disabled" : ""}>前へ</button>
             <button class="ghost" data-action="model-library-next" ${metadata.nextPage || state.modelLibraryNextCursor ? "" : "disabled"}>次へ</button>
@@ -9264,29 +9330,73 @@ function renderModelLibrary() {
 }
 
 function renderModelDownloadJob(job = {}) {
+  const metrics = modelLibraryDownloadMetrics(job);
   const progress = modelLibraryDownloadProgress(job);
   const statusText = job.status === "completed" ? "完了" : job.status === "failed" ? "失敗" : job.status === "downloading" ? "保存中" : "待機中";
+  const width = metrics.total ? metrics.percent : 100;
+  const ariaValue = metrics.total ? ` aria-valuenow="${escapeHtml(metrics.percent)}"` : "";
+  const bytesText = modelLibraryDownloadBytesText(job);
+  const infoText = job.status === "completed" && job.targetPath
+    ? [bytesText, job.targetPath].filter(Boolean).join(" / ")
+    : bytesText;
   return `
-    <div class="model-download-job ${escapeHtml(job.status || "")}">
-      <div>
+    <div class="model-download-job ${escapeHtml(job.status || "")}" data-download-job-id="${escapeHtml(job.id || "")}">
+      <div class="model-download-head">
         <strong>${escapeHtml(job.fileName || job.name || "model")}</strong>
         <span>${escapeHtml(statusText)}${progress ? ` / ${escapeHtml(progress)}` : ""}</span>
       </div>
-      ${job.error ? `<div class="danger-text">${escapeHtml(job.error)}</div>` : job.targetPath ? `<div class="meta">${escapeHtml(job.targetPath)}</div>` : ""}
+      <div class="model-download-bar ${metrics.total ? "" : "indeterminate"}" role="progressbar" aria-valuemin="0" aria-valuemax="100"${ariaValue}>
+        <span style="width: ${escapeHtml(width)}%"></span>
+      </div>
+      ${job.error ? `<div class="danger-text">${escapeHtml(job.error)}</div>` : infoText ? `<div class="meta">${escapeHtml(infoText)}</div>` : ""}
     </div>
   `;
+}
+
+function renderModelDownloadList() {
+  const downloadJobs = Object.values(state.modelLibraryDownloads || {});
+  if (!downloadJobs.length) return "";
+  return `<div class="model-download-list" aria-live="polite">${downloadJobs.map(renderModelDownloadJob).join("")}</div>`;
+}
+
+function updateModelDownloadList() {
+  if (state.view !== "model-library") return false;
+  const controls = document.querySelector(".model-library-controls");
+  if (!controls) return false;
+  const current = controls.querySelector(".model-download-list");
+  const html = renderModelDownloadList();
+  if (!html) {
+    current?.remove();
+    return true;
+  }
+  if (current) {
+    current.outerHTML = html;
+  } else {
+    controls.insertAdjacentHTML("beforeend", html);
+  }
+  return true;
+}
+
+function setModelLibraryDownloadButtonsBusy(key, busy) {
+  document.querySelectorAll("[data-action='download-model-library-item']").forEach((button) => {
+    if (button.dataset.key !== key) return;
+    if (!button.dataset.defaultLabel) button.dataset.defaultLabel = button.textContent || "";
+    button.disabled = Boolean(busy);
+    button.textContent = busy ? "保存中" : (button.dataset.defaultLabel || "ダウンロード");
+  });
 }
 
 function renderModelLibraryCard(item) {
   const selected = state.modelLibrarySelectedKey === item.key;
   const image = modelLibraryPreviewImage(item);
   const installed = modelLibraryItemInstalled(item);
+  const providerSelected = Boolean(activeModelLibraryProvider());
   const baseModel = modelLibraryItemBaseModel(item);
   const size = modelLibraryFileSizeText(item);
   return `
     <article class="model-card ${selected ? "selected" : ""}" data-action="select-model-library-item" data-key="${escapeHtml(item.key)}">
       <div class="model-card-media">
-        ${image ? `<img src="${escapeHtml(image)}" data-model-image-fallbacks="${modelLibraryImageFallbackAttr(item)}" alt="${escapeHtml(item.name || "model")}">` : `<div class="model-card-placeholder">${escapeHtml(modelLibraryTypeLabel(item.type))}</div>`}
+        ${image ? `<img src="${escapeHtml(image)}" data-model-image-fallbacks="${modelLibraryImageFallbackAttr(item)}" alt="${escapeHtml(item.name || "model")}" loading="lazy" decoding="async">` : `<div class="model-card-placeholder">${escapeHtml(modelLibraryTypeLabel(item.type))}</div>`}
         <span class="model-status-badge ${installed ? "downloaded" : "remote"}">${installed ? "保存済" : "未保存"}</span>
       </div>
       <div class="model-card-body">
@@ -9301,7 +9411,7 @@ function renderModelLibraryCard(item) {
       </div>
       <div class="model-card-actions">
         <button class="ghost" data-action="apply-model-library-item" data-key="${escapeHtml(item.key)}">${modelLibraryTypeFromValue(item.type) === "LORA" ? "LoRA追加" : "使用"}</button>
-        ${item.downloadUrl && !installed ? `<button class="ghost" data-action="download-model-library-item" data-key="${escapeHtml(item.key)}">DL</button>` : ""}
+        ${item.downloadUrl && !installed ? `<button class="ghost" data-action="download-model-library-item" data-key="${escapeHtml(item.key)}" ${providerSelected ? "" : "disabled"}>${providerSelected ? "DL" : "保存先選択"}</button>` : ""}
       </div>
     </article>
   `;
@@ -9309,6 +9419,7 @@ function renderModelLibraryCard(item) {
 
 function renderModelLibraryDetail(item) {
   const installed = modelLibraryItemInstalled(item);
+  const providerSelected = Boolean(activeModelLibraryProvider());
   const imageUrls = modelLibraryImageUrls(item);
   const images = imageUrls.slice(0, 6);
   const previewImage = imageUrls[0] || "";
@@ -9321,7 +9432,7 @@ function renderModelLibraryDetail(item) {
     </div>
     <div class="panel-body model-detail-body">
       <div class="model-detail-hero">
-        ${previewImage ? `<img src="${escapeHtml(previewImage)}" data-model-image-fallbacks="${modelLibraryImageFallbackAttr(item)}" alt="${escapeHtml(item.name || "model")}">` : `<div class="model-card-placeholder">${escapeHtml(modelLibraryTypeLabel(item.type))}</div>`}
+        ${previewImage ? `<img src="${escapeHtml(previewImage)}" data-model-image-fallbacks="${modelLibraryImageFallbackAttr(item)}" alt="${escapeHtml(item.name || "model")}" loading="lazy" decoding="async">` : `<div class="model-card-placeholder">${escapeHtml(modelLibraryTypeLabel(item.type))}</div>`}
       </div>
       <div>
         <h3>${escapeHtml(item.name || item.fileName || "名称未設定")}</h3>
@@ -9329,7 +9440,7 @@ function renderModelLibraryDetail(item) {
       </div>
       <div class="model-detail-actions">
         <button class="accent" data-action="apply-model-library-item" data-key="${escapeHtml(item.key)}">${modelLibraryTypeFromValue(item.type) === "LORA" ? "LoRAを追加" : "このモデルを使う"}</button>
-        ${item.downloadUrl && !installed ? `<button class="ghost" data-action="download-model-library-item" data-key="${escapeHtml(item.key)}">ダウンロード</button>` : ""}
+        ${item.downloadUrl && !installed ? `<button class="ghost" data-action="download-model-library-item" data-key="${escapeHtml(item.key)}" ${providerSelected ? "" : "disabled"}>${providerSelected ? "ダウンロード" : "保存先を選択"}</button>` : ""}
         ${item.pageUrl ? `<a class="ghost" href="${escapeHtml(item.pageUrl)}" target="_blank" rel="noreferrer">配布ページ</a>` : ""}
       </div>
       <dl class="model-detail-list">
@@ -9350,7 +9461,7 @@ function renderModelLibraryDetail(item) {
           <div class="tag-row">${item.tags.slice(0, 12).map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("")}</div>
         </div>
       ` : ""}
-      ${images.length > 1 ? `<div class="model-detail-gallery">${images.map((url, index) => `<img src="${escapeHtml(url)}" data-model-image-fallbacks="${modelLibraryImageFallbackAttr(item, index + 1)}" alt="">`).join("")}</div>` : ""}
+      ${images.length > 1 ? `<div class="model-detail-gallery">${images.map((url, index) => `<img src="${escapeHtml(url)}" data-model-image-fallbacks="${modelLibraryImageFallbackAttr(item, index + 1)}" alt="" loading="lazy" decoding="async">`).join("")}</div>` : ""}
       ${item.description ? `<p class="model-description">${escapeHtml(item.description).slice(0, 1200)}</p>` : `<div class="empty compact">説明文は取得できていません。</div>`}
     </div>
   `;
@@ -13555,33 +13666,120 @@ function updateModelLibraryControlsFromDom() {
   saveModelLibrarySettingsFromDom();
 }
 
-async function loadModelLibraryLocal({ silent = false } = {}) {
+async function loadModelLibraryLocal({ silent = false, includeProviderCatalog = false } = {}) {
   if (!state.db) return;
   if (!silent) updateModelLibraryControlsFromDom();
+  const provider = activeModelLibraryProvider();
+  if (!provider) {
+    state.modelLibraryLocal = { checkpoints: [], loras: [], dirs: {}, provider: "", updatedAt: "" };
+    state.modelLibraryProviderCatalog = { checkpoints: [], loras: [], samplers: [], modules: [], provider: "", status: "idle", error: "", updatedAt: "" };
+    if (!silent) {
+      toast("保存先プラットフォームを選択してください。");
+      render();
+    }
+    return;
+  }
   try {
     if (!silent) await saveDb();
-    const settings = activeModelLibrarySettings();
     const result = await postJson("/api/model-library/local", {
-      checkpointDir: settings.checkpointDir,
-      loraDir: settings.loraDir
+      provider
     });
+    let catalogResult = null;
+    if (includeProviderCatalog) {
+      [catalogResult] = await Promise.allSettled([
+        loadModelLibraryProviderCatalog({ provider, silent: true })
+      ]);
+    } else {
+      state.modelLibraryProviderCatalog = {
+        checkpoints: [],
+        loras: [],
+        samplers: [],
+        modules: [],
+        provider,
+        status: "idle",
+        error: "",
+        updatedAt: ""
+      };
+    }
     state.modelLibraryLocal = {
       checkpoints: Array.isArray(result.checkpoints) ? result.checkpoints : [],
       loras: Array.isArray(result.loras) ? result.loras : [],
       dirs: result.dirs || {},
+      provider: result.provider || provider,
       updatedAt: result.updatedAt || new Date().toISOString()
     };
+    if (catalogResult?.status === "rejected") {
+      state.modelLibraryProviderCatalog = {
+        checkpoints: [],
+        loras: [],
+        samplers: [],
+        modules: [],
+        provider,
+        status: "failed",
+        error: catalogResult.reason?.message || String(catalogResult.reason || ""),
+        updatedAt: ""
+      };
+    }
     if (!silent) {
       toast("ローカルモデル一覧を読み込みました。");
       render();
     }
   } catch (error) {
+    if (provider) {
+      state.modelLibraryLocal = { checkpoints: [], loras: [], dirs: {}, provider, updatedAt: "" };
+      state.modelLibraryProviderCatalog = {
+        checkpoints: [],
+        loras: [],
+        samplers: [],
+        modules: [],
+        provider,
+        status: "failed",
+        error: error.message,
+        updatedAt: ""
+      };
+    }
     if (!silent) toast(error.message);
   }
 }
 
-async function searchModelLibrary({ keepPage = false } = {}) {
-  updateModelLibraryControlsFromDom();
+async function loadModelLibraryProviderCatalog({ provider = activeModelLibraryProvider(), silent = false } = {}) {
+  const target = modelLibraryProviderFromValue(provider);
+  if (!target) {
+    state.modelLibraryProviderCatalog = { checkpoints: [], loras: [], samplers: [], modules: [], provider: "", status: "idle", error: "", updatedAt: "" };
+    return state.modelLibraryProviderCatalog;
+  }
+  const settings = activeComfySettings();
+  const gpuMode = settings.gpuMode;
+  const baseUrl = activeImageBaseUrl(target, gpuMode);
+  const apiKeyValue = activeImageApiKey(target, gpuMode);
+  if (!baseUrl) throw new Error(`${modelLibraryProviderLabel(target)}のURLが未設定です。`);
+  state.modelLibraryProviderCatalog = {
+    ...(state.modelLibraryProviderCatalog || {}),
+    provider: target,
+    status: "loading",
+    error: ""
+  };
+  if (!silent && state.view === "model-library") render();
+  const result = await postJson(isForgeImageProvider(target) ? "/api/forge/models" : "/api/comfy/models", {
+    baseUrl,
+    apiKey: apiKeyValue,
+    provider: target
+  });
+  state.modelLibraryProviderCatalog = {
+    checkpoints: Array.isArray(result.checkpoints) ? result.checkpoints : [],
+    loras: Array.isArray(result.loras) ? result.loras : [],
+    samplers: Array.isArray(result.samplers) ? result.samplers : [],
+    modules: Array.isArray(result.modules) ? result.modules : [],
+    provider: target,
+    status: "loaded",
+    error: "",
+    updatedAt: result.updatedAt || new Date().toISOString()
+  };
+  return state.modelLibraryProviderCatalog;
+}
+
+async function searchModelLibrary({ keepPage = false, skipControlRead = false } = {}) {
+  if (!skipControlRead) updateModelLibraryControlsFromDom();
   await saveDb();
   if (!keepPage) {
     state.modelLibraryPage = 1;
@@ -13618,33 +13816,32 @@ async function searchModelLibrary({ keepPage = false } = {}) {
   render();
 }
 
-function modelLibraryTargetDirForItem(item) {
-  const settings = activeModelLibrarySettings();
-  return modelLibraryTypeFromValue(item.type) === "LORA" ? settings.loraDir : settings.checkpointDir;
-}
-
 async function downloadModelLibraryItem(key) {
   const item = findModelLibraryItem(key);
   if (!item?.downloadUrl) return toast("ダウンロードURLがありません。");
+  if (!activeModelLibraryProvider()) return toast("保存先プラットフォームを選択してください。");
   updateModelLibraryControlsFromDom();
   try {
     await saveDb();
     const result = await postJson("/api/model-library/download", {
+      provider: activeModelLibraryProvider(),
       type: item.type,
       name: item.name,
       fileName: item.fileName || item.name,
       downloadUrl: item.downloadUrl,
-      targetDir: modelLibraryTargetDirForItem(item),
+      expectedSizeKb: item.fileSizeKb || 0,
       apiKey: civitaiApiKey()
     });
     const job = result.job;
     if (job?.id) {
-      state.modelLibraryDownloads[job.id] = job;
+      state.modelLibraryDownloads[job.id] = { ...job, itemKey: key };
+      setModelLibraryDownloadButtonsBusy(key, true);
       toast("ダウンロードを開始しました。");
-      render();
+      if (!updateModelDownloadList()) render();
       window.setTimeout(() => pollModelLibraryDownload(job.id), 1200);
     }
   } catch (error) {
+    setModelLibraryDownloadButtonsBusy(key, false);
     toast(error.message);
   }
 }
@@ -13654,16 +13851,21 @@ async function pollModelLibraryDownload(jobId) {
     const result = await postJson("/api/model-library/download-status", { jobId });
     const job = result.job;
     if (!job?.id) return;
-    state.modelLibraryDownloads[job.id] = job;
+    const previous = state.modelLibraryDownloads[job.id] || {};
+    state.modelLibraryDownloads[job.id] = { ...previous, ...job };
+    const current = state.modelLibraryDownloads[job.id];
     if (["queued", "downloading"].includes(job.status)) {
-      if (state.view === "model-library") render();
+      updateModelDownloadList();
       window.setTimeout(() => pollModelLibraryDownload(job.id), 1400);
       return;
     }
     if (job.status === "completed") {
+      updateModelDownloadList();
       await loadModelLibraryLocal({ silent: true });
       toast("モデルの保存が完了しました。");
     } else if (job.status === "failed") {
+      setModelLibraryDownloadButtonsBusy(current.itemKey, false);
+      updateModelDownloadList();
       toast(job.error || "モデルの保存に失敗しました。");
     }
     if (state.view === "model-library") render();
@@ -13677,8 +13879,11 @@ async function applyModelLibraryItem(key) {
   if (!item) return toast("モデルが見つかりません。");
   const modelName = item.fileName || item.name || "";
   if (!modelName) return toast("モデル名が取得できません。");
+  if (!activeModelLibraryProvider()) return toast("保存先プラットフォームを選択してください。");
   const settings = activeComfySettings();
   const next = { ...settings };
+  const libraryProvider = activeModelLibraryProvider();
+  next.provider = libraryProvider;
   if (modelLibraryTypeFromValue(item.type) === "LORA") {
     const loras = normalizedComfyLoras(settings.loras);
     const existingIndex = loras.findIndex((lora) => lora.name === modelName);
@@ -13694,11 +13899,13 @@ async function applyModelLibraryItem(key) {
     next.checkpoint = modelName;
   }
   state.db.settings.comfy = normalizedComfySettings(next);
+  state.imageProvider = libraryProvider;
   state.imagePromptDraft = {
     ...(state.imagePromptDraft || {}),
+    provider: state.db.settings.comfy.provider,
     checkpoint: state.db.settings.comfy.checkpoint,
     loras: state.db.settings.comfy.loras,
-    agentNote: `${modelLibraryTypeLabel(item.type)}「${item.name || modelName}」を生成設定へ反映しました。`
+    agentNote: `${modelLibraryProviderLabel(libraryProvider)}の${modelLibraryTypeLabel(item.type)}「${item.name || modelName}」を生成設定へ反映しました。`
   };
   await saveDb();
   toast(modelLibraryTypeFromValue(item.type) === "LORA" ? "LoRAを生成設定へ追加しました。" : "モデルを生成設定へ反映しました。");
@@ -13732,6 +13939,25 @@ function bindModelLibrary() {
   document.querySelector("[data-action='search-model-library']")?.addEventListener("click", search);
   document.querySelector("#model-library-query")?.addEventListener("keydown", (event) => {
     if (event.key === "Enter") search();
+  });
+  document.querySelector("#model-library-provider")?.addEventListener("change", async () => {
+    const current = activeModelLibraryConfig();
+    state.db.settings.modelLibrary = normalizedModelLibrarySettings({
+      ...current,
+      provider: document.querySelector("#model-library-provider")?.value || ""
+    });
+    const provider = activeModelLibraryProvider();
+    state.modelLibrarySelectedKey = "";
+    state.modelLibraryLocal = { checkpoints: [], loras: [], dirs: {}, provider: "", updatedAt: "" };
+    state.modelLibraryProviderCatalog = { checkpoints: [], loras: [], samplers: [], modules: [], provider, status: "idle", error: "", updatedAt: "" };
+    render();
+    try {
+      await saveDb();
+      if (provider) await loadModelLibraryLocal({ silent: true });
+    } catch (error) {
+      toast(error.message);
+    }
+    if (state.view === "model-library") render();
   });
   ["#model-library-availability", "#model-library-sort", "#model-library-period", "#model-library-page", "#model-library-include-nsfw"].forEach((selector) => {
     document.querySelector(selector)?.addEventListener("change", () => {
@@ -13795,14 +14021,7 @@ function bindModelLibrary() {
   document.querySelectorAll("[data-action='copy-model-trigger']").forEach((button) => {
     button.addEventListener("click", () => copyText(button.dataset.trigger || ""));
   });
-  if (!state.modelLibraryLocal.updatedAt) {
-    loadModelLibraryLocal({ silent: true }).then(() => {
-      if (state.view === "model-library") render();
-    });
-  }
-  if (state.modelLibrarySearchStatus === "idle" && !state.modelLibraryItems.length) {
-    searchModelLibrary({ keepPage: true });
-  }
+  // Keep page entry lightweight; no automatic folder scans or Civitai search here.
 }
 
 function bindImageAgent() {

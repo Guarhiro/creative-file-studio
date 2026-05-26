@@ -149,8 +149,7 @@ const emptyDb = {
     },
     comfyPresets: [],
     modelLibrary: {
-      checkpointDir: "",
-      loraDir: ""
+      provider: ""
     },
     moveImportedSourcesToTrash: false,
     importSourceRoot: ""
@@ -3742,6 +3741,15 @@ function normalizeModelLibraryBaseModel(value = "") {
   return modelLibraryBaseModels.get(text.toLowerCase()) || text;
 }
 
+function modelLibraryProviderFromValue(value = "") {
+  const text = String(value || "").trim().toLowerCase();
+  if (["comfy", "comfyui", "comfy-ui"].includes(text)) return "comfy";
+  if (text === "forge") return "forge";
+  if (["forge-neo", "forge_neo", "forgeneo", "neo"].includes(text)) return "forge-neo";
+  if (["drawthings", "draw-things", "draw_things", "draw things"].includes(text)) return "drawthings";
+  return "";
+}
+
 function inferModelLibraryBaseModelFromText(...values) {
   const text = values.map((value) => String(value || "")).join(" ").toLowerCase();
   if (/illustrious|illustius|(^|[\s_.-])ilxl(?=$|[\s_.-])/.test(text)) return "Illustrious";
@@ -3752,8 +3760,81 @@ function inferModelLibraryBaseModelFromText(...values) {
   return "";
 }
 
-function defaultModelLibraryDir(kind = "checkpoint") {
-  return path.join(modelLibraryDir, kind === "lora" ? "loras" : "checkpoints");
+async function pathIsDirectory(value = "") {
+  try {
+    return (await fs.stat(value)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function firstExistingDirectory(candidates = []) {
+  for (const candidate of candidates) {
+    if (candidate && await pathIsDirectory(candidate)) return candidate;
+  }
+  return "";
+}
+
+function modelLibraryStandardSubdir(kind = "checkpoint", provider = "") {
+  const target = modelLibraryProviderFromValue(provider);
+  if (target === "comfy") return kind === "lora" ? ["models", "loras"] : ["models", "checkpoints"];
+  if (target === "forge" || target === "forge-neo") return kind === "lora" ? ["models", "Lora"] : ["models", "Stable-diffusion"];
+  if (target === "drawthings") return ["Models"];
+  return [];
+}
+
+async function modelLibraryStandardRoot(provider = "") {
+  const target = modelLibraryProviderFromValue(provider);
+  const home = os.homedir();
+  if (target === "comfy") {
+    return await firstExistingDirectory([
+      path.join(home, "Documents", "ComfyUI"),
+      path.join(home, "ComfyUI"),
+      path.join(home, "Library", "Application Support", "ComfyUI")
+    ]);
+  }
+  if (target === "forge") {
+    return await firstExistingDirectory([
+      path.join(home, "stable-diffusion-webui-forge"),
+      path.join(home, "sd-webui-forge"),
+      path.join(home, "Documents", "stable-diffusion-webui-forge"),
+      path.join(home, "Documents", "sd-webui-forge")
+    ]);
+  }
+  if (target === "forge-neo") {
+    return await firstExistingDirectory([
+      path.join(home, "sd-webui-forge-neo"),
+      path.join(home, "stable-diffusion-webui-forge-neo"),
+      path.join(home, "Documents", "sd-webui-forge-neo"),
+      path.join(home, "Documents", "stable-diffusion-webui-forge-neo")
+    ]);
+  }
+  if (target === "drawthings") return drawThingsDocumentsDir();
+  return "";
+}
+
+function modelLibraryProviderLabelForError(provider = "") {
+  const target = modelLibraryProviderFromValue(provider);
+  if (target === "comfy") return "ComfyUI";
+  if (target === "forge") return "Forge";
+  if (target === "forge-neo") return "Forge Neo";
+  if (target === "drawthings") return "Draw Things";
+  return "保存先プラットフォーム";
+}
+
+async function defaultModelLibraryDir(kind = "checkpoint", provider = "") {
+  const target = modelLibraryProviderFromValue(provider);
+  if (!target) throw new Error("保存先プラットフォームを選択してください。");
+  if (target === "drawthings") {
+    const documentsDir = drawThingsDocumentsDir();
+    if (documentsDir && await pathIsDirectory(documentsDir)) return path.join(documentsDir, "Models");
+  }
+  const root = await modelLibraryStandardRoot(target);
+  const subdir = modelLibraryStandardSubdir(kind, target);
+  if (!root || !subdir.length) {
+    throw new Error(`${modelLibraryProviderLabelForError(target)} の標準フォルダが見つかりません。アプリ本体の配置を確認してください。`);
+  }
+  return path.join(root, ...subdir);
 }
 
 function expandUserPath(value = "") {
@@ -3764,9 +3845,9 @@ function expandUserPath(value = "") {
   return text;
 }
 
-function resolveModelLibraryDir(kind, requested = "") {
+async function resolveModelLibraryDir(kind, requested = "", provider = "") {
   const expanded = expandUserPath(requested);
-  if (!expanded) return defaultModelLibraryDir(kind);
+  if (!expanded) return await defaultModelLibraryDir(kind, provider);
   return path.resolve(expanded);
 }
 
@@ -4001,21 +4082,67 @@ async function listModelLibraryFiles(dir, type, maxDepth = 4) {
   return items.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+async function listDrawThingsModelLibraryFileGroups() {
+  const documentsDir = drawThingsDocumentsDir();
+  if (!documentsDir) return { checkpoints: [], loras: [] };
+  const modelsDir = path.join(documentsDir, "Models");
+  const [items, loras] = await Promise.all([
+    listModelLibraryFiles(modelsDir, "Checkpoint", 1),
+    localDrawThingsLoras().catch(() => [])
+  ]);
+  const loraNames = new Set(loras.map((name) => String(name || "").trim()));
+  const groups = { checkpoints: [], loras: [] };
+  items.forEach((item) => {
+    const name = item.fileName || item.name || "";
+    const knownLora = loraNames.has(name);
+    const nameLooksLora = /(^|[_\-.])lora([_\-.]|$)/i.test(name);
+    if (knownLora || nameLooksLora) {
+      groups.loras.push({
+        ...item,
+        key: `local:LORA:${item.relativePath}`,
+        type: "LORA"
+      });
+    } else {
+      groups.checkpoints.push(item);
+    }
+  });
+  return groups;
+}
+
+async function listDrawThingsModelLibraryFiles(type) {
+  const groups = await listDrawThingsModelLibraryFileGroups();
+  return modelLibraryTypeFromValue(type) === "LORA" ? groups.loras : groups.checkpoints;
+}
+
 async function handleModelLibraryLocal(req, res) {
   const body = await readJson(req, 1024 * 1024).catch(() => ({}));
-  const checkpointDir = resolveModelLibraryDir("checkpoint", body.checkpointDir);
-  const loraDir = resolveModelLibraryDir("lora", body.loraDir);
-  const [checkpoints, loras] = await Promise.all([
-    listModelLibraryFiles(checkpointDir, "Checkpoint"),
-    listModelLibraryFiles(loraDir, "LORA")
-  ]);
-  sendJson(res, 200, {
-    ok: true,
-    dirs: { checkpointDir, loraDir },
-    checkpoints,
-    loras,
-    updatedAt: new Date().toISOString()
-  });
+  const provider = modelLibraryProviderFromValue(body.provider);
+  if (!provider) return sendJson(res, 400, { error: "保存先プラットフォームを選択してください。" });
+  try {
+    const checkpointDir = await resolveModelLibraryDir("checkpoint", "", provider);
+    const loraDir = await resolveModelLibraryDir("lora", "", provider);
+    const useDrawThingsDefault = provider === "drawthings";
+    let checkpoints = [];
+    let loras = [];
+    if (useDrawThingsDefault) {
+      ({ checkpoints, loras } = await listDrawThingsModelLibraryFileGroups());
+    } else {
+      [checkpoints, loras] = await Promise.all([
+        listModelLibraryFiles(checkpointDir, "Checkpoint"),
+        listModelLibraryFiles(loraDir, "LORA")
+      ]);
+    }
+    sendJson(res, 200, {
+      ok: true,
+      provider,
+      dirs: { checkpointDir, loraDir },
+      checkpoints,
+      loras,
+      updatedAt: new Date().toISOString()
+    });
+  } catch (error) {
+    sendJson(res, 400, { error: error.message });
+  }
 }
 
 async function handleModelLibrarySearch(req, res) {
@@ -4066,6 +4193,7 @@ function modelDownloadSnapshot(job = {}) {
     id: job.id,
     status: job.status,
     type: job.type,
+    provider: job.provider || "",
     name: job.name,
     fileName: job.fileName,
     targetPath: job.targetPath,
@@ -4075,6 +4203,14 @@ function modelDownloadSnapshot(job = {}) {
     createdAt: job.createdAt,
     updatedAt: job.updatedAt
   };
+}
+
+function modelLibraryExpectedBytes(body = {}) {
+  const directBytes = Number(body.expectedBytes || 0);
+  if (Number.isFinite(directBytes) && directBytes > 0) return Math.round(directBytes);
+  const sizeKb = Number(body.expectedSizeKb || body.fileSizeKb || 0);
+  if (Number.isFinite(sizeKb) && sizeKb > 0) return Math.round(sizeKb * 1024);
+  return 0;
 }
 
 async function runModelLibraryDownload(job, request) {
@@ -4092,7 +4228,9 @@ async function runModelLibraryDownload(job, request) {
     }
     const type = modelLibraryTypeFromValue(request.type) || "Checkpoint";
     const kind = modelLibraryKindFromType(type);
-    const targetDir = resolveModelLibraryDir(kind, request.targetDir);
+    const provider = modelLibraryProviderFromValue(request.provider);
+    if (!provider) throw new Error("保存先プラットフォームを選択してください。");
+    const targetDir = await resolveModelLibraryDir(kind, "", provider);
     await fs.mkdir(targetDir, { recursive: true });
     const dispositionName = fileNameFromContentDisposition(response.headers.get("content-disposition") || "");
     const requestedName = request.fileName || dispositionName || lastUrlPathSegment(request.downloadUrl) || `${request.name || "model"}.safetensors`;
@@ -4101,10 +4239,12 @@ async function runModelLibraryDownload(job, request) {
     job.type = type;
     job.fileName = path.basename(targetPath);
     job.targetPath = targetPath;
-    job.totalBytes = Number(response.headers.get("content-length") || 0) || 0;
+    const contentLength = Number(response.headers.get("content-length") || 0) || 0;
+    if (contentLength > 0) job.totalBytes = contentLength;
     if (!response.body) {
       const buffer = Buffer.from(await response.arrayBuffer());
       job.receivedBytes = buffer.length;
+      if (!job.totalBytes || job.receivedBytes > job.totalBytes) job.totalBytes = job.receivedBytes;
       await fs.writeFile(targetPath, buffer);
     } else {
       const stream = Readable.fromWeb(response.body);
@@ -4113,6 +4253,7 @@ async function runModelLibraryDownload(job, request) {
         job.updatedAt = new Date().toISOString();
       });
       await pipeline(stream, createWriteStream(targetPath));
+      if (!job.totalBytes || job.receivedBytes > job.totalBytes) job.totalBytes = job.receivedBytes;
     }
     job.status = "completed";
     job.updatedAt = new Date().toISOString();
@@ -4128,16 +4269,19 @@ async function handleModelLibraryDownload(req, res) {
   if (!modelLibraryDownloadUrlAllowed(body.downloadUrl)) {
     return sendJson(res, 400, { error: "対応していないダウンロードURLです。CivitaiのモデルダウンロードURLを指定してください。" });
   }
+  const provider = modelLibraryProviderFromValue(body.provider);
+  if (!provider) return sendJson(res, 400, { error: "保存先プラットフォームを選択してください。" });
   const id = crypto.randomUUID();
   const job = {
     id,
     status: "queued",
     type: modelLibraryTypeFromValue(body.type) || "Checkpoint",
+    provider,
     name: String(body.name || "").trim(),
     fileName: safeModelFileName(body.fileName || body.name || "model.safetensors"),
     targetPath: "",
     receivedBytes: 0,
-    totalBytes: 0,
+    totalBytes: modelLibraryExpectedBytes(body),
     error: "",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
