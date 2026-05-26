@@ -4401,10 +4401,93 @@ function comfyConnectionErrorMessage(baseUrl, error) {
 }
 
 function extractComfyModels(payload = {}) {
+  const checkpointModels = comfyInputChoiceList(payload, ["CheckpointLoaderSimple", "CheckpointLoader", "unCLIPCheckpointLoader"], "ckpt_name");
+  const diffusionModels = comfyInputChoiceList(payload, ["UNETLoader"], "unet_name");
   return {
-    checkpoints: comfyInputChoiceList(payload, ["CheckpointLoaderSimple", "CheckpointLoader", "unCLIPCheckpointLoader"], "ckpt_name"),
-    loras: comfyInputChoiceList(payload, ["LoraLoader", "LoraLoaderModelOnly"], "lora_name")
+    checkpoints: [...new Set([...checkpointModels, ...diffusionModels])].sort((a, b) => a.localeCompare(b)),
+    checkpointModels,
+    diffusionModels,
+    loras: comfyInputChoiceList(payload, ["LoraLoader", "LoraLoaderModelOnly"], "lora_name"),
+    textEncoders: comfyInputChoiceList(payload, ["CLIPLoader", "DualCLIPLoader", "TripleCLIPLoader"], "clip_name")
+      .concat(comfyInputChoiceList(payload, ["DualCLIPLoader", "TripleCLIPLoader"], "clip_name1"))
+      .concat(comfyInputChoiceList(payload, ["DualCLIPLoader", "TripleCLIPLoader"], "clip_name2"))
+      .concat(comfyInputChoiceList(payload, ["TripleCLIPLoader"], "clip_name3"))
+      .filter((name, index, all) => name && all.indexOf(name) === index)
+      .sort((a, b) => a.localeCompare(b)),
+    vaes: comfyInputChoiceList(payload, ["VAELoader"], "vae_name"),
+    samplers: comfyInputChoiceList(payload, ["KSampler", "KSamplerAdvanced"], "sampler_name"),
+    schedulers: comfyInputChoiceList(payload, ["KSampler", "KSamplerAdvanced"], "scheduler")
   };
+}
+
+function localComfyBaseUrl(value = "") {
+  try {
+    const parsed = new URL(String(value || ""));
+    return ["127.0.0.1", "localhost", "::1"].includes(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+async function inspectSafetensorsHeader(filePath) {
+  const handle = await fs.open(filePath, "r");
+  try {
+    const lengthBuffer = Buffer.alloc(8);
+    await handle.read(lengthBuffer, 0, 8, 0);
+    const headerLength = Number(lengthBuffer.readBigUInt64LE());
+    if (!Number.isFinite(headerLength) || headerLength <= 0 || headerLength > 50 * 1024 * 1024) return null;
+    const headerBuffer = Buffer.alloc(headerLength);
+    await handle.read(headerBuffer, 0, headerLength, 8);
+    return JSON.parse(headerBuffer.toString("utf8"));
+  } finally {
+    await handle.close();
+  }
+}
+
+function classifySafetensorsHeader(header = {}) {
+  const keys = Object.keys(header || {}).filter((key) => key !== "__metadata__");
+  const metadata = header.__metadata__ && typeof header.__metadata__ === "object" ? header.__metadata__ : {};
+  const hasTrainingMetadata = Object.keys(metadata).some((key) => key.startsWith("ss_"));
+  const hasAnimaKeys = keys.some((key) => /^net\.(llm_adapter|blocks|final_layer|pos_embed|x_embedder)\./i.test(key));
+  const hasAdapterKeys = keys.some((key) => /^(lora_|lycoris_|net\.|bundle_emb\.)/i.test(key));
+  const hasCheckpointKeys = keys.some((key) => /^(model\.diffusion_model\.|diffusion_model\.|cond_stage_model\.|conditioner\.|first_stage_model\.|vae\.)/i.test(key));
+  if (hasAnimaKeys) return "animaDiffusion";
+  if ((hasTrainingMetadata || hasAdapterKeys) && !hasCheckpointKeys) return "adapter";
+  if (hasCheckpointKeys) return "checkpoint";
+  return "unknown";
+}
+
+async function inspectLocalComfyCheckpoint(baseUrl, checkpointName) {
+  const name = String(checkpointName || "").trim();
+  if (!name || !localComfyBaseUrl(baseUrl)) return null;
+  try {
+    const checkpointDir = await resolveModelLibraryDir("checkpoint", "", "comfy");
+    const filePath = path.resolve(checkpointDir, name);
+    const root = path.resolve(checkpointDir);
+    if (!filePath.startsWith(`${root}${path.sep}`) && filePath !== root) return null;
+    const header = await inspectSafetensorsHeader(filePath);
+    if (!header) return null;
+    return { kind: classifySafetensorsHeader(header), path: filePath };
+  } catch {
+    return null;
+  }
+}
+
+function readableComfyNodeErrors(nodeErrors = {}) {
+  if (!nodeErrors || typeof nodeErrors !== "object") return "";
+  const messages = [];
+  for (const [nodeId, nodeError] of Object.entries(nodeErrors)) {
+    const className = nodeError?.class_type ? ` ${nodeError.class_type}` : "";
+    const errors = Array.isArray(nodeError?.errors) ? nodeError.errors : [nodeError];
+    for (const error of errors) {
+      const rawDetail = String(error?.details || error?.message || readableProviderError(error) || "").trim();
+      if (!rawDetail) continue;
+      const inputName = String(error?.extra_info?.input_name || "").trim();
+      const prefix = inputName && !rawDetail.includes(`${inputName}:`) ? `${inputName}: ` : "";
+      messages.push(`Node ${nodeId}${className}: ${prefix}${rawDetail}`);
+    }
+  }
+  return messages.join(" / ");
 }
 
 function parseComfyWorkflow(value) {
@@ -4656,15 +4739,55 @@ function validateComfyWorkflowRequest(body = {}, modelInfo = {}) {
   }
 
   const checkpointName = String(body.checkpoint || "").trim();
-  const checkpointNames = Array.isArray(modelInfo.checkpoints) ? modelInfo.checkpoints : [];
-  if (checkpointName && checkpointNames.length && !checkpointNames.includes(checkpointName)) {
-    errors.push(`Checkpoint「${checkpointName}」がComfyUIの一覧にありません。`);
+  const checkpointNode = prompt[String(body.checkpointNodeId || "")];
+  const checkpointClass = String(checkpointNode?.class_type || "");
+  const checkpointNames = checkpointClass === "UNETLoader"
+    ? (Array.isArray(modelInfo.diffusionModels) ? modelInfo.diffusionModels : [])
+    : (Array.isArray(modelInfo.checkpointModels) && modelInfo.checkpointModels.length ? modelInfo.checkpointModels : (Array.isArray(modelInfo.checkpoints) ? modelInfo.checkpoints : []));
+  if (checkpointName && checkpointClass === "UNETLoader" && !checkpointNames.length) {
+    errors.push("ComfyUIのdiffusion_models一覧が空です。Anima本体を ComfyUI/models/diffusion_models に配置して、ComfyUIを再起動またはモデル一覧を更新してください。");
+  } else if (checkpointName && checkpointNames.length && !checkpointNames.includes(checkpointName)) {
+    const location = checkpointClass === "UNETLoader" ? "diffusion_models" : "checkpoints";
+    errors.push(`Checkpoint「${checkpointName}」がComfyUIの${location}一覧にありません。`);
+  }
+  if (checkpointName && modelInfo.checkpointInspection?.kind === "animaDiffusion" && checkpointClass !== "UNETLoader") {
+    errors.push(`Checkpoint「${checkpointName}」はAnima diffusion model形式です。ComfyUIのmodels/diffusion_modelsへ置き、アプリの「Anima workflowを適用」を使ってください。`);
+  } else if (checkpointName && modelInfo.checkpointInspection?.kind === "adapter") {
+    errors.push(`Checkpoint「${checkpointName}」はLoRA/adapter形式の可能性があります。ComfyUIのmodels/lorasへ保存し、ベースCheckpointを選んでLoRA欄に指定してください。`);
+  }
+  const textEncoderNames = Array.isArray(modelInfo.textEncoders) ? modelInfo.textEncoders : [];
+  const vaeNames = Array.isArray(modelInfo.vaes) ? modelInfo.vaes : [];
+  for (const [nodeId, node] of Object.entries(prompt || {})) {
+    const classType = String(node?.class_type || "");
+    const inputs = node?.inputs || {};
+    if (["CLIPLoader", "DualCLIPLoader", "TripleCLIPLoader"].includes(classType) && !textEncoderNames.length) {
+      errors.push("ComfyUIのtext_encoders一覧が空です。Anima用の qwen_3_06b_base.safetensors を ComfyUI/models/text_encoders に配置してください。");
+    } else if (["CLIPLoader", "DualCLIPLoader", "TripleCLIPLoader"].includes(classType) && textEncoderNames.length) {
+      ["clip_name", "clip_name1", "clip_name2", "clip_name3"].forEach((key) => {
+        const name = String(inputs[key] || "").trim();
+        if (name && !textEncoderNames.includes(name)) errors.push(`Text Encoder「${name}」がComfyUIの一覧にありません（Node ${nodeId}）。`);
+      });
+    }
+    if (classType === "VAELoader" && vaeNames.length) {
+      const name = String(inputs.vae_name || "").trim();
+      if (name && !vaeNames.includes(name)) errors.push(`VAE「${name}」がComfyUIの一覧にありません（Node ${nodeId}）。`);
+    }
   }
   const loraNames = Array.isArray(modelInfo.loras) ? modelInfo.loras : [];
   if (loras.length && loraNames.length) {
     loras.forEach((lora) => {
       if (!loraNames.includes(lora.name)) errors.push(`LoRA「${lora.name}」がComfyUIの一覧にありません。`);
     });
+  }
+  const samplerName = String(body.samplerName || "").trim();
+  const samplerNames = Array.isArray(modelInfo.samplers) ? modelInfo.samplers : [];
+  if (samplerName && samplerNames.length && !samplerNames.includes(samplerName)) {
+    errors.push(`Sampler「${samplerName}」がComfyUIの一覧にありません。ComfyUIでは例: ${samplerNames.slice(0, 6).join(", ")} のような内部名を指定してください。`);
+  }
+  const schedulerName = String(body.scheduler || "").trim();
+  const schedulerNames = Array.isArray(modelInfo.schedulers) ? modelInfo.schedulers : [];
+  if (schedulerName && schedulerNames.length && !schedulerNames.includes(schedulerName)) {
+    errors.push(`Scheduler「${schedulerName}」がComfyUIの一覧にありません。ComfyUIでは例: ${schedulerNames.slice(0, 6).join(", ")} のような内部名を指定してください。`);
   }
 
   try {
@@ -4683,7 +4806,9 @@ function validateComfyWorkflowRequest(body = {}, modelInfo = {}) {
 
   if (!body.baseUrl) warnings.push("ComfyUI URLが未設定のため、接続とモデル存在は確認していません。");
   if (loras.length && !loraNames.length) warnings.push("LoRA一覧を取得できていないため、LoRAファイル名の存在確認は未実施です。");
-  if (checkpointName && !checkpointNames.length) warnings.push("Checkpoint一覧を取得できていないため、Checkpoint名の存在確認は未実施です。");
+  if (checkpointName && !checkpointNames.length && checkpointClass !== "UNETLoader") warnings.push("Checkpoint一覧を取得できていないため、Checkpoint名の存在確認は未実施です。");
+  if (samplerName && !samplerNames.length) warnings.push("Sampler一覧を取得できていないため、Sampler名の存在確認は未実施です。");
+  if (schedulerName && !schedulerNames.length) warnings.push("Scheduler一覧を取得できていないため、Scheduler名の存在確認は未実施です。");
 
   return {
     ok: errors.length === 0,
@@ -4719,7 +4844,7 @@ function patchComfyWorkflow(workflow, options = {}) {
   patchComfyNodeInput(prompt, options.samplerNodeId, ["sampler_name"], String(options.samplerName || "euler").trim());
   patchComfyNodeInput(prompt, options.samplerNodeId, ["scheduler"], String(options.scheduler || "normal").trim());
   patchComfyNodeInput(prompt, options.sizeNodeId, ["batch_size"], boundedNumber(options.batchSize, 1, 1, 8, true));
-  patchComfyNodeInput(prompt, options.checkpointNodeId, ["ckpt_name"], String(options.checkpoint || "").trim());
+  patchComfyNodeInput(prompt, options.checkpointNodeId, ["ckpt_name", "unet_name"], String(options.checkpoint || "").trim());
   injectComfyLoras(prompt, options);
   patchComfyReferenceImages(prompt, options.references, { requireUrl: true });
   return prompt;
@@ -4753,7 +4878,8 @@ function findComfyHistoryItem(payload, promptId) {
 }
 
 function extractComfyImages(historyItem = {}) {
-  const outputs = historyItem.outputs || historyItem.output || historyItem.data?.outputs || {};
+  const source = historyItem && typeof historyItem === "object" ? historyItem : {};
+  const outputs = source.outputs || source.output || source.data?.outputs || {};
   const images = [];
   for (const [nodeId, output] of Object.entries(outputs || {})) {
     const nodeImages = Array.isArray(output?.images) ? output.images : [];
@@ -4762,6 +4888,20 @@ function extractComfyImages(historyItem = {}) {
     });
   }
   return images;
+}
+
+function extractComfyExecutionError(historyItem = {}) {
+  const messages = Array.isArray(historyItem?.status?.messages) ? historyItem.status.messages : [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const item = messages[index];
+    const eventName = Array.isArray(item) ? item[0] : item?.type || item?.event;
+    const detail = Array.isArray(item) ? item[1] : item?.data || item;
+    if (eventName !== "execution_error" || !detail) continue;
+    const nodeText = [detail.node_id ? `Node ${detail.node_id}` : "", detail.node_type || ""].filter(Boolean).join(" ");
+    const message = String(detail.exception_message || detail.message || "").trim().split(/\n{2,}/)[0];
+    return [nodeText, message].filter(Boolean).join(": ");
+  }
+  return "";
 }
 
 function comfyQueueStatus(payload = {}, promptId) {
@@ -5346,7 +5486,7 @@ async function handleComfyModels(req, res) {
 
 async function handleComfyValidate(req, res) {
   const body = await readJson(req, 12 * 1024 * 1024);
-  const modelInfo = { checkpoints: [], loras: [] };
+  const modelInfo = { checkpoints: [], checkpointModels: [], diffusionModels: [], loras: [], textEncoders: [], vaes: [], samplers: [], schedulers: [] };
   const modelWarnings = [];
   const apiKey = apiKeyFromRequest(body.apiKey, "COMFY_API_KEY", "COMFY_CLOUD_API_KEY");
   if (body.baseUrl) {
@@ -5355,12 +5495,18 @@ async function handleComfyValidate(req, res) {
     } catch (error) {
       modelWarnings.push(`ComfyUIモデル一覧を取得できませんでした: ${error.message}`);
     }
+    modelInfo.checkpointInspection = await inspectLocalComfyCheckpoint(body.baseUrl, body.checkpoint);
   }
   const result = validateComfyWorkflowRequest(body, modelInfo);
   result.warnings = [...(result.warnings || []), ...modelWarnings];
   result.models = {
     checkpointCount: modelInfo.checkpoints.length,
-    loraCount: modelInfo.loras.length
+    diffusionModelCount: modelInfo.diffusionModels.length,
+    loraCount: modelInfo.loras.length,
+    textEncoderCount: modelInfo.textEncoders.length,
+    vaeCount: modelInfo.vaes.length,
+    samplerCount: modelInfo.samplers.length,
+    schedulerCount: modelInfo.schedulers.length
   };
   sendJson(res, result.ok ? 200 : 400, result);
 }
@@ -5372,7 +5518,14 @@ async function handleComfyCreate(req, res) {
   if (!baseUrl) return sendJson(res, 400, { error: "ComfyUI のURLが未設定です。" });
   if (!body.prompt) return sendJson(res, 400, { error: "画像生成プロンプトが必要です。" });
   try {
-    const validation = validateComfyWorkflowRequest(body);
+    let modelInfo = { checkpoints: [], checkpointModels: [], diffusionModels: [], loras: [], textEncoders: [], vaes: [], samplers: [], schedulers: [] };
+    try {
+      modelInfo = extractComfyModels(await fetchComfyObjectInfo(baseUrl, apiKey));
+    } catch {
+      modelInfo = { checkpoints: [], checkpointModels: [], diffusionModels: [], loras: [], textEncoders: [], vaes: [], samplers: [], schedulers: [] };
+    }
+    modelInfo.checkpointInspection = await inspectLocalComfyCheckpoint(baseUrl, body.checkpoint);
+    const validation = validateComfyWorkflowRequest(body, modelInfo);
     if (!validation.ok) {
       return sendJson(res, 400, {
         error: validation.errors.join(" / "),
@@ -5403,7 +5556,7 @@ async function handleComfyCreate(req, res) {
     const hasNodeErrors = nodeErrors && typeof nodeErrors === "object" && Object.keys(nodeErrors).length > 0;
     if (!response.ok || hasNodeErrors) {
       return sendJson(res, response.ok ? 400 : response.status, {
-        error: readableProviderError(payload.error) || readableProviderError(nodeErrors) || readableProviderError(payload) || `ComfyUI が ${response.status} を返しました。`,
+        error: readableComfyNodeErrors(nodeErrors) || readableProviderError(payload.error) || readableProviderError(payload) || `ComfyUI が ${response.status} を返しました。`,
         providerPayload: payload,
         request: { ...requestPayload, prompt: scrubComfyWorkflow(workflow) }
       });
@@ -5478,7 +5631,7 @@ async function handleComfyStatus(req, res) {
       return sendJson(res, 200, {
         status: "failed",
         progress: null,
-        error: readableProviderError(historyItem?.status?.messages) || "ComfyUI 生成が失敗しました。",
+        error: extractComfyExecutionError(historyItem) || readableProviderError(historyItem?.status?.messages) || "ComfyUI 生成が失敗しました。",
         providerPayload: historyPayload
       });
     }

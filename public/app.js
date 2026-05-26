@@ -176,7 +176,7 @@ const state = {
   voiceboxProfiles: [],
   voiceboxProfileStatus: "idle",
   voiceboxProfileError: "",
-  comfyModels: { checkpoints: [], loras: [], samplers: [], modules: [], provider: "comfy", updatedAt: "" },
+  comfyModels: { checkpoints: [], loras: [], samplers: [], schedulers: [], modules: [], provider: "comfy", updatedAt: "" },
   comfyModelStatus: "idle",
   comfyModelError: "",
   comfyValidation: null,
@@ -798,6 +798,65 @@ const defaultComfyWorkflow = {
     class_type: "SaveImage",
     _meta: { title: "Save Image" },
     inputs: { filename_prefix: "creative_file_studio", images: ["8", 0] }
+  }
+};
+
+const animaComfyWorkflow = {
+  "44": {
+    class_type: "UNETLoader",
+    _meta: { title: "Load Anima Diffusion Model" },
+    inputs: { unet_name: "anima-preview3-base.safetensors", weight_dtype: "default" }
+  },
+  "45": {
+    class_type: "CLIPLoader",
+    _meta: { title: "Load Qwen Text Encoder" },
+    inputs: { clip_name: "qwen_3_06b_base.safetensors", type: "stable_diffusion", device: "default" }
+  },
+  "15": {
+    class_type: "VAELoader",
+    _meta: { title: "Load Qwen VAE" },
+    inputs: { vae_name: "qwen_image_vae.safetensors" }
+  },
+  "11": {
+    class_type: "CLIPTextEncode",
+    _meta: { title: "Positive Prompt" },
+    inputs: { text: "", clip: ["45", 0] }
+  },
+  "12": {
+    class_type: "CLIPTextEncode",
+    _meta: { title: "Negative Prompt" },
+    inputs: { text: "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia", clip: ["45", 0] }
+  },
+  "28": {
+    class_type: "EmptyLatentImage",
+    _meta: { title: "Empty Latent Image" },
+    inputs: { width: 1024, height: 1024, batch_size: 1 }
+  },
+  "19": {
+    class_type: "KSampler",
+    _meta: { title: "KSampler" },
+    inputs: {
+      seed: 0,
+      steps: 30,
+      cfg: 4,
+      sampler_name: "er_sde",
+      scheduler: "simple",
+      denoise: 1,
+      model: ["44", 0],
+      positive: ["11", 0],
+      negative: ["12", 0],
+      latent_image: ["28", 0]
+    }
+  },
+  "8": {
+    class_type: "VAEDecode",
+    _meta: { title: "VAE Decode" },
+    inputs: { samples: ["19", 0], vae: ["15", 0] }
+  },
+  "46": {
+    class_type: "SaveImage",
+    _meta: { title: "Save Image" },
+    inputs: { filename_prefix: "creative_file_studio_anima", images: ["8", 0] }
   }
 };
 
@@ -9485,6 +9544,7 @@ function renderImageAgent() {
   const provider = imageProviderFromValue(state.imageProvider || controls.provider || settings.provider);
   const gpuMode = state.imageGpuMode || settings.gpuMode;
   const endpoint = activeImageBaseUrl(provider, gpuMode);
+  const modelCatalog = imageModelCatalog(provider);
   const allJobs = visibleImageHistoryItems();
   const { items: jobs, pageInfo: historyPageInfo } = getPagedGenerationHistoryItems("image", allJobs);
   const compareGroups = imageCompareGroupsForWork(state.imageWorkId).slice(0, 4);
@@ -9543,8 +9603,8 @@ function renderImageAgent() {
           <label>高さ<input id="image-height" type="number" min="64" max="4096" step="64" value="${escapeHtml(controls.height || settings.height)}"></label>
           <label>Steps<input id="image-steps" type="number" min="1" max="150" value="${escapeHtml(controls.steps || settings.steps)}"></label>
           <label>CFG<input id="image-cfg" type="number" min="0" max="30" step="0.5" value="${escapeHtml(controls.cfg || settings.cfg)}"></label>
-          <label>Sampler<input id="image-sampler" list="image-sampler-options" value="${escapeHtml(controls.samplerName || settings.samplerName)}"></label>
-          <label>Scheduler<input id="image-scheduler" value="${escapeHtml(controls.scheduler || settings.scheduler)}"></label>
+          <label>Sampler${renderCandidateChoiceControl("image-sampler", controls.samplerName || settings.samplerName, modelCatalog.samplers, { listId: "image-sampler-options", forceSelect: provider === "comfy" })}</label>
+          <label>Scheduler${renderCandidateChoiceControl("image-scheduler", controls.scheduler || settings.scheduler, modelCatalog.schedulers, { listId: "image-scheduler-options", forceSelect: provider === "comfy" })}</label>
           <label>Batch<input id="image-batch-size" type="number" min="1" max="8" value="${escapeHtml(controls.batchSize || settings.batchSize)}"></label>
           <label>Seed<input id="image-seed" type="number" placeholder="空欄でランダム" value="${escapeHtml(controls.seed ?? settings.seed)}"></label>
           <label class="full">モデル（Checkpoint）<input id="image-checkpoint" list="comfy-checkpoint-options" placeholder="${isForgeImageProvider(provider) ? `${imageProviderLabel(provider)}側の現在モデルを使う場合は空欄` : "workflow側の既定値を使う場合は空欄"}" value="${escapeHtml(controls.checkpoint || settings.checkpoint)}"></label>
@@ -10392,6 +10452,74 @@ async function validateCurrentComfyWorkflow() {
     toast((result.errors || [])[0] || "ComfyUI workflowの事前チェックで問題が見つかりました。");
   }
   return result;
+}
+
+async function applyRecommendedComfyWorkflow() {
+  if (state.view === "settings") saveComfySettingsFromDom();
+  const next = normalizedComfySettings({
+    ...activeComfySettings(),
+    workflowJson: JSON.stringify(defaultComfyWorkflow, null, 2),
+    workflowViewMode: "json",
+    positiveNodeId: "6",
+    negativeNodeId: "7",
+    seedNodeId: "3",
+    sizeNodeId: "5",
+    stepsNodeId: "3",
+    cfgNodeId: "3",
+    samplerNodeId: "3",
+    checkpointNodeId: "4"
+  });
+  state.db.settings.comfy = next;
+  state.imageProvider = next.provider;
+  state.imageGpuMode = next.gpuMode;
+  state.comfyValidation = null;
+  await saveDb();
+  render({ preserveLiveTextDrafts: true });
+  toast("標準txt2img workflowを適用しました。Checkpointには通常のベースモデルを指定してください。");
+}
+
+async function applyAnimaComfyWorkflow() {
+  if (state.view === "settings") saveComfySettingsFromDom();
+  const next = normalizedComfySettings({
+    ...activeComfySettings(),
+    workflowJson: JSON.stringify(animaComfyWorkflow, null, 2),
+    workflowViewMode: "json",
+    positiveNodeId: "11",
+    negativeNodeId: "12",
+    seedNodeId: "19",
+    sizeNodeId: "28",
+    stepsNodeId: "19",
+    cfgNodeId: "19",
+    samplerNodeId: "19",
+    checkpointNodeId: "44",
+    width: 1024,
+    height: 1024,
+    steps: 30,
+    cfg: 4,
+    samplerName: "er_sde",
+    scheduler: "simple"
+  });
+  state.db.settings.comfy = next;
+  state.imageProvider = next.provider;
+  state.imageGpuMode = next.gpuMode;
+  state.imagePromptDraft = {
+    ...(state.imagePromptDraft || {}),
+    provider: next.provider,
+    width: next.width,
+    height: next.height,
+    steps: next.steps,
+    cfg: next.cfg,
+    samplerName: next.samplerName,
+    scheduler: next.scheduler,
+    batchSize: next.batchSize,
+    checkpoint: next.checkpoint,
+    loras: next.loras,
+    referenceSlots: next.referenceSlots
+  };
+  state.comfyValidation = null;
+  await saveDb();
+  render({ preserveLiveTextDrafts: true });
+  toast("Anima workflowを適用しました。Anima本体はdiffusion_models、qwen_3_06b_baseはtext_encoders、qwen_image_vaeはvaeに配置してください。");
 }
 
 function selectedComfyPresetId() {
@@ -12453,17 +12581,18 @@ function renderComfyReferenceSlotRows(prefix, slots = [], { includeReference = f
 function imageModelCatalog(provider = activeImageProvider()) {
   const requestedProvider = imageProviderFromValue(provider);
   const storedProvider = imageProviderFromValue(state.comfyModels?.provider || "comfy");
-  if (storedProvider !== requestedProvider) return { checkpoints: [], loras: [], samplers: [], modules: [] };
+  if (storedProvider !== requestedProvider) return { checkpoints: [], loras: [], samplers: [], schedulers: [], modules: [] };
   return {
     checkpoints: Array.isArray(state.comfyModels?.checkpoints) ? state.comfyModels.checkpoints : [],
     loras: Array.isArray(state.comfyModels?.loras) ? state.comfyModels.loras : [],
     samplers: Array.isArray(state.comfyModels?.samplers) ? state.comfyModels.samplers : [],
+    schedulers: Array.isArray(state.comfyModels?.schedulers) ? state.comfyModels.schedulers : [],
     modules: Array.isArray(state.comfyModels?.modules) ? state.comfyModels.modules : []
   };
 }
 
 function renderComfyModelDatalists(provider = activeImageProvider()) {
-  const { checkpoints, loras, samplers, modules } = imageModelCatalog(provider);
+  const { checkpoints, loras, samplers, schedulers, modules } = imageModelCatalog(provider);
   return `
     <datalist id="comfy-checkpoint-options">
       ${checkpoints.map((name) => `<option value="${escapeHtml(name)}"></option>`).join("")}
@@ -12474,24 +12603,53 @@ function renderComfyModelDatalists(provider = activeImageProvider()) {
     <datalist id="image-sampler-options">
       ${samplers.map((name) => `<option value="${escapeHtml(name)}"></option>`).join("")}
     </datalist>
+    <datalist id="image-scheduler-options">
+      ${schedulers.map((name) => `<option value="${escapeHtml(name)}"></option>`).join("")}
+    </datalist>
     <datalist id="forge-neo-module-options">
       ${modules.map((name) => `<option value="${escapeHtml(name)}"></option>`).join("")}
     </datalist>
   `;
 }
 
+function renderCandidateChoiceControl(id, value, candidates = [], { listId = "", forceSelect = false } = {}) {
+  const current = String(value || "").trim();
+  const options = [...new Set((Array.isArray(candidates) ? candidates : [])
+    .map((item) => String(item || "").trim())
+    .filter(Boolean))];
+  if (!forceSelect && !options.length) {
+    const listAttr = listId ? ` list="${escapeHtml(listId)}"` : "";
+    return `<input id="${escapeHtml(id)}"${listAttr} value="${escapeHtml(current)}">`;
+  }
+  const hasCurrent = current && options.includes(current);
+  const emptyOption = !current
+    ? `<option value="" selected disabled>${options.length ? "選択してください" : "モデル一覧を取得してください"}</option>`
+    : "";
+  const missingOption = current && !hasCurrent
+    ? `<option value="${escapeHtml(current)}" selected>${escapeHtml(`${current}（候補外）`)}</option>`
+    : "";
+  return `
+    <select id="${escapeHtml(id)}">
+      ${emptyOption}
+      ${missingOption}
+      ${options.map((name) => `<option value="${escapeHtml(name)}" ${name === current ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}
+    </select>
+  `;
+}
+
 function renderComfyModelStatus(provider = activeImageProvider()) {
   const label = imageProviderLabel(provider);
-  const { checkpoints, loras, samplers, modules } = imageModelCatalog(provider);
+  const { checkpoints, loras, samplers, schedulers, modules } = imageModelCatalog(provider);
   if (state.comfyModelStatus === "loading") return `<div class="full meta">${escapeHtml(label)}のモデル一覧を取得中です。</div>`;
   if (state.comfyModelStatus === "failed") return `<div class="full meta danger-text">${escapeHtml(state.comfyModelError || `${label}のモデル一覧を取得できませんでした。`)}</div>`;
-  if (imageProviderFromValue(provider) === "drawthings" && !checkpoints.length && !loras.length && !samplers.length && !modules.length) {
+  if (imageProviderFromValue(provider) === "drawthings" && !checkpoints.length && !loras.length && !samplers.length && !schedulers.length && !modules.length) {
     return `<div class="full meta">Draw Thingsでは生成に使うモデルを事前にダウンロードまたはインポートしておく必要があります。HTTP Serverから取得できる現在設定、LoRA APIが返すLoRA、このMacのDraw Things保存先にあるLoRAファイルを候補として表示します。モデル（Checkpoint）を空欄にするとDraw Things側の現在設定を使います。</div>`;
   }
-  if (!checkpoints.length && !loras.length && !samplers.length && !modules.length) return `<div class="full meta">モデル一覧を取得すると、モデル（Checkpoint）、Sampler、LoRA名を候補から選べます。</div>`;
+  if (!checkpoints.length && !loras.length && !samplers.length && !schedulers.length && !modules.length) return `<div class="full meta">モデル一覧を取得すると、モデル（Checkpoint）、Sampler、Scheduler、LoRA名を候補から選べます。</div>`;
   const updated = state.comfyModels?.updatedAt ? ` / ${new Date(state.comfyModels.updatedAt).toLocaleString("ja-JP")}` : "";
   const moduleText = imageProviderFromValue(provider) === "forge-neo" ? ` / Module ${modules.length}件` : "";
-  return `<div class="full meta">${escapeHtml(label)}モデル一覧: モデル（Checkpoint） ${checkpoints.length}件 / Sampler ${samplers.length}件 / LoRA ${loras.length}件${escapeHtml(moduleText)}${escapeHtml(updated)}</div>`;
+  const schedulerText = imageProviderFromValue(provider) === "comfy" ? ` / Scheduler ${schedulers.length}件` : "";
+  return `<div class="full meta">${escapeHtml(label)}モデル一覧: モデル（Checkpoint） ${checkpoints.length}件 / Sampler ${samplers.length}件${escapeHtml(schedulerText)} / LoRA ${loras.length}件${escapeHtml(moduleText)}${escapeHtml(updated)}</div>`;
 }
 
 function renderComfyValidationResult() {
@@ -12637,6 +12795,7 @@ function renderComfySettings() {
   const forgeApiKeyInputId = provider === "drawthings" ? "setting-draw-things-api-key" : provider === "forge-neo" ? "setting-forge-neo-api-key" : "setting-forge-api-key";
   const forgeBaseUrlValue = provider === "drawthings" ? settings.drawThingsBaseUrl : provider === "forge-neo" ? settings.forgeNeoBaseUrl : settings.forgeBaseUrl;
   const forgeApiKeyValue = provider === "drawthings" ? drawThingsApiKey() : provider === "forge-neo" ? forgeNeoApiKey() : forgeApiKey();
+  const modelCatalog = imageModelCatalog(provider);
   const forgeApiHelp = provider === "drawthings"
     ? `Draw ThingsのHTTP Serverを有効にし、<code>/sdapi/v1/txt2img</code> へ送信します。生成に使うモデルはDraw Things側で事前にダウンロードまたはインポートしておきます。Cloud Compute / Server Offloadを使う場合もDraw Things側でモデルと実行先を選び、モデル（Checkpoint）は空欄にしてください。参照画像NodeとWorkflow JSONはComfyUI選択時だけ使います。`
     : `${escapeHtml(forgeProduct)}を <code>--api</code> 付きで起動し、<code>/sdapi/v1/txt2img</code> へ送信します。参照画像NodeとWorkflow JSONはComfyUI選択時だけ使います。`;
@@ -12728,10 +12887,10 @@ function renderComfySettings() {
           <input id="setting-comfy-cfg" type="number" min="0" max="30" step="0.5" value="${escapeHtml(settings.cfg)}">
         </label>
         <label>既定Sampler
-          <input id="setting-comfy-sampler" list="image-sampler-options" value="${escapeHtml(settings.samplerName)}">
+          ${renderCandidateChoiceControl("setting-comfy-sampler", settings.samplerName, modelCatalog.samplers, { listId: "image-sampler-options", forceSelect: provider === "comfy" })}
         </label>
         <label>既定Scheduler
-          <input id="setting-comfy-scheduler" value="${escapeHtml(settings.scheduler)}">
+          ${renderCandidateChoiceControl("setting-comfy-scheduler", settings.scheduler, modelCatalog.schedulers, { listId: "image-scheduler-options", forceSelect: provider === "comfy" })}
         </label>
         <label>既定Batch
           <input id="setting-comfy-batch-size" type="number" min="1" max="8" value="${escapeHtml(settings.batchSize)}">
@@ -12773,6 +12932,10 @@ function renderComfySettings() {
               <option value="visual" ${settings.workflowViewMode === "visual" ? "selected" : ""}>ビジュアル確認</option>
             </select>
           </label>
+          <div class="full slim-toolbar">
+            <button class="ghost" type="button" data-action="apply-recommended-comfy-workflow">標準txt2img workflowを適用</button>
+            <button class="ghost" type="button" data-action="apply-anima-comfy-workflow">Anima workflowを適用</button>
+          </div>
           ${settings.workflowViewMode === "visual"
             ? renderComfyWorkflowVisual(settings)
             : `<label class="full">Workflow JSON
@@ -14149,6 +14312,12 @@ function bindImageAgent() {
   document.querySelectorAll("[data-action='validate-comfy-workflow']").forEach((button) => {
     button.addEventListener("click", validateCurrentComfyWorkflow);
   });
+  document.querySelectorAll("[data-action='apply-recommended-comfy-workflow']").forEach((button) => {
+    button.addEventListener("click", applyRecommendedComfyWorkflow);
+  });
+  document.querySelectorAll("[data-action='apply-anima-comfy-workflow']").forEach((button) => {
+    button.addEventListener("click", applyAnimaComfyWorkflow);
+  });
   document.querySelector("[data-action='choose-image-reference-files']")?.addEventListener("click", () => {
     document.querySelector("#image-reference-file-input")?.click();
   });
@@ -15035,6 +15204,7 @@ async function loadComfyModels({ silent = false } = {}) {
       checkpoints: Array.isArray(result.checkpoints) ? result.checkpoints : [],
       loras: Array.isArray(result.loras) ? result.loras : [],
       samplers: Array.isArray(result.samplers) ? result.samplers : [],
+      schedulers: Array.isArray(result.schedulers) ? result.schedulers : [],
       modules: Array.isArray(result.modules) ? result.modules : [],
       provider,
       updatedAt: result.updatedAt || new Date().toISOString()
@@ -15044,7 +15214,8 @@ async function loadComfyModels({ silent = false } = {}) {
     if (!silent) {
       render({ preserveLiveTextDrafts: true });
       const moduleText = provider === "forge-neo" ? ` / Module ${state.comfyModels.modules.length}件` : "";
-      toast(`${label}モデル一覧を取得しました。Checkpoint ${state.comfyModels.checkpoints.length}件 / Sampler ${state.comfyModels.samplers.length}件 / LoRA ${state.comfyModels.loras.length}件${moduleText}`);
+      const schedulerText = provider === "comfy" ? ` / Scheduler ${state.comfyModels.schedulers.length}件` : "";
+      toast(`${label}モデル一覧を取得しました。Checkpoint ${state.comfyModels.checkpoints.length}件 / Sampler ${state.comfyModels.samplers.length}件${schedulerText} / LoRA ${state.comfyModels.loras.length}件${moduleText}`);
     }
     return state.comfyModels;
   } catch (error) {
@@ -15184,6 +15355,12 @@ function bindSettings() {
   });
   document.querySelectorAll("[data-action='validate-comfy-workflow']").forEach((button) => {
     button.addEventListener("click", validateCurrentComfyWorkflow);
+  });
+  document.querySelectorAll("[data-action='apply-recommended-comfy-workflow']").forEach((button) => {
+    button.addEventListener("click", applyRecommendedComfyWorkflow);
+  });
+  document.querySelectorAll("[data-action='apply-anima-comfy-workflow']").forEach((button) => {
+    button.addEventListener("click", applyAnimaComfyWorkflow);
   });
   document.querySelector("[data-action='apply-comfy-preset']")?.addEventListener("click", applySelectedComfyPreset);
   document.querySelector("[data-action='save-comfy-preset']")?.addEventListener("click", openComfyPresetModal);
