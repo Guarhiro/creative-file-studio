@@ -33,6 +33,11 @@ const backgroundRemoverHomeDir = path.join(dataDir, "backgroundremover-home");
 const localIrodoriAppDir = "/Users/guarhiro/Documents/irodori TTSアプリ";
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || "127.0.0.1";
+const animaDexLocalBaseUrl = "http://127.0.0.1:5000";
+const animaDexOfficialBaseUrl = "https://animadex.net";
+const animaDexBlobOrigin = "https://blobs.animadex.net";
+const animaDexSearchCacheTtlMs = 5 * 60 * 1000;
+const animaDexSearchCache = new Map();
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -81,7 +86,11 @@ const emptyDb = {
     voiceboxProfileId: "",
     voiceboxLanguage: "ja",
     voiceboxModelSize: "1.7B",
-    animadexBaseUrl: "http://127.0.0.1:5000",
+    animadexBaseUrl: animaDexLocalBaseUrl,
+    animadexFavorites: {
+      characters: [],
+      artists: []
+    },
     irodoriAppDir: "vendor/Irodori-TTS",
     irodoriDefaults: {
       mode: "VoiceDesign",
@@ -2328,7 +2337,7 @@ async function handleUsdJpyRate(req, res) {
 }
 
 function normalizeAnimaDexBaseUrl(value = "") {
-  const input = String(value || "http://127.0.0.1:5000").trim() || "http://127.0.0.1:5000";
+  const input = String(value || animaDexLocalBaseUrl).trim() || animaDexLocalBaseUrl;
   const raw = (/^https?:\/\//i.test(input) ? input : `http://${input}`).replace(/\/+$/g, "");
   const parsed = new URL(raw);
   if (!["http:", "https:"].includes(parsed.protocol)) {
@@ -2359,11 +2368,20 @@ function animaDexMediaPathAllowed(pathname = "") {
   return /^\/(thumb|img)\/(characters|artists|copyrights)\//.test(pathname);
 }
 
+function animaDexOfficialMediaUrlAllowed(parsed) {
+  return parsed.origin === animaDexBlobOrigin
+    && /^\/(Outputs|ArtistOutputs|CopyrightOutputs)\//.test(parsed.pathname)
+    && /\.(png|jpe?g|webp|gif)$/i.test(parsed.pathname);
+}
+
 function animaDexProxyUrl(value = "", baseUrl = "") {
   if (!value) return "";
   try {
     const base = new URL(`${baseUrl}/`);
     const parsed = new URL(value, base);
+    if (animaDexOfficialMediaUrlAllowed(parsed)) {
+      return `/api/animadex/media?${new URLSearchParams({ url: parsed.href }).toString()}`;
+    }
     if (parsed.origin !== base.origin || !animaDexMediaPathAllowed(parsed.pathname)) return "";
     const params = new URLSearchParams({ path: parsed.pathname });
     const version = parsed.searchParams.get("v");
@@ -2396,12 +2414,54 @@ function normalizeAnimaDexItem(item = {}, mode = "characters", baseUrl = "") {
   };
 }
 
+function compactAnimaDexCache() {
+  while (animaDexSearchCache.size > 120) {
+    const oldestKey = animaDexSearchCache.keys().next().value;
+    if (!oldestKey) break;
+    animaDexSearchCache.delete(oldestKey);
+  }
+}
+
+function animaDexSearchCacheKey({ baseUrl, mode, query, sort, page, seed }) {
+  return [baseUrl, mode, query, sort, page, seed || ""].join("\n");
+}
+
+async function fetchAnimaDexSearchPayload({ baseUrl, mode, sort, page, query, seed }) {
+  const endpoint = new URL(`/api/${mode}/search`, `${baseUrl}/`);
+  endpoint.searchParams.set("q", query);
+  endpoint.searchParams.set("sort", sort);
+  endpoint.searchParams.set("page", String(page));
+  if (sort === "random" && seed) endpoint.searchParams.set("seed", String(seed).slice(0, 24));
+  const cacheable = sort !== "random" || Boolean(seed);
+  const cacheKey = animaDexSearchCacheKey({ baseUrl, mode, query, sort, page, seed });
+  const cached = cacheable ? animaDexSearchCache.get(cacheKey) : null;
+  if (cached && Date.now() - cached.createdAt < animaDexSearchCacheTtlMs) {
+    return { payload: cached.payload, status: 200, fromCache: true, endpoint };
+  }
+  const response = await fetch(endpoint, {
+    headers: {
+      accept: "application/json",
+      "user-agent": "CreativeFileStudio/0.1 AnimaDex integration"
+    },
+    signal: AbortSignal.timeout(20000)
+  });
+  const payload = await comfyJson(response);
+  if (response.ok && cacheable) {
+    animaDexSearchCache.set(cacheKey, { createdAt: Date.now(), payload });
+    compactAnimaDexCache();
+  }
+  return { payload, status: response.status, fromCache: false, endpoint };
+}
+
 function readableAnimaDexFetchError(error, baseUrl = "") {
   if (error?.name === "TimeoutError") {
     return `AnimaDex の応答が20秒以内に返りませんでした。設定URL: ${baseUrl}`;
   }
   const code = String(error?.cause?.code || error?.code || "").trim();
   if (code === "ECONNREFUSED" || /fetch failed/i.test(String(error?.message || ""))) {
+    if (baseUrl === normalizeAnimaDexBaseUrl(animaDexOfficialBaseUrl)) {
+      return `AnimaDex公式Web版に接続できません。設定URL: ${baseUrl}`;
+    }
     return `AnimaDexに接続できません。AnimaDex本体が起動しているか、設定画面のAnimaDex URL（現在: ${baseUrl}）を確認してください。`;
   }
   if (code === "ENOTFOUND" || code === "EAI_AGAIN") {
@@ -2422,42 +2482,54 @@ async function handleAnimaDexSearch(req, res) {
   const sort = normalizeAnimaDexSort(body.sort, mode);
   const page = Math.max(1, Math.min(999, Number.parseInt(body.page || "1", 10) || 1));
   const query = String(body.q || body.query || "").trim().slice(0, 240);
-  const endpoint = new URL(`/api/${mode}/search`, `${baseUrl}/`);
-  endpoint.searchParams.set("q", query);
-  endpoint.searchParams.set("sort", sort);
-  endpoint.searchParams.set("page", String(page));
-  if (sort === "random" && body.seed) endpoint.searchParams.set("seed", String(body.seed).slice(0, 24));
-  try {
-    const response = await fetch(endpoint, {
-      headers: { accept: "application/json" },
-      signal: AbortSignal.timeout(20000)
-    });
-    const payload = await comfyJson(response);
-    if (!response.ok) {
-      return sendJson(res, response.status, {
-        error: readableProviderError(payload) || `AnimaDex が ${response.status} を返しました。`,
-        providerPayload: payload
+  const officialBaseUrl = normalizeAnimaDexBaseUrl(animaDexOfficialBaseUrl);
+  const targets = baseUrl === officialBaseUrl ? [baseUrl] : [baseUrl, officialBaseUrl];
+  const failures = [];
+  for (const targetBaseUrl of targets) {
+    try {
+      const { payload, status, fromCache } = await fetchAnimaDexSearchPayload({
+        baseUrl: targetBaseUrl,
+        mode,
+        sort,
+        page,
+        query,
+        seed: body.seed
       });
+      if (status < 200 || status >= 300) {
+        const message = readableProviderError(payload) || `AnimaDex が ${status} を返しました。`;
+        failures.push(`${targetBaseUrl}: ${message}`);
+        if (targetBaseUrl !== targets.at(-1)) continue;
+        return sendJson(res, status, {
+          error: `AnimaDex検索に失敗しました: ${failures.join(" / ")}`,
+          providerPayload: payload,
+          fallbackErrors: failures
+        });
+      }
+      const results = (Array.isArray(payload.results) ? payload.results : [])
+        .map((item) => normalizeAnimaDexItem(item, mode, targetBaseUrl));
+      return sendJson(res, 200, {
+        ok: true,
+        source: "animadex",
+        baseUrl: targetBaseUrl,
+        preferredBaseUrl: baseUrl,
+        fallback: targetBaseUrl !== baseUrl,
+        fromCache,
+        mode,
+        q: query,
+        sort,
+        page: Number(payload.page || page) || page,
+        pageSize: Number(payload.page_size || payload.pageSize || results.length) || results.length,
+        total: Number(payload.total || results.length) || 0,
+        pages: Number(payload.pages || 1) || 1,
+        results,
+        fallbackErrors: targetBaseUrl !== baseUrl ? failures : [],
+        updatedAt: new Date().toISOString()
+      });
+    } catch (error) {
+      failures.push(`${targetBaseUrl}: ${readableAnimaDexFetchError(error, targetBaseUrl)}`);
     }
-    const results = (Array.isArray(payload.results) ? payload.results : [])
-      .map((item) => normalizeAnimaDexItem(item, mode, baseUrl));
-    sendJson(res, 200, {
-      ok: true,
-      source: "animadex",
-      baseUrl,
-      mode,
-      q: query,
-      sort,
-      page: Number(payload.page || page) || page,
-      pageSize: Number(payload.page_size || payload.pageSize || results.length) || results.length,
-      total: Number(payload.total || results.length) || 0,
-      pages: Number(payload.pages || 1) || 1,
-      results,
-      updatedAt: new Date().toISOString()
-    });
-  } catch (error) {
-    sendJson(res, 502, { error: `AnimaDex検索に失敗しました: ${readableAnimaDexFetchError(error, baseUrl)}` });
   }
+  sendJson(res, 502, { error: `AnimaDex検索に失敗しました: ${failures.join(" / ")}` });
 }
 
 async function handleAnimaDexMedia(req, res, url) {
@@ -2467,11 +2539,24 @@ async function handleAnimaDexMedia(req, res, url) {
   } catch (error) {
     return sendText(res, 400, error.message);
   }
+  let remoteUrl;
+  const directUrl = String(url.searchParams.get("url") || "");
+  if (directUrl) {
+    try {
+      const parsed = new URL(directUrl);
+      if (!animaDexOfficialMediaUrlAllowed(parsed)) return sendText(res, 403, "Forbidden");
+      remoteUrl = parsed;
+    } catch {
+      return sendText(res, 400, "Invalid media URL");
+    }
+  }
   const pathname = String(url.searchParams.get("path") || "");
-  if (!animaDexMediaPathAllowed(pathname)) return sendText(res, 403, "Forbidden");
-  const remoteUrl = new URL(pathname, `${baseUrl}/`);
-  const version = url.searchParams.get("v");
-  if (version && /^\d+$/.test(version)) remoteUrl.searchParams.set("v", version);
+  if (!remoteUrl) {
+    if (!animaDexMediaPathAllowed(pathname)) return sendText(res, 403, "Forbidden");
+    remoteUrl = new URL(pathname, `${baseUrl}/`);
+    const version = url.searchParams.get("v");
+    if (version && /^\d+$/.test(version)) remoteUrl.searchParams.set("v", version);
+  }
   try {
     const response = await fetch(remoteUrl, {
       headers: { accept: "image/*,*/*;q=0.8" },

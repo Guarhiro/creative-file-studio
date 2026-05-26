@@ -50,6 +50,7 @@ const state = {
   animadexQuery: "",
   animadexSort: "count",
   animadexPage: 1,
+  animadexFavoritesOnly: false,
   imageEditWorkId: null,
   imageEditCharacterId: "",
   imageEditSourceKey: "",
@@ -2462,6 +2463,10 @@ function normalizeSettings() {
     voiceboxLanguage: voiceboxDefaultSettings.language,
     voiceboxModelSize: voiceboxDefaultSettings.modelSize,
     animadexBaseUrl: "http://127.0.0.1:5000",
+    animadexFavorites: {
+      characters: [],
+      artists: []
+    },
     irodoriAppDir: "vendor/Irodori-TTS",
     irodoriDefaults: { ...irodoriDefaultSettings },
     seedanceBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3",
@@ -2507,6 +2512,7 @@ function normalizeSettings() {
   state.db.settings.voiceboxLanguage = String(state.db.settings.voiceboxLanguage || voiceboxDefaultSettings.language).trim() || voiceboxDefaultSettings.language;
   state.db.settings.voiceboxModelSize = String(state.db.settings.voiceboxModelSize || voiceboxDefaultSettings.modelSize).trim() || voiceboxDefaultSettings.modelSize;
   state.db.settings.animadexBaseUrl = String(state.db.settings.animadexBaseUrl || "http://127.0.0.1:5000").trim() || "http://127.0.0.1:5000";
+  state.db.settings.animadexFavorites = normalizeAnimaDexFavorites(state.db.settings.animadexFavorites);
   state.db.settings.irodoriAppDir = String(state.db.settings.irodoriAppDir || "vendor/Irodori-TTS").trim() || "vendor/Irodori-TTS";
   state.db.settings.irodoriDefaults = normalizedIrodoriSettings(state.db.settings.irodoriDefaults);
   state.db.settings.comfy = normalizedComfySettings(state.db.settings.comfy);
@@ -9661,6 +9667,112 @@ function appendPromptPart(current = "", addition = "") {
   return `${base}${/[,\n]$/.test(base) ? " " : ", "}${extra}`;
 }
 
+function animadexItemKey(item = {}, mode = "") {
+  const normalizedMode = mode === "artists" || item.mode === "artists" ? "artists" : "characters";
+  const raw = String(item.key || item.slug || item.trigger || item.name || "").trim();
+  return raw.startsWith(`${normalizedMode}:`) ? raw : `${normalizedMode}:${raw}`;
+}
+
+function normalizeAnimaDexFavoriteItem(item = {}, mode = "") {
+  const normalizedMode = mode === "artists" || item.mode === "artists" ? "artists" : "characters";
+  const tags = Array.isArray(item.tags)
+    ? item.tags.map((tag) => String(tag || "").trim()).filter(Boolean).slice(0, 32)
+    : [];
+  return {
+    key: animadexItemKey(item, normalizedMode),
+    mode: normalizedMode,
+    slug: String(item.slug || "").trim(),
+    name: String(item.name || item.trigger || item.slug || "").trim(),
+    copyright: String(item.copyright || "").trim(),
+    copyrightName: String(item.copyrightName || item.copyright_name || "").trim(),
+    trigger: String(item.trigger || item.name || "").trim(),
+    tags,
+    count: Number(item.count || 0) || 0,
+    score: item.score === null || item.score === undefined ? null : Number(item.score),
+    sourceUrl: String(item.sourceUrl || item.url || "").trim(),
+    thumbUrl: String(item.thumbUrl || item.thumb_url || "").trim(),
+    imgUrl: String(item.imgUrl || item.img_url || "").trim(),
+    loras: Array.isArray(item.loras) ? item.loras : []
+  };
+}
+
+function normalizeAnimaDexFavoriteList(items = [], mode = "characters") {
+  const seen = new Set();
+  return (Array.isArray(items) ? items : [])
+    .map((item) => normalizeAnimaDexFavoriteItem(item, mode))
+    .filter((item) => {
+      const key = animadexItemKey(item, mode);
+      if (!key || key.endsWith(":") || seen.has(key)) return false;
+      seen.add(key);
+      item.key = key;
+      return true;
+    });
+}
+
+function normalizeAnimaDexFavorites(value = {}) {
+  return {
+    characters: normalizeAnimaDexFavoriteList(value?.characters, "characters"),
+    artists: normalizeAnimaDexFavoriteList(value?.artists, "artists")
+  };
+}
+
+function ensureAnimaDexFavorites() {
+  state.db.settings.animadexFavorites = normalizeAnimaDexFavorites(state.db.settings.animadexFavorites);
+  return state.db.settings.animadexFavorites;
+}
+
+function animadexFavoritesForMode(mode = "characters") {
+  const normalizedMode = mode === "artists" ? "artists" : "characters";
+  return ensureAnimaDexFavorites()[normalizedMode];
+}
+
+function isAnimaDexFavorite(item = {}, mode = item.mode) {
+  const key = animadexItemKey(item, mode);
+  return animadexFavoritesForMode(mode).some((favorite) => favorite.key === key);
+}
+
+async function toggleAnimaDexFavorite(item = {}) {
+  const mode = item.mode === "artists" ? "artists" : "characters";
+  const favorites = ensureAnimaDexFavorites();
+  const key = animadexItemKey(item, mode);
+  const index = favorites[mode].findIndex((favorite) => favorite.key === key);
+  const title = item.name || item.trigger || item.slug || "AnimaDex";
+  if (index >= 0) {
+    favorites[mode].splice(index, 1);
+    await saveDb();
+    toast(`${title}をお気に入りから外しました。`);
+    return false;
+  }
+  favorites[mode].unshift(normalizeAnimaDexFavoriteItem(item, mode));
+  await saveDb();
+  toast(`${title}をお気に入りに追加しました。`);
+  return true;
+}
+
+function filterAndSortAnimaDexFavorites(items = [], query = "", sort = "count") {
+  const q = String(query || "").trim().toLowerCase();
+  const filtered = q
+    ? items.filter((item) => [
+        item.name,
+        item.trigger,
+        item.slug,
+        item.copyrightName,
+        item.copyright,
+        ...(Array.isArray(item.tags) ? item.tags : [])
+      ].some((value) => String(value || "").toLowerCase().includes(q)))
+    : [...items];
+  if (sort === "az") {
+    filtered.sort((a, b) => String(a.name || a.trigger || a.slug).localeCompare(String(b.name || b.trigger || b.slug), "en"));
+  } else if (sort === "score") {
+    filtered.sort((a, b) => (Number(b.score || 0) - Number(a.score || 0)) || (Number(b.count || 0) - Number(a.count || 0)));
+  } else if (sort === "random") {
+    filtered.sort(() => Math.random() - 0.5);
+  } else {
+    filtered.sort((a, b) => (Number(b.count || 0) - Number(a.count || 0)) || String(a.name || "").localeCompare(String(b.name || ""), "en"));
+  }
+  return filtered;
+}
+
 function insertAnimaDexPromptText(text) {
   const promptInput = document.querySelector("#image-prompt-text");
   const next = appendPromptPart(promptInput?.value || state.imagePromptDraft?.prompt || "", text);
@@ -9690,6 +9802,8 @@ function renderAnimaDexSortOptions(mode, selected) {
 function renderAnimaDexCard(item, index) {
   const tags = Array.isArray(item.tags) ? item.tags : [];
   const shownTags = tags.slice(0, 12);
+  const previewUrl = item.imgUrl || item.thumbUrl;
+  const favorite = isAnimaDexFavorite(item);
   const subtitle = item.mode === "artists"
     ? [
         item.score !== null && Number.isFinite(item.score) ? `Score ${Math.round(item.score * 100)}%` : "",
@@ -9703,14 +9817,17 @@ function renderAnimaDexCard(item, index) {
     ? `<a class="ghost animadex-source-link" href="${escapeHtml(item.sourceUrl)}" target="_blank" rel="noopener">参照</a>`
     : "";
   return `
-    <article class="animadex-card">
+    <article class="animadex-card" ${previewUrl ? `data-animadex-preview="${index}"` : ""}>
       <div class="animadex-thumb">
         ${item.thumbUrl ? `<img src="${escapeHtml(item.thumbUrl)}" alt="${escapeHtml(item.name || item.trigger || "AnimaDex")}">` : `<div class="empty compact">No image</div>`}
       </div>
       <div class="animadex-card-body">
-        <div>
-          <div class="char-name">${escapeHtml(item.name || item.trigger || item.slug || "Untitled")}</div>
-          <div class="meta">${escapeHtml(subtitle || "AnimaDex")}</div>
+        <div class="animadex-card-title-row">
+          <div class="animadex-card-title-text">
+            <div class="char-name">${escapeHtml(item.name || item.trigger || item.slug || "Untitled")}</div>
+            <div class="meta">${escapeHtml(subtitle || "AnimaDex")}</div>
+          </div>
+          <button class="animadex-favorite-button ${favorite ? "active" : ""}" data-animadex-favorite="${index}" aria-pressed="${favorite ? "true" : "false"}" title="${favorite ? "お気に入りから外す" : "お気に入りに追加"}">★</button>
         </div>
         <div class="result-text">${escapeHtml(item.mode === "artists" ? animadexPromptText(item, "artist") : (item.trigger || ""))}</div>
         ${item.mode === "characters" && tags.length ? `
@@ -9734,6 +9851,30 @@ function renderAnimaDexCard(item, index) {
   `;
 }
 
+function openAnimaDexImagePreview(item = {}) {
+  const imageUrl = item.imgUrl || item.thumbUrl;
+  if (!imageUrl) return toast("拡大表示できるAnimaDex画像がありません。");
+  const title = item.name || item.trigger || item.slug || "AnimaDex";
+  const details = [
+    item.mode === "artists" ? "@Artist" : item.copyrightName || item.copyright,
+    item.count ? `${Number(item.count || 0).toLocaleString("ja-JP")} images` : ""
+  ].filter(Boolean).join(" / ");
+  openModal(
+    title,
+    `
+      <div class="image-preview-modal animadex-image-preview">
+        <img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(title)}">
+        <div class="meta">${escapeHtml(details || "AnimaDex")}</div>
+        ${item.trigger ? `<div class="result-text">${escapeHtml(item.trigger)}</div>` : ""}
+      </div>
+    `,
+    `<span>${item.sourceUrl ? `<a class="ghost" href="${escapeHtml(item.sourceUrl)}" target="_blank" rel="noopener">参照</a>` : ""}</span><button class="accent" data-action="close-modal">閉じる</button>`,
+    (modal) => {
+      modal.classList.add("animadex-preview-modal");
+    }
+  );
+}
+
 function openAnimaDexPromptModal() {
   const baseUrl = state.db.settings.animadexBaseUrl || "http://127.0.0.1:5000";
   openModal(
@@ -9744,6 +9885,7 @@ function openAnimaDexPromptModal() {
           <div class="animadex-tabs">
             <button type="button" data-animadex-mode="characters">キャラクター</button>
             <button type="button" data-animadex-mode="artists">アーティスト</button>
+            <button type="button" class="ghost animadex-favorites-toggle" data-action="animadex-favorites-toggle">★ お気に入り</button>
           </div>
           <div class="animadex-search-row">
             <input id="animadex-query" value="${escapeHtml(state.animadexQuery || "")}" placeholder="名前、作品、タグで検索">
@@ -9751,7 +9893,7 @@ function openAnimaDexPromptModal() {
             <button type="button" data-action="animadex-search">検索</button>
           </div>
         </div>
-        <div class="meta">接続先: ${escapeHtml(baseUrl)}</div>
+        <div class="meta">接続先: ${escapeHtml(baseUrl)} / 失敗時は公式Web版を利用</div>
         <div id="animadex-status" class="meta"></div>
         <div id="animadex-results" class="animadex-result-grid"></div>
       </div>
@@ -9767,13 +9909,21 @@ function openAnimaDexPromptModal() {
       const pageStatusEl = modal.querySelector("#animadex-page-status");
       const prevButton = modal.querySelector("[data-action='animadex-prev']");
       const nextButton = modal.querySelector("[data-action='animadex-next']");
+      const favoritesToggle = modal.querySelector("[data-action='animadex-favorites-toggle']");
       let mode = state.animadexMode === "artists" ? "artists" : "characters";
       let query = state.animadexQuery || "";
       let sort = state.animadexSort || "count";
       let page = state.animadexPage || 1;
+      let favoritesOnly = state.animadexFavoritesOnly === true;
       let pages = 1;
       let total = 0;
       let currentItems = [];
+
+      const renderCurrentItems = (emptyText = "AnimaDexに表示できる項目がありません。") => {
+        resultsEl.innerHTML = currentItems.length
+          ? currentItems.map(renderAnimaDexCard).join("")
+          : `<div class="empty compact">${escapeHtml(emptyText)}</div>`;
+      };
 
       const syncControls = () => {
         if (mode !== "artists" && sort === "score") sort = "count";
@@ -9781,11 +9931,36 @@ function openAnimaDexPromptModal() {
         modal.querySelectorAll("[data-animadex-mode]").forEach((button) => {
           button.classList.toggle("active", button.dataset.animadexMode === mode);
         });
+        const favoriteCount = animadexFavoritesForMode(mode).length;
+        favoritesToggle.classList.toggle("active", favoritesOnly);
+        favoritesToggle.setAttribute("aria-pressed", favoritesOnly ? "true" : "false");
+        favoritesToggle.textContent = `★ お気に入り ${favoriteCount.toLocaleString("ja-JP")}`;
         sortSelect.innerHTML = renderAnimaDexSortOptions(mode, sort);
         sortSelect.value = sort;
         prevButton.disabled = page <= 1;
         nextButton.disabled = page >= pages;
         pageStatusEl.textContent = `${total.toLocaleString("ja-JP")}件 / ${page.toLocaleString("ja-JP")} / ${pages.toLocaleString("ja-JP")}ページ`;
+      };
+
+      const loadFavoritePage = (nextPage = 1) => {
+        const pageSize = 72;
+        const favoriteItems = filterAndSortAnimaDexFavorites(animadexFavoritesForMode(mode), query, sort);
+        total = favoriteItems.length;
+        pages = Math.max(1, Math.ceil(total / pageSize));
+        page = Math.max(1, Math.min(nextPage, pages));
+        state.animadexMode = mode;
+        state.animadexQuery = query;
+        state.animadexSort = sort;
+        state.animadexPage = page;
+        state.animadexFavoritesOnly = favoritesOnly;
+        currentItems = favoriteItems.slice((page - 1) * pageSize, page * pageSize);
+        statusEl.textContent = currentItems.length
+          ? `${mode === "artists" ? "アーティスト" : "キャラクター"}のお気に入りを表示しています。`
+          : query
+            ? "お気に入り内に該当する項目がありません。"
+            : `${mode === "artists" ? "アーティスト" : "キャラクター"}のお気に入りはまだありません。`;
+        renderCurrentItems("お気に入りに表示できる項目がありません。");
+        syncControls();
       };
 
       const loadPage = async (nextPage = 1) => {
@@ -9794,7 +9969,12 @@ function openAnimaDexPromptModal() {
         state.animadexQuery = query;
         state.animadexSort = sort;
         state.animadexPage = page;
+        state.animadexFavoritesOnly = favoritesOnly;
         syncControls();
+        if (favoritesOnly) {
+          loadFavoritePage(page);
+          return;
+        }
         statusEl.textContent = "読み込み中...";
         resultsEl.innerHTML = Array.from({ length: 8 }, () => `<div class="animadex-card skeleton"><div></div><div></div></div>`).join("");
         try {
@@ -9803,10 +9983,15 @@ function openAnimaDexPromptModal() {
           page = Number(data.page || page) || page;
           pages = Math.max(1, Number(data.pages || 1) || 1);
           total = Number(data.total || currentItems.length) || 0;
-          statusEl.textContent = currentItems.length ? `${mode === "artists" ? "アーティスト" : "キャラクター"}を取得しました。` : "該当する項目がありません。";
-          resultsEl.innerHTML = currentItems.length
-            ? currentItems.map(renderAnimaDexCard).join("")
-            : `<div class="empty compact">AnimaDexに表示できる項目がありません。</div>`;
+          const sourceLabel = data.fallback
+            ? "公式Web版から取得しました。"
+            : String(data.baseUrl || "").includes("animadex.net")
+              ? "公式Web版から取得しました。"
+              : "取得しました。";
+          statusEl.textContent = currentItems.length
+            ? `${mode === "artists" ? "アーティスト" : "キャラクター"}を${sourceLabel}`
+            : `該当する項目がありません。${data.fallback ? "公式Web版を確認しました。" : ""}`;
+          renderCurrentItems();
         } catch (error) {
           currentItems = [];
           total = 0;
@@ -9823,6 +10008,11 @@ function openAnimaDexPromptModal() {
           page = 1;
           loadPage(1);
         });
+      });
+      favoritesToggle.addEventListener("click", () => {
+        favoritesOnly = !favoritesOnly;
+        page = 1;
+        loadPage(1);
       });
       modal.querySelector("[data-action='animadex-search']").addEventListener("click", () => {
         query = queryInput.value.trim();
@@ -9844,12 +10034,34 @@ function openAnimaDexPromptModal() {
       prevButton.addEventListener("click", () => loadPage(page - 1));
       nextButton.addEventListener("click", () => loadPage(page + 1));
       resultsEl.addEventListener("click", (event) => {
+        const favoriteButton = event.target.closest("[data-animadex-favorite]");
+        if (favoriteButton) {
+          const item = currentItems[Number(favoriteButton.dataset.animadexFavorite)];
+          if (!item) return;
+          toggleAnimaDexFavorite(item)
+            .then(() => {
+              if (favoritesOnly) {
+                loadPage(page);
+              } else {
+                renderCurrentItems();
+                syncControls();
+              }
+            })
+            .catch((error) => toast(error.message || "お気に入りの保存に失敗しました。"));
+          return;
+        }
         const button = event.target.closest("[data-animadex-insert]");
-        if (!button) return;
-        const item = currentItems[Number(button.dataset.index)];
-        const text = animadexPromptText(item, button.dataset.animadexInsert);
-        if (!text) return toast("追加できるタグがありません。");
-        insertAnimaDexPromptText(text);
+        if (button) {
+          const item = currentItems[Number(button.dataset.index)];
+          const text = animadexPromptText(item, button.dataset.animadexInsert);
+          if (!text) return toast("追加できるタグがありません。");
+          insertAnimaDexPromptText(text);
+          return;
+        }
+        if (event.target.closest("a, button, input, select, textarea")) return;
+        const card = event.target.closest("[data-animadex-preview]");
+        if (!card) return;
+        openAnimaDexImagePreview(currentItems[Number(card.dataset.animadexPreview)]);
       });
       syncControls();
       loadPage(page);
@@ -12296,9 +12508,9 @@ function renderAnimaDexSettings() {
       </div>
       <div class="panel-body form-grid">
         <label class="full">AnimaDex URL
-          <input id="setting-animadex-base-url" placeholder="http://127.0.0.1:5000" value="${escapeHtml(state.db.settings.animadexBaseUrl || "http://127.0.0.1:5000")}">
+          <input id="setting-animadex-base-url" placeholder="http://127.0.0.1:5000 または https://animadex.net" value="${escapeHtml(state.db.settings.animadexBaseUrl || "http://127.0.0.1:5000")}">
         </label>
-        <div class="full meta">画像生成画面のAnimaDexポップアップで、キャラクターtrigger、タグ、アーティストtagをPromptへ追加します。</div>
+        <div class="full meta">画像生成画面のAnimaDexポップアップで、キャラクターtrigger、タグ、アーティストtagをPromptへ追加します。設定URLが使えない場合は公式Web版を検索時に利用します。</div>
       </div>
     </section>
   `;
@@ -14521,7 +14733,8 @@ async function checkAnimaDexConnection() {
   await saveDb();
   try {
     const data = await postJson("/api/animadex/search", { mode: "characters", q: "", sort: "count", page: 1 });
-    toast(`AnimaDexに接続できました。キャラクター ${Number(data.total || 0).toLocaleString("ja-JP")} 件`);
+    const source = data.fallback || String(data.baseUrl || "").includes("animadex.net") ? "公式Web版" : "設定URL";
+    toast(`AnimaDexに接続できました（${source}）。キャラクター ${Number(data.total || 0).toLocaleString("ja-JP")} 件`);
   } catch (error) {
     toast(error.message);
   }

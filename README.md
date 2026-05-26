@@ -370,11 +370,11 @@ ZIPに含めないもの:
 - Workflow JSON: ComfyUIの `Save (API Format)` で保存したJSONを貼り付けます。
 - Node ID: Positive、Negative、Seed、Size、Steps、CFG、Sampler、モデル（Checkpoint）の入力を書き換えるノード番号を指定します。
 
-設定画面の「AnimaDex」セクションでは、AnimaDexのURLを指定します。既定は `http://127.0.0.1:5000` です。画像生成画面のPrompt欄にある「AnimaDex」ボタンから大きな検索ポップアップを開き、キャラクターのTrigger / Tags、アーティストの `@Artist` tagをPrompt末尾へ追加できます。
+設定画面の「AnimaDex」セクションでは、AnimaDexのURLを指定します。既定は `http://127.0.0.1:5000` です。ローカルのAnimaDexに接続できない場合は、検索時に `https://animadex.net` の公式Web版へフォールバックします。最初から公式Web版を使う場合はAnimaDex URLに `https://animadex.net` を指定してください。画像生成画面のPrompt欄にある「AnimaDex」ボタンから大きな検索ポップアップを開き、キャラクターのTrigger / Tags、アーティストの `@Artist` tagをPrompt末尾へ追加できます。カード右上の星でお気に入りを保存し、キャラクターとアーティスト別に「お気に入り」表示へ切り替えられます。
 
 Macでは `start-mac.command` から起動すると、`~/AnimaDex` がセットアップ済みの場合にAnimaDexも自動起動します。AnimaDexの起動ログは `animadex-start.log` に保存されます。AnimaDexだけ別の場所に置いている場合は、起動前に `ANIMADEX_DIR` と `ANIMADEX_URL` を指定してください。
 
-AnimaDexの全リストはAnimaDex側のページングAPIから取得します。検索語を空にして `http://127.0.0.1:5000/api/characters/search?q=&page=1` または `http://127.0.0.1:5000/api/artists/search?q=&page=1` を開き、返ってくる `pages` の数だけ `page` を進めます。Creative File StudioのAnimaDexポップアップでも検索欄を空にすると同じ全リストをページ送りで確認できます。ローカルDBを直接見る場合は `~/animadex-data/animadex.db` が実体です。
+AnimaDexの全リストはAnimaDex側のページングAPIから取得します。検索語を空にして `http://127.0.0.1:5000/api/characters/search?q=&page=1` または `http://127.0.0.1:5000/api/artists/search?q=&page=1` を開き、返ってくる `pages` の数だけ `page` を進めます。Creative File StudioのAnimaDexポップアップでも検索欄を空にすると同じ全リストをページ送りで確認できます。公式Web版のAPIは検索時のみ使い、短時間キャッシュして連続アクセスを抑えます。ローカルDBを直接見る場合は `~/animadex-data/animadex.db` が実体です。
 
 画像生成画面では、作品、キャラ、生成方式、ComfyUI選択時のGPU、幅、高さ、Steps、CFG、Sampler、Scheduler、Batch、Seed、モデル（Checkpoint）を指定できます。Forge / Forge Neo / Draw Things選択時の初期対応はtxt2imgです。Draw Thingsでモデル（Checkpoint）を空欄にすると、Draw Things側の現在設定を使います。Draw Thingsでは生成に使うモデルを事前にDraw Things側でダウンロードまたはインポートしておく必要があります。Cloud Compute / Server Offloadを使う場合もDraw Things側でモデルと実行先を選んでから送信してください。Forge Neo選択時は追加Module、Low Bits、Distilled CFG / Shift、Refiner、JSON拡張も生成ごとに指定できます。参照画像Nodeを使う生成はComfyUIを選択してください。エージェントに相談してプロンプト案を作ることも、プロンプト欄へ直接入力することもできます。生成比較モードをONにすると、Seed、CFG、Stepsのいずれかを軸に複数ジョブを投入し、比較結果から採用した案を生成設定へ戻せます。
 

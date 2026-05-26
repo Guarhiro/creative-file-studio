@@ -755,6 +755,12 @@ textarea {
   border-color: var(--ink);
 }
 
+.animadex-favorites-toggle.active {
+  background: rgba(183, 128, 23, 0.14);
+  color: #5f430a;
+  border-color: rgba(183, 128, 23, 0.36);
+}
+
 .animadex-search-row input {
   min-width: min(360px, 100%);
   flex: 1;
@@ -766,7 +772,7 @@ textarea {
 
 .animadex-result-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 12px;
   min-height: 260px;
 }
@@ -782,9 +788,19 @@ textarea {
   min-height: 156px;
 }
 
+.animadex-card[data-animadex-preview] {
+  cursor: zoom-in;
+}
+
+.animadex-card[data-animadex-preview]:hover {
+  border-color: rgba(31, 138, 132, 0.42);
+  box-shadow: 0 8px 22px rgba(37, 33, 28, 0.08);
+}
+
 .animadex-card.skeleton {
   grid-template-columns: 112px minmax(0, 1fr);
   opacity: 0.65;
+  cursor: default;
 }
 
 .animadex-card.skeleton div {
@@ -814,6 +830,51 @@ textarea {
   align-content: start;
 }
 
+.animadex-card-title-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px;
+  gap: 8px;
+  align-items: start;
+}
+
+.animadex-card-title-text {
+  min-width: 0;
+}
+
+.animadex-favorite-button {
+  width: 38px;
+  min-width: 38px;
+  min-height: 38px;
+  padding: 0;
+  border: 1px solid rgba(183, 128, 23, 0.24);
+  background: #fff;
+  color: rgba(95, 67, 10, 0.62);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.animadex-favorite-button.active {
+  background: rgba(183, 128, 23, 0.16);
+  border-color: rgba(183, 128, 23, 0.42);
+  color: var(--gold);
+}
+
+.animadex-card .card-actions {
+  grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+  gap: 7px;
+}
+
+.animadex-card .card-actions button,
+.animadex-card .card-actions a {
+  min-height: 40px;
+  padding: 6px 10px;
+  font-size: 14px;
+  line-height: 1.15;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
 .animadex-tags {
   display: flex;
   flex-wrap: wrap;
@@ -832,6 +893,14 @@ textarea {
 
 .animadex-source-link {
   text-decoration: none;
+}
+
+.animadex-preview-modal {
+  width: min(980px, 100%);
+}
+
+.animadex-image-preview img {
+  max-height: 74vh;
 }
 
 .help-content {
