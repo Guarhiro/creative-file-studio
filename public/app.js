@@ -123,6 +123,7 @@ const state = {
   audioVoice: "Kore",
   audioProvider: "openrouter",
   audioIrodoriReference: null,
+  audioVoxcpmReference: null,
   audioChatMessages: [
     { role: "assistant", content: "音声生成エージェントです。台詞、ナレーション、声の雰囲気、キャラ指定があれば教えてください。" }
   ],
@@ -155,6 +156,8 @@ const state = {
   lastOpenRouterDebug: null,
   irodoriStatus: "idle",
   irodoriStatusMessage: "",
+  voxcpmStatus: "idle",
+  voxcpmStatusMessage: "",
   seedanceGuide: "",
   worldSheetFiles: [],
   worldTextDraft: "",
@@ -476,7 +479,7 @@ const screenHelpContent = {
   },
   audio: {
     title: "音声生成のヘルプ",
-    lead: "台詞やナレーションを、OpenRouter TTS、ElevenLabs、Voicebox、Irodori-TTSで生成する画面です。",
+    lead: "台詞やナレーションを、OpenRouter TTS、ElevenLabs、Voicebox、VoxCPM、Irodori-TTSで生成する画面です。",
     sections: [
       {
         title: "使い方",
@@ -496,6 +499,11 @@ const screenHelpContent = {
           { term: "出力形式", description: "mp3、wavなど、保存される音声ファイルの形式です。" },
           { term: "演技指示", description: "声色、感情、間、距離感など、読み方に関する指示です。" },
           { term: "Stability / Similarity / Style / Speed", description: "ElevenLabsの安定度、声の近さ、表現量、速度です。" },
+          { term: "VoxCPMのモード", description: "音色デザインは声の指定だけで作ります。参照音声クローンは参照音声の声質や話し方に近づけます。高精度クローンは参照音声とその文字起こしをペアで使い、より厳密に声を合わせます。" },
+          { term: "テキスト正規化", description: "数字、記号、英字などを読み上げやすい形へ整える処理です。固有名詞や記号の読みを厳密に手書きしたい時はOFFも試せます。" },
+          { term: "参照音声を降噪", description: "参照音声に入った環境音やノイズを抑えてから声を参照します。元音声がきれいな場合はOFFのままで問題ありません。" },
+          { term: "torch.compileを無効化", description: "PyTorchのコンパイル最適化を使わずに動かします。初回の待ち時間やMac/MPSでの不安定さを避けたい場合はONが安全です。" },
+          { term: "高精度クローン用文字起こし", description: "高精度クローンで参照音声を使う時、その参照音声で実際に話している内容を入力します。生成したい本文ではなく、参照音声の台詞をできるだけ正確に入れます。" },
           { term: "Steps / Candidates / Seed", description: "Irodori-TTSの生成回数、候補数、再現用の乱数です。" }
         ]
       }
@@ -637,6 +645,7 @@ const screenHelpContent = {
           { term: "画像 / 動画 / 音声エージェントモデル", description: "各生成画面の会話型アシスタントがプロンプト案を作るためのモデルです。" },
           { term: "ElevenLabs", description: "APIキー、Voice ID、モデル、出力形式、声質パラメータを管理します。" },
           { term: "Voicebox", description: "ローカルVoicebox APIのURLと既定プロファイルを管理します。" },
+          { term: "VoxCPM連携", description: "ローカルVoxCPMの専用Python環境、モデルキャッシュ、セットアップを管理します。" },
           { term: "Irodori-TTS連携", description: "ローカルIrodori-TTSの場所確認やセットアップを行います。" },
           { term: "ComfyUI", description: "ローカル/クラウドURL、workflow JSON、差し替えるNode ID、既定生成値を管理します。" },
           { term: "Seedance", description: "BytePlus、OpenRouter、Replicateなどの動画生成API接続と既定モデルを管理します。" }
@@ -653,6 +662,7 @@ const audioProviders = [
   ["openrouter", "OpenRouter TTS"],
   ["elevenlabs", "ElevenLabs"],
   ["voicebox", "Voicebox"],
+  ["voxcpm", "VoxCPM"],
   ["irodori", "Irodori-TTS"]
 ];
 
@@ -751,6 +761,19 @@ const irodoriDefaultSettings = {
   cfgScaleCaption: 4,
   cfgScaleSpeaker: 5,
   customCheckpoint: ""
+};
+
+const voxcpmDefaultSettings = {
+  mode: "VoiceDesign",
+  voicePrompt: "落ち着いた自然な日本語の声。近い距離感で、感情を少し抑えて読み上げる。",
+  modelId: "openbmb/VoxCPM2",
+  device: "cpu",
+  noOptimize: true,
+  cfgValue: 2,
+  inferenceTimesteps: 10,
+  normalize: true,
+  denoise: false,
+  promptText: ""
 };
 
 const defaultComfyWorkflow = {
@@ -1930,6 +1953,7 @@ function normalizeAudioItem(item = {}) {
     : normalizedAudioProvider(item.provider || (item.model === "Irodori-TTS" ? "irodori" : "openrouter"));
   const irodori = provider === "irodori" ? normalizedIrodoriSettings(item.irodori || item.parameters || item.request || {}) : null;
   const voicebox = provider === "voicebox" ? voiceboxSettingsFromControls(item.voicebox || item.parameters || item.request || {}) : null;
+  const voxcpm = provider === "voxcpm" ? normalizedVoxcpmSettings(item.voxcpm || item.parameters || item.request || {}) : null;
   return {
     id: item.id || uid(),
     workId: item.workId || null,
@@ -1937,12 +1961,12 @@ function normalizeAudioItem(item = {}) {
     title: item.title || item.name || (provider === "audio-edit" ? "編集音声" : "生成音声"),
     input: item.input || item.text || "",
     provider,
-    voice: item.voice || (provider === "irodori" ? irodori?.mode || "VoiceDesign" : provider === "voicebox" ? voicebox?.profileId || "Voicebox" : provider === "audio-edit" ? "音声編集" : "Kore"),
-    model: item.model || (provider === "irodori" ? "Irodori-TTS" : provider === "voicebox" ? "Voicebox" : provider === "audio-edit" ? "ffmpeg" : defaultOpenRouterTtsModel),
-    format: item.format || (provider === "irodori" || provider === "voicebox" || provider === "audio-edit" ? "wav" : "mp3"),
+    voice: item.voice || (provider === "irodori" ? irodori?.mode || "VoiceDesign" : provider === "voxcpm" ? voxcpm?.mode || "VoiceDesign" : provider === "voicebox" ? voicebox?.profileId || "Voicebox" : provider === "audio-edit" ? "音声編集" : "Kore"),
+    model: item.model || (provider === "irodori" ? "Irodori-TTS" : provider === "voxcpm" ? "openbmb/VoxCPM2" : provider === "voicebox" ? "Voicebox" : provider === "audio-edit" ? "ffmpeg" : defaultOpenRouterTtsModel),
+    format: item.format || (provider === "irodori" || provider === "voxcpm" || provider === "voicebox" || provider === "audio-edit" ? "wav" : "mp3"),
     url: item.url || "",
     localPath: item.localPath || item.path || "",
-    mimeType: item.mimeType || (provider === "irodori" || provider === "voicebox" || provider === "audio-edit" ? "audio/wav" : "audio/mpeg"),
+    mimeType: item.mimeType || (provider === "irodori" || provider === "voxcpm" || provider === "voicebox" || provider === "audio-edit" ? "audio/wav" : "audio/mpeg"),
     generationId: item.generationId || "",
     size: Number(item.size) || null,
     agentNote: item.agentNote || "",
@@ -1950,6 +1974,7 @@ function normalizeAudioItem(item = {}) {
     actingPrompt: item.actingPrompt || item.caption || "",
     audioResponseFormat: item.audioResponseFormat || item.responseFormat || "",
     irodori,
+    voxcpm,
     elevenLabs: item.elevenLabs || null,
     voicebox,
     audioEdit: item.audioEdit || null,
@@ -2442,6 +2467,26 @@ function normalizedIrodoriSettings(value = {}) {
   };
 }
 
+function normalizedVoxcpmSettings(value = {}) {
+  const source = { ...voxcpmDefaultSettings, ...(value || {}) };
+  const mode = ["VoiceDesign", "Reference", "HiFi"].includes(source.mode) ? source.mode : "VoiceDesign";
+  const device = /^cuda(?::\d+)?$/i.test(String(source.device || ""))
+    ? String(source.device).trim().toLowerCase()
+    : ["auto", "cpu", "mps"].includes(source.device) ? source.device : "cpu";
+  return {
+    mode,
+    voicePrompt: String(source.voicePrompt || source.control || "").trim() || voxcpmDefaultSettings.voicePrompt,
+    modelId: String(source.modelId || source.model || "openbmb/VoxCPM2").trim() || "openbmb/VoxCPM2",
+    device,
+    noOptimize: source.noOptimize !== false,
+    cfgValue: boundedSettingNumber(source.cfgValue, 2, 1, 3),
+    inferenceTimesteps: boundedSettingNumber(source.inferenceTimesteps, 10, 4, 30, true),
+    normalize: source.normalize !== false,
+    denoise: source.denoise === true,
+    promptText: String(source.promptText || "").trim()
+  };
+}
+
 function voiceboxSettingsFromControls(source = {}) {
   const defaults = {
     ...voiceboxDefaultSettings,
@@ -2569,6 +2614,8 @@ function normalizeSettings() {
     },
     irodoriAppDir: "vendor/Irodori-TTS",
     irodoriDefaults: { ...irodoriDefaultSettings },
+    voxcpmAppDir: "vendor/VoxCPM",
+    voxcpmDefaults: { ...voxcpmDefaultSettings },
     seedanceBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3",
     seedanceModel: "dreamina-seedance-2-0-260128",
     seedanceResolution: "720p",
@@ -2614,6 +2661,8 @@ function normalizeSettings() {
   state.db.settings.animadexFavorites = normalizeAnimaDexFavorites(state.db.settings.animadexFavorites);
   state.db.settings.irodoriAppDir = String(state.db.settings.irodoriAppDir || "vendor/Irodori-TTS").trim() || "vendor/Irodori-TTS";
   state.db.settings.irodoriDefaults = normalizedIrodoriSettings(state.db.settings.irodoriDefaults);
+  state.db.settings.voxcpmAppDir = String(state.db.settings.voxcpmAppDir || "vendor/VoxCPM").trim() || "vendor/VoxCPM";
+  state.db.settings.voxcpmDefaults = normalizedVoxcpmSettings(state.db.settings.voxcpmDefaults);
   state.db.settings.comfy = normalizedComfySettings(state.db.settings.comfy);
   state.db.settings.comfyPresets = normalizedComfyPresets(state.db.settings.comfyPresets);
   state.db.settings.modelLibrary = normalizedModelLibrarySettings(state.db.settings.modelLibrary);
@@ -4078,7 +4127,7 @@ function currentTitle() {
   if (state.view === "edit") return ["背景除去", "背景除去と透過PNG変換を行います。"];
   if (state.view === "edit-aspect") return ["アスペクト比変換", "指定比率へ配置し、位置と拡大率を調整します。"];
   if (state.view === "edit-gif") return ["動画GIF化", "動画をGIFに変換して画像一覧へ保存します。"];
-  if (state.view === "audio") return ["音声生成", "OpenRouter、ElevenLabs、Voicebox、Irodori-TTSでキャラ音声やナレーションを作ります。"];
+  if (state.view === "audio") return ["音声生成", "OpenRouter、ElevenLabs、Voicebox、VoxCPM、Irodori-TTSでキャラ音声やナレーションを作ります。"];
   if (state.view === "audio-edit") return ["音声編集", "mp3/wavを分割、カット、音量・ピッチ変更します。"];
   if (state.view === "video") return ["動画生成", "選択した動画モデル向けの指示書作成と生成を行います。"];
   if (state.view === "library") return ["画像整理", "取り込んだ画像を作品・キャラ・状態で確認します。"];
@@ -11134,6 +11183,30 @@ async function uploadIrodoriReferenceFile(file) {
   }
 }
 
+async function uploadVoxcpmReferenceFile(file) {
+  if (!file || !file.type.startsWith("audio/")) return toast("音声ファイルを選択してください。");
+  const selectedChar = byId(state.db.characters, state.audioCharacterId);
+  const work = byId(state.db.works, selectedChar?.workId || state.audioWorkId || state.selectedWorkId);
+  try {
+    const dataUrl = await fileToDataUrl(file);
+    const uploaded = await postJson("/api/media-upload", {
+      dataUrl,
+      name: file.name,
+      workName: work?.name
+    });
+    state.audioVoxcpmReference = {
+      name: file.name,
+      url: uploaded.url,
+      localPath: uploaded.path,
+      mimeType: uploaded.mimeType || file.type
+    };
+    render();
+    toast("VoxCPMの参照音声を設定しました。");
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
 function renderTtsVoiceOptions(selectedVoice = "Kore") {
   const current = ttsVoices.some(([voice]) => voice === selectedVoice) ? selectedVoice : "Kore";
   return ttsVoices.map(([voice, label]) => `<option value="${voice}" ${voice === current ? "selected" : ""}>${escapeHtml(voice)} (${escapeHtml(label)})</option>`).join("");
@@ -11314,6 +11387,64 @@ function renderIrodoriParameters(params, referenceAudio) {
   `;
 }
 
+function renderVoxcpmParameters(params, referenceAudio) {
+  const settings = normalizedVoxcpmSettings(params);
+  return `
+    <div class="irodori-settings full">
+      <label>モード
+        <select id="audio-voxcpm-mode">
+          <option value="VoiceDesign" ${settings.mode === "VoiceDesign" ? "selected" : ""}>音色デザイン</option>
+          <option value="Reference" ${settings.mode === "Reference" ? "selected" : ""}>参照音声クローン</option>
+          <option value="HiFi" ${settings.mode === "HiFi" ? "selected" : ""}>高精度クローン</option>
+        </select>
+      </label>
+      <label>デバイス
+        <select id="audio-voxcpm-device">${renderSimpleOptions(["cpu", "mps", "auto", "cuda"], settings.device)}</select>
+      </label>
+      <label class="full">声の指定 / スタイル
+        <textarea id="audio-voxcpm-voice-prompt" rows="3">${escapeHtml(settings.voicePrompt)}</textarea>
+      </label>
+      <label>CFG
+        <input id="audio-voxcpm-cfg" type="number" min="1" max="3" step="0.1" value="${settings.cfgValue}">
+      </label>
+      <label>Steps
+        <input id="audio-voxcpm-steps" type="number" min="4" max="30" step="1" value="${settings.inferenceTimesteps}">
+      </label>
+      <label class="full">モデルID / ローカルモデル
+        <input id="audio-voxcpm-model-id" value="${escapeHtml(settings.modelId)}">
+      </label>
+      <label class="check-row">
+        <input id="audio-voxcpm-normalize" type="checkbox" ${settings.normalize ? "checked" : ""}>
+        <span>テキスト正規化</span>
+      </label>
+      <label class="check-row">
+        <input id="audio-voxcpm-denoise" type="checkbox" ${settings.denoise ? "checked" : ""}>
+        <span>参照音声を降噪</span>
+      </label>
+      <label class="check-row full">
+        <input id="audio-voxcpm-no-optimize" type="checkbox" ${settings.noOptimize ? "checked" : ""}>
+        <span>torch.compileを無効化</span>
+      </label>
+      <label class="full">参照音声
+        <input id="audio-voxcpm-reference-file" type="file" accept="audio/*">
+      </label>
+      ${referenceAudio?.url ? `
+        <div class="full irodori-reference">
+          <div>
+            <strong>${escapeHtml(referenceAudio.name || "参照音声")}</strong>
+            <div class="meta">${settings.mode === "HiFi" ? "高精度クローンでは、この音声と文字起こしを使います。" : "参照音声クローンで使います。"}</div>
+          </div>
+          <audio controls preload="none" src="${escapeHtml(referenceAudio.url)}"></audio>
+          <button class="ghost" data-action="clear-voxcpm-reference">解除</button>
+        </div>
+      ` : `<div class="full meta">参照音声クローン / 高精度クローンでは参照音声を指定します。音色デザインでは未指定で生成できます。</div>`}
+      <label class="full">高精度クローン用の文字起こし
+        <textarea id="audio-voxcpm-prompt-text" rows="3">${escapeHtml(settings.promptText)}</textarea>
+      </label>
+    </div>
+  `;
+}
+
 function elevenLabsSettingsFromControls(source = {}) {
   return {
     voiceId: String(source.voiceId || state.db.settings.elevenLabsVoiceId || "JBFqnCBsd6RMkjVDRZzb").trim(),
@@ -11474,6 +11605,20 @@ function audioControlsFromDom() {
     cfgScaleSpeaker: document.querySelector("#audio-irodori-cfg-speaker")?.value || state.db.settings.irodoriDefaults?.cfgScaleSpeaker,
     customCheckpoint: document.querySelector("#audio-irodori-checkpoint")?.value || ""
   });
+  const voxcpm = normalizedVoxcpmSettings({
+    ...state.db.settings.voxcpmDefaults,
+    ...(state.audioPromptDraft?.voxcpm || {}),
+    mode: document.querySelector("#audio-voxcpm-mode")?.value || state.audioPromptDraft?.voxcpm?.mode || state.db.settings.voxcpmDefaults?.mode,
+    voicePrompt: document.querySelector("#audio-voxcpm-voice-prompt")?.value || state.audioPromptDraft?.voxcpm?.voicePrompt || state.db.settings.voxcpmDefaults?.voicePrompt,
+    modelId: document.querySelector("#audio-voxcpm-model-id")?.value || state.audioPromptDraft?.voxcpm?.modelId || state.db.settings.voxcpmDefaults?.modelId,
+    device: document.querySelector("#audio-voxcpm-device")?.value || state.audioPromptDraft?.voxcpm?.device || state.db.settings.voxcpmDefaults?.device,
+    cfgValue: document.querySelector("#audio-voxcpm-cfg")?.value || state.audioPromptDraft?.voxcpm?.cfgValue || state.db.settings.voxcpmDefaults?.cfgValue,
+    inferenceTimesteps: document.querySelector("#audio-voxcpm-steps")?.value || state.audioPromptDraft?.voxcpm?.inferenceTimesteps || state.db.settings.voxcpmDefaults?.inferenceTimesteps,
+    normalize: document.querySelector("#audio-voxcpm-normalize")?.checked ?? state.audioPromptDraft?.voxcpm?.normalize ?? state.db.settings.voxcpmDefaults?.normalize,
+    denoise: document.querySelector("#audio-voxcpm-denoise")?.checked ?? state.audioPromptDraft?.voxcpm?.denoise ?? state.db.settings.voxcpmDefaults?.denoise,
+    noOptimize: document.querySelector("#audio-voxcpm-no-optimize")?.checked ?? state.audioPromptDraft?.voxcpm?.noOptimize ?? state.db.settings.voxcpmDefaults?.noOptimize,
+    promptText: document.querySelector("#audio-voxcpm-prompt-text")?.value || state.audioPromptDraft?.voxcpm?.promptText || ""
+  });
   const elevenLabs = elevenLabsSettingsFromControls({
     voiceId: document.querySelector("#audio-elevenlabs-voice-id")?.value || state.audioPromptDraft?.elevenLabs?.voiceId,
     modelId: document.querySelector("#audio-elevenlabs-model-id")?.value || state.audioPromptDraft?.elevenLabs?.modelId,
@@ -11501,14 +11646,17 @@ function audioControlsFromDom() {
       ? elevenLabs.voiceId
       : provider === "voicebox"
         ? voicebox.profileId
-        : openRouterVoice,
+        : provider === "voxcpm"
+          ? voxcpm.mode
+          : openRouterVoice,
     audioModel: openRouterModel,
     audioResponseFormat: openRouterResponseFormat,
     irodori,
+    voxcpm,
     elevenLabs,
     voicebox,
     actingPrompt,
-    caption: provider === "irodori" ? irodori.caption : actingPrompt,
+    caption: provider === "irodori" ? irodori.caption : provider === "voxcpm" ? voxcpm.voicePrompt : actingPrompt,
     title: document.querySelector("#audio-title")?.value.trim() || state.audioPromptDraft?.title || "生成音声",
     input: audioInput ? audioInput.value : state.audioPromptDraft?.input || ""
   };
@@ -11568,6 +11716,7 @@ function buildAudioAgentSystemPrompt() {
 - Grok Voice TTSでは actingPrompt は履歴・確認用メモとして保存し、APIへは本文とvoiceを主に送る。演技ニュアンスは本文内の自然な言葉と少量のタグに反映する。
 - ElevenLabsの場合は voice ID と voice_settings が主な制御なので、input は読み上げ本文に集中し、actingPrompt は画面で確認・保存できる演技指示として短くまとめる。
 - Voiceboxの場合は選択プロファイルで声が決まる。Qwen CustomVoice系では actingPrompt を自然言語の演技指示として使える。Chatterbox Turbo以外では角括弧タグがそのまま読まれる場合があるため、タグは必要最小限にする。
+- VoxCPMの場合は voicePrompt に声質、年齢感、感情、速度、距離感を自然言語で書く。input には読み上げ本文だけを書く。HiFiでは声質指定より参照音声と文字起こしが優先される。
 - 過剰な演技タグは避け、重要な間や感情だけに使う。1案につき1〜3個程度を目安にする。
 - 日本語の台詞は日本語のまま自然に整える。英語に翻訳しない。
 - Irodori-TTSの場合は caption に「低め、囁き、距離感、テンポ、感情」などの音声演出を書き、input には読み上げ本文だけを書く。
@@ -11591,7 +11740,7 @@ function buildAudioAgentText(inputText, controls) {
 ${inputText}
 
 現在の設定:
-provider=${controls.provider}, voice=${controls.voice}, openRouterTtsModel=${controls.audioModel || ""}, openRouterResponseFormat=${controls.audioResponseFormat || ""}, actingPrompt=${controls.actingPrompt || ""}, elevenLabsVoiceId=${controls.elevenLabs?.voiceId || ""}, elevenLabsModel=${controls.elevenLabs?.modelId || ""}, voiceboxProfileId=${controls.voicebox?.profileId || ""}, voiceboxLanguage=${controls.voicebox?.language || ""}, irodoriMode=${controls.irodori?.mode || "VoiceDesign"}, caption=${controls.irodori?.caption || ""}, title=${controls.title}, characterId=${controls.characterId || "未指定"}
+provider=${controls.provider}, voice=${controls.voice}, openRouterTtsModel=${controls.audioModel || ""}, openRouterResponseFormat=${controls.audioResponseFormat || ""}, actingPrompt=${controls.actingPrompt || ""}, elevenLabsVoiceId=${controls.elevenLabs?.voiceId || ""}, elevenLabsModel=${controls.elevenLabs?.modelId || ""}, voiceboxProfileId=${controls.voicebox?.profileId || ""}, voiceboxLanguage=${controls.voicebox?.language || ""}, voxcpmMode=${controls.voxcpm?.mode || "VoiceDesign"}, voxcpmVoicePrompt=${controls.voxcpm?.voicePrompt || ""}, irodoriMode=${controls.irodori?.mode || "VoiceDesign"}, caption=${controls.irodori?.caption || ""}, title=${controls.title}, characterId=${controls.characterId || "未指定"}
 
 作品情報 / 世界観:
 ${buildPromptLabWorldContext(work)}
@@ -11622,6 +11771,7 @@ function mergeAudioDraft(result, fallbackControls) {
   ).trim();
   const taggedInput = ensureAudioEmotionTag(source.input || "", actingPrompt);
   const irodori = normalizedIrodoriSettings({ ...fallbackControls.irodori, caption: source.caption || actingPrompt || fallbackControls.irodori?.caption });
+  const voxcpm = normalizedVoxcpmSettings({ ...fallbackControls.voxcpm, voicePrompt: source.caption || actingPrompt || fallbackControls.voxcpm?.voicePrompt });
   const audioModel = fallbackControls.audioModel || state.db.settings.audioModel || defaultOpenRouterTtsModel;
   return {
     title: source.title || fallbackControls.title || "生成音声",
@@ -11632,9 +11782,10 @@ function mergeAudioDraft(result, fallbackControls) {
     audioResponseFormat: fallbackControls.audioResponseFormat || state.db.settings.audioResponseFormat,
     elevenLabs: fallbackControls.elevenLabs,
     voicebox: fallbackControls.voicebox,
+    voxcpm,
     ...irodori,
     actingPrompt,
-    caption: fallbackControls.provider === "irodori" ? irodori.caption : actingPrompt,
+    caption: fallbackControls.provider === "irodori" ? irodori.caption : fallbackControls.provider === "voxcpm" ? voxcpm.voicePrompt : actingPrompt,
     agentNote: source.agentNote || source.note || result?.message || ""
   };
 }
@@ -11718,6 +11869,8 @@ async function startAudioGeneration() {
   if (controls.provider === "elevenlabs" && !elevenKey) return toast("設定画面で ElevenLabs API キーを保存してください。");
   if (controls.provider === "elevenlabs" && !controls.elevenLabs.voiceId) return toast("ElevenLabs voice ID を指定してください。");
   if (controls.provider === "voicebox" && !controls.voicebox.profileId) return toast("Voiceboxプロファイルを指定してください。");
+  if (controls.provider === "voxcpm" && controls.voxcpm.mode !== "VoiceDesign" && !state.audioVoxcpmReference?.url) return toast("VoxCPMの参照音声を指定してください。");
+  if (controls.provider === "voxcpm" && controls.voxcpm.mode === "HiFi" && !controls.voxcpm.promptText) return toast("高精度クローンでは参照音声の文字起こしを入力してください。");
   const selectedChar = byId(state.db.characters, controls.characterId);
   const work = byId(state.db.works, selectedChar?.workId || controls.workId);
   state.audioIsGenerating = true;
@@ -11743,6 +11896,7 @@ async function startAudioGeneration() {
   state.db.settings.voiceboxProfileId = controls.voicebox.profileId;
   state.db.settings.voiceboxLanguage = controls.voicebox.language;
   state.db.settings.voiceboxModelSize = controls.voicebox.modelSize;
+  state.db.settings.voxcpmDefaults = controls.voxcpm;
   state.db.settings.irodoriDefaults = controls.irodori;
   startAudioGenerationClock();
   render();
@@ -11860,6 +12014,35 @@ async function startAudioGeneration() {
         agentNote: state.audioPromptDraft?.agentNote || "",
         createdAt: new Date().toISOString()
       })];
+    } else if (controls.provider === "voxcpm") {
+      const payload = await postJson("/api/voxcpm/speech", {
+        appDir: state.db.settings.voxcpmAppDir,
+        input: controls.input,
+        title: controls.title,
+        referenceAudioUrl: state.audioVoxcpmReference?.url || "",
+        ...audioSaveTargetPayload(work, selectedChar),
+        ...controls.voxcpm
+      });
+      created = [normalizeAudioItem({
+        id: uid(),
+        workId: work?.id || null,
+        characterId: selectedChar?.id || null,
+        provider: "voxcpm",
+        title: controls.title,
+        input: controls.input,
+        voice: controls.voxcpm.mode,
+        model: controls.voxcpm.modelId,
+        format: "wav",
+        url: payload.url,
+        localPath: payload.path,
+        mimeType: payload.mimeType,
+        size: payload.size,
+        caption: controls.voxcpm.voicePrompt,
+        voxcpm: controls.voxcpm,
+        referenceAudio: state.audioVoxcpmReference,
+        agentNote: state.audioPromptDraft?.agentNote || "",
+        createdAt: new Date().toISOString()
+      })];
     } else {
       const payload = await postJson("/api/irodori/speech", {
         appDir: state.db.settings.irodoriAppDir,
@@ -11909,13 +12092,15 @@ async function startAudioGeneration() {
 
 function renderAudioItem(audio, options = {}) {
   const historyKind = options.historyKind || "";
-  const providerLabel = audio.provider === "irodori" ? "Irodori-TTS" : audio.provider === "elevenlabs" ? "ElevenLabs" : audio.provider === "voicebox" ? "Voicebox" : audio.provider === "audio-edit" ? "音声編集" : "OpenRouter TTS";
+  const providerLabel = audio.provider === "irodori" ? "Irodori-TTS" : audio.provider === "voxcpm" ? "VoxCPM" : audio.provider === "elevenlabs" ? "ElevenLabs" : audio.provider === "voicebox" ? "Voicebox" : audio.provider === "audio-edit" ? "音声編集" : "OpenRouter TTS";
   const openRouterModelLabel = audio.provider === "openrouter" ? openRouterTtsModelConfig(audio.model).label : "";
   const voiceLabel = audio.provider === "irodori"
     ? `${audio.irodori?.mode || audio.voice || "VoiceDesign"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`
-    : audio.provider === "elevenlabs"
-      ? `${audio.voice || "voice ID未設定"} / ${audio.model || "eleven_multilingual_v2"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`
-      : audio.provider === "voicebox"
+    : audio.provider === "voxcpm"
+      ? `${audio.voxcpm?.mode || audio.voice || "VoiceDesign"} / ${audio.model || audio.voxcpm?.modelId || "openbmb/VoxCPM2"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`
+      : audio.provider === "elevenlabs"
+        ? `${audio.voice || "voice ID未設定"} / ${audio.model || "eleven_multilingual_v2"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`
+        : audio.provider === "voicebox"
         ? `${audio.voicebox?.profileName || audio.voicebox?.profileId || audio.voice || "profile未設定"} / ${audio.voicebox?.language || "ja"}${audio.voicebox?.defaultEngine ? ` / ${audio.voicebox.defaultEngine}` : ""}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`
         : audio.provider === "audio-edit"
           ? `${audio.model || "ffmpeg"} / ${audio.format || "wav"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`
@@ -12054,6 +12239,7 @@ function renderAudioAgent() {
   const actingPromptValue = controls.actingPrompt || (providerValue === "openrouter" ? controls.caption : "") || state.db.settings.audioActingPrompt || defaultAudioActingPrompt;
   const elevenLabsValue = elevenLabsSettingsFromControls(controls.elevenLabs || {});
   const voiceboxValue = voiceboxSettingsFromControls(controls.voicebox || {});
+  const voxcpmValue = normalizedVoxcpmSettings({ ...state.db.settings.voxcpmDefaults, ...(controls.voxcpm || {}) });
   const irodoriValue = normalizedIrodoriSettings({ ...state.db.settings.irodoriDefaults, ...controls });
   const allHistory = visibleAudioHistoryItems();
   const { items: history, pageInfo: historyPageInfo } = getPagedGenerationHistoryItems("audio", allHistory);
@@ -12103,6 +12289,9 @@ function renderAudioAgent() {
               <textarea id="audio-acting-prompt" rows="4" placeholder="例：低く静かな声。近い距離で、言葉の最後を少し弱める。">${escapeHtml(actingPromptValue)}</textarea>
             </label>
             ${renderVoiceboxParameters(voiceboxValue)}
+          ` : providerValue === "voxcpm" ? `
+            <div class="full meta">VoxCPMをフルローカル実行します。連携先は設定画面の「VoxCPM連携」で変更できます。</div>
+            ${renderVoxcpmParameters(voxcpmValue, state.audioVoxcpmReference)}
           ` : `
             <div class="full meta">Irodori-TTSをローカル実行します。連携先は設定画面の「Irodori-TTS連携」で変更できます。</div>
             ${renderIrodoriParameters(irodoriValue, state.audioIrodoriReference)}
@@ -12165,7 +12354,7 @@ function renderAudioGenerating() {
       <div class="wave-loader"><span></span><span></span><span></span><span></span></div>
       <div>
         <strong>音声生成中</strong>
-        <div class="meta">経過 ${escapeHtml(elapsedText)}。Irodori-TTSやVoiceboxの初回生成は数分かかることがあります。完了後にキャラ情報と参照素材へ保存します。</div>
+        <div class="meta">経過 ${escapeHtml(elapsedText)}。VoxCPM、Irodori-TTS、Voiceboxの初回生成は数分かかることがあります。完了後にキャラ情報と参照素材へ保存します。</div>
       </div>
     </div>
   `;
@@ -13073,6 +13262,7 @@ function renderSettings() {
 	      ? "ElevenLabsモデル一覧を読み込み中です。"
 	      : state.elevenLabsModelError || "未取得時は主要TTSモデルを候補表示します。";
 	  const irodoriStatusText = state.irodoriStatusMessage || "Irodori-TTSの配置場所を確認できます。未導入の環境ではセットアップを実行すると vendor/Irodori-TTS に取得します。";
+	  const voxcpmStatusText = state.voxcpmStatusMessage || "VoxCPMの専用Python環境を確認できます。未導入の環境ではセットアップを実行すると vendor/VoxCPM に作成します。";
 	  const voiceboxStatusText = state.voiceboxProfileStatus === "loaded"
 	    ? `${state.voiceboxProfiles.length} 件のVoiceboxプロファイルを読み込みました。`
 	    : state.voiceboxProfileStatus === "loading"
@@ -13167,6 +13357,20 @@ function renderSettings() {
 	        <div class="full meta">Voiceboxは通常この端末のローカルAPI（http://127.0.0.1:17493）へ接続します。プロファイルはVoicebox側で作成・管理します。</div>
 	      </div>
 	    </section>
+	    <section class="panel settings-panel">
+      <div class="panel-header"><h2>VoxCPM連携</h2></div>
+      <div class="panel-body form-grid">
+        <label class="full">VoxCPMフォルダ
+          <input id="setting-voxcpm-app-dir" placeholder="vendor/VoxCPM" value="${escapeHtml(state.db.settings.voxcpmAppDir || "vendor/VoxCPM")}">
+        </label>
+        <div class="full meta">${escapeHtml(voxcpmStatusText)}</div>
+        <div class="full toolbar">
+          <button class="ghost" data-action="check-voxcpm" ${state.voxcpmStatus === "loading" ? "disabled" : ""}>連携確認</button>
+          <button class="ghost" data-action="setup-voxcpm" ${state.voxcpmStatus === "loading" ? "disabled" : ""}>VoxCPMを取得</button>
+        </div>
+        <div class="full meta">VoxCPMはこのアプリ内の専用venvに入ります。モデル本体は初回生成時に vendor/VoxCPM/hf-cache へ保存されます。</div>
+      </div>
+    </section>
 	    <section class="panel settings-panel">
       <div class="panel-header"><h2>Irodori-TTS連携</h2></div>
       <div class="panel-body form-grid">
@@ -14483,6 +14687,7 @@ function bindAudioAgent() {
       audioResponseFormat: controls.audioResponseFormat,
       elevenLabs: controls.elevenLabs,
       voicebox: controls.voicebox,
+      voxcpm: controls.voxcpm,
       ...controls.irodori,
       actingPrompt: controls.actingPrompt,
       caption: controls.caption
@@ -14505,6 +14710,7 @@ function bindAudioAgent() {
     state.db.settings.voiceboxProfileId = controls.voicebox.profileId;
     state.db.settings.voiceboxLanguage = controls.voicebox.language;
     state.db.settings.voiceboxModelSize = controls.voicebox.modelSize;
+    state.db.settings.voxcpmDefaults = controls.voxcpm;
     state.db.settings.irodoriDefaults = controls.irodori;
   };
   [
@@ -14529,6 +14735,16 @@ function bindAudioAgent() {
     "#audio-voicebox-language",
     "#audio-voicebox-model-size",
     "#audio-voicebox-seed",
+    "#audio-voxcpm-mode",
+    "#audio-voxcpm-voice-prompt",
+    "#audio-voxcpm-model-id",
+    "#audio-voxcpm-device",
+    "#audio-voxcpm-cfg",
+    "#audio-voxcpm-steps",
+    "#audio-voxcpm-normalize",
+    "#audio-voxcpm-denoise",
+    "#audio-voxcpm-no-optimize",
+    "#audio-voxcpm-prompt-text",
     "#audio-irodori-mode",
     "#audio-irodori-caption",
     "#audio-irodori-steps",
@@ -14566,6 +14782,10 @@ function bindAudioAgent() {
     persistAudioControls();
     uploadIrodoriReferenceFile(event.target.files?.[0]);
   });
+  document.querySelector("#audio-voxcpm-reference-file")?.addEventListener("change", (event) => {
+    persistAudioControls();
+    uploadVoxcpmReferenceFile(event.target.files?.[0]);
+  });
   document.querySelector("[data-action='load-elevenlabs-voices']")?.addEventListener("click", async () => {
     persistAudioControls();
     await loadElevenLabsVoices();
@@ -14580,6 +14800,10 @@ function bindAudioAgent() {
   });
   document.querySelector("[data-action='clear-irodori-reference']")?.addEventListener("click", () => {
     state.audioIrodoriReference = null;
+    render();
+  });
+  document.querySelector("[data-action='clear-voxcpm-reference']")?.addEventListener("click", () => {
+    state.audioVoxcpmReference = null;
     render();
   });
   document.querySelector("#audio-work")?.addEventListener("change", (event) => {
@@ -15204,6 +15428,51 @@ async function setupIrodori() {
   render();
 }
 
+async function checkVoxcpmConnection() {
+  const appDir = document.querySelector("#setting-voxcpm-app-dir")?.value.trim() || state.db.settings.voxcpmAppDir || "vendor/VoxCPM";
+  state.db.settings.voxcpmAppDir = appDir;
+  state.voxcpmStatus = "loading";
+  state.voxcpmStatusMessage = "VoxCPMの配置とPython環境を確認しています。";
+  render();
+  try {
+    const result = await postJson("/api/voxcpm/status", { appDir });
+    if (result.found) {
+      state.voxcpmStatus = "ready";
+      state.voxcpmStatusMessage = `連携できます。VoxCPM: ${result.appDir} / Python: ${result.pythonPath} / voxcpm ${result.packageVersion || ""}`;
+      await saveDb();
+      toast("VoxCPMに連携できます。");
+    } else {
+      state.voxcpmStatus = "missing";
+      state.voxcpmStatusMessage = `VoxCPMが見つかりません。候補: ${(result.candidates || []).join(" / ")}`;
+      toast("VoxCPMが見つかりません。");
+    }
+  } catch (error) {
+    state.voxcpmStatus = "missing";
+    state.voxcpmStatusMessage = error.message;
+    toast(error.message);
+  }
+  render();
+}
+
+async function setupVoxcpm() {
+  state.voxcpmStatus = "loading";
+  state.voxcpmStatusMessage = "VoxCPM用のPython環境を作成し、voxcpmパッケージを取得しています。初回はしばらくかかります。";
+  render();
+  try {
+    await postJson("/api/voxcpm/setup", {});
+    state.db.settings.voxcpmAppDir = "vendor/VoxCPM";
+    state.voxcpmStatus = "ready";
+    state.voxcpmStatusMessage = "VoxCPMを vendor/VoxCPM に準備しました。モデル本体は初回生成時に取得されます。";
+    await saveDb();
+    toast("VoxCPMのセットアップが完了しました。");
+  } catch (error) {
+    state.voxcpmStatus = "missing";
+    state.voxcpmStatusMessage = error.message;
+    toast(error.message);
+  }
+  render();
+}
+
 function saveElevenLabsSettingsFromDom() {
   const keyInput = document.querySelector("#setting-elevenlabs-api-key");
   if (keyInput) localStorage.setItem("elevenlabs_api_key", keyInput.value.trim());
@@ -15422,6 +15691,7 @@ function bindSettings() {
     state.db.settings.audioModel = normalizeOpenRouterTtsModel(document.querySelector("#setting-audio-tts-model")?.value || state.db.settings.audioModel);
     state.db.settings.audioVoice = normalizeOpenRouterTtsVoice(state.db.settings.audioVoice, state.db.settings.audioModel);
     state.db.settings.audioResponseFormat = normalizeOpenRouterTtsResponseFormat(state.db.settings.audioResponseFormat, state.db.settings.audioModel);
+    state.db.settings.voxcpmAppDir = document.querySelector("#setting-voxcpm-app-dir")?.value.trim() || "vendor/VoxCPM";
     state.db.settings.irodoriAppDir = document.querySelector("#setting-irodori-app-dir")?.value.trim() || "vendor/Irodori-TTS";
     state.db.settings.seedanceBaseUrl = document.querySelector("#setting-seedance-base-url")?.value.trim() || "https://ark.ap-southeast.bytepluses.com/api/v3";
     state.db.settings.seedanceModel = document.querySelector("#setting-seedance-model")?.value.trim() || "dreamina-seedance-2-0-260128";
@@ -15444,6 +15714,7 @@ function bindSettings() {
     state.db.settings.audioModel = normalizeOpenRouterTtsModel(document.querySelector("#setting-audio-tts-model")?.value || state.db.settings.audioModel);
     state.db.settings.audioVoice = normalizeOpenRouterTtsVoice(state.db.settings.audioVoice, state.db.settings.audioModel);
     state.db.settings.audioResponseFormat = normalizeOpenRouterTtsResponseFormat(state.db.settings.audioResponseFormat, state.db.settings.audioModel);
+    state.db.settings.voxcpmAppDir = document.querySelector("#setting-voxcpm-app-dir")?.value.trim() || "vendor/VoxCPM";
     state.db.settings.irodoriAppDir = document.querySelector("#setting-irodori-app-dir")?.value.trim() || "vendor/Irodori-TTS";
     try {
       await callOpenRouter({
@@ -15469,6 +15740,7 @@ function bindSettings() {
 	    saveVoiceboxSettingsFromDom();
 	    await loadVoiceboxProfiles();
 	  });
+	  document.querySelector("[data-action='check-voxcpm']")?.addEventListener("click", checkVoxcpmConnection);
 	  document.querySelector("[data-action='check-irodori']")?.addEventListener("click", checkIrodoriConnection);
   document.querySelector("[data-action='check-comfy']")?.addEventListener("click", checkComfyConnection);
   document.querySelectorAll("[data-action='load-comfy-models']").forEach((button) => {
@@ -15491,6 +15763,7 @@ function bindSettings() {
     saveComfySettingsFromDom();
     render();
   });
+  document.querySelector("[data-action='setup-voxcpm']")?.addEventListener("click", setupVoxcpm);
   document.querySelector("[data-action='setup-irodori']")?.addEventListener("click", setupIrodori);
   document.querySelector("[data-action='reload-openrouter-models']")?.addEventListener("click", () => loadOpenRouterModels({ force: true }));
 }

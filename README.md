@@ -1,7 +1,7 @@
 # Creative File Studio
 
 ローカル環境で動く、創作支援向けのファイル管理アプリです。作品、キャラ設定、取り込み画像、世界観資料、生成プロンプト、画像生成、画像編集、音声、動画をまとめて扱えます。
-画像生成はComfyUI互換API、Stable Diffusion WebUI Forge、Forge Neo、Draw Thingsを選択でき、ComfyUIではローカルGPUとクラウドGPUを切り替え、Forge / Forge Neo / Draw Thingsではtxt2img APIに送信できます。モデルライブラリではCheckpoint / LoRAを参考画像つきで検索し、保存済み・未保存を見ながら選択、ダウンロード、生成設定への反映ができます。画像編集は簡易ローカル処理、アスペクト比変換、手動フリーモード、ローカルAI rembg、ローカルAI backgroundremover、remove.bgクラウドAPIを切り替え、動画背景除去と動画GIF化も扱えます。動画生成は公式Seedance APIまたはOpenRouterの動画モデル、音声生成はOpenRouter TTS、ElevenLabs、Voicebox、ローカル Irodori-TTS を切り替えて使えます。音声編集ではmp3/wavの複数分割、不要範囲カット、音量変更、ピッチ変更ができます。
+画像生成はComfyUI互換API、Stable Diffusion WebUI Forge、Forge Neo、Draw Thingsを選択でき、ComfyUIではローカルGPUとクラウドGPUを切り替え、Forge / Forge Neo / Draw Thingsではtxt2img APIに送信できます。モデルライブラリではCheckpoint / LoRAを参考画像つきで検索し、保存済み・未保存を見ながら選択、ダウンロード、生成設定への反映ができます。画像編集は簡易ローカル処理、アスペクト比変換、手動フリーモード、ローカルAI rembg、ローカルAI backgroundremover、remove.bgクラウドAPIを切り替え、動画背景除去と動画GIF化も扱えます。動画生成は公式Seedance APIまたはOpenRouterの動画モデル、音声生成はOpenRouter TTS、ElevenLabs、Voicebox、ローカル VoxCPM、ローカル Irodori-TTS を切り替えて使えます。音声編集ではmp3/wavの複数分割、不要範囲カット、音量変更、ピッチ変更ができます。
 
 ## 初回セットアップ
 
@@ -152,6 +152,8 @@ ZIPに含めるもの:
 - `scripts/setup-backgroundremover.sh`
 - `scripts/backgroundremover-run.py`
 - `scripts/backgroundremover_sitecustomize/`
+- `scripts/setup-voxcpm.sh`
+- `scripts/voxcpm-run.py`
 - `public/`
 - `data/.gitkeep`
 
@@ -272,10 +274,11 @@ ZIPに含めないもの:
 ### 音声生成
 
 - 作品情報、世界観、キャラ情報を読んだ音声生成エージェント
-- OpenRouter TTS、ElevenLabs、Voicebox、ローカル Irodori-TTS を切り替え
+- OpenRouter TTS、ElevenLabs、Voicebox、ローカル VoxCPM、ローカル Irodori-TTS を切り替え
 - OpenRouterでは `google/gemini-3.1-flash-tts-preview` と `x-ai/grok-voice-tts-1.0` を切り替え
 - ElevenLabsではVoice ID、モデル、出力形式、Stability、Similarity、Style、Speed、Speaker Boost、言語コード、Seedを指定
 - VoiceboxではローカルAPI URL、プロファイル、言語、Model size、Seed、演技指示を指定
+- VoxCPMでは音色デザイン、参照音声クローン、高精度クローン、声の指定、参照音声、CFG、Steps、デバイスを指定
 - Irodori-TTSではVoiceDesign/Reference、Steps、候補数、Seed、CFG、デバイス、精度、参照音声を指定
 - 生成音声をキャラ情報に紐づけ、作品ページのキャラカードから確認
 - キャラに紐づいた生成音声を、動画生成の参照素材「音声」として選択
@@ -346,7 +349,7 @@ ZIPに含めないもの:
 - 世界観読み込みモデル: 設定シート画像、Markdown/Textファイル、直接入力テキストの読解に使います。vision と長文JSONに強いモデルが向いています。
 - 画像生成エージェントモデル: 画像生成画面のチャットエージェントに使います。
 - 動画エージェントモデル: 動画生成画面のチャットエージェントに使います。参照画像を読むため、vision 対応モデルが向いています。
-- 音声エージェントモデル: 音声生成画面のチャットエージェントに使います。実際の音声生成は、音声生成画面で選んだ OpenRouter TTS、ElevenLabs、Voicebox、または Irodori-TTS で行います。
+- 音声エージェントモデル: 音声生成画面のチャットエージェントに使います。実際の音声生成は、音声生成画面で選んだ OpenRouter TTS、ElevenLabs、Voicebox、VoxCPM、または Irodori-TTS で行います。
 
 モデル一覧は設定画面の「モデル一覧を再取得」で OpenRouter から読み込みます。
 
@@ -405,6 +408,7 @@ ComfyUI、Forge、Forge Neo、Draw Thingsで直接使いたい場合は、モデ
 - OpenRouter TTS: `google/gemini-3.1-flash-tts-preview` または `x-ai/grok-voice-tts-1.0` を使います。
 - ElevenLabs: 指定した Voice ID とモデルでElevenLabs APIを呼び出し、音声ファイルを保存します。
 - Voicebox: この端末またはリモートで起動したVoicebox APIへ接続し、保存済みプロファイルの声で音声ファイルを保存します。
+- VoxCPM: この端末上の専用Python環境で `voxcpm` を実行し、WAVを保存します。
 - Irodori-TTS: この端末上の Irodori-TTS を `uv run python infer.py` で実行し、WAVを保存します。
 
 OpenRouter選択時:
@@ -433,6 +437,20 @@ Voicebox選択時:
 - 言語、Model size、Seed: 生成ごとに指定できます。
 - 演技指示: Voiceboxの `instruct` に送信し、生成履歴にも保存します。対応しないエンジンでは無視される場合があります。
 - 生成結果はVoiceboxの `/generate` と `/audio/{generation_id}` から取得し、このアプリの `data/audios/作品名/キャラクター名/` に保存します。
+
+VoxCPM選択時:
+
+- 出力形式: WAV
+- モード: 音色デザインは声の指定だけで作ります。参照音声クローンは参照音声の声質や話し方に近づけます。高精度クローンは参照音声とその文字起こしをペアで使い、より厳密に声を合わせます。
+- 声の指定 / スタイル: 音色、年齢感、感情、速度、距離感を自然言語で指定できます。
+- 参照音声: 参照音声クローン / 高精度クローンで使います。
+- 高精度クローン用の文字起こし: 高精度クローンで、参照音声が実際に話している内容を入力します。生成したい本文ではなく、参照音声の台詞をできるだけ正確に入れます。
+- テキスト正規化: 数字、記号、英字などを読み上げやすい形へ整える処理です。固有名詞や記号の読みを厳密に手書きしたい時はOFFも試せます。
+- 参照音声を降噪: 参照音声に入った環境音やノイズを抑えてから声を参照します。元音声がきれいな場合はOFFのままで問題ありません。
+- `torch.compile` の無効化: PyTorchのコンパイル最適化を使わずに動かします。初回の待ち時間やMac/MPSでの不安定さを避けたい場合はONが安全です。
+- CFG、Steps、モデルID、デバイス、テキスト正規化、参照音声の降噪、`torch.compile` の無効化を指定できます。MacのMPSでメモリ不足になる場合はデバイスを `cpu` に変更してください。
+- 設定画面の「VoxCPM連携」で専用Python環境を確認できます。
+- 未導入環境では「VoxCPMを取得」を押すと `scripts/setup-voxcpm.sh` が `vendor/VoxCPM/.venv` を作成し、`voxcpm` と `soundfile` をインストールします。モデル本体は初回生成時に `vendor/VoxCPM/hf-cache` へ保存されます。
 
 Irodori-TTS選択時:
 

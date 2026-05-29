@@ -20,12 +20,15 @@ const modelLibraryDir = path.join(dataDir, "model-library");
 const dbPath = path.join(dataDir, "db.json");
 const seedanceGuidePath = path.join(__dirname, "Seedance2.0_Prompt_Guide_v2.md");
 const irodoriSetupScriptPath = path.join(__dirname, "scripts", "setup-irodori.sh");
+const voxcpmSetupScriptPath = path.join(__dirname, "scripts", "setup-voxcpm.sh");
+const voxcpmRunScriptPath = path.join(__dirname, "scripts", "voxcpm-run.py");
 const rembgSetupScriptPath = path.join(__dirname, "scripts", "setup-rembg.sh");
 const rembgRemoveScriptPath = path.join(__dirname, "scripts", "rembg-remove.py");
 const backgroundRemoverSetupScriptPath = path.join(__dirname, "scripts", "setup-backgroundremover.sh");
 const backgroundRemoverRunScriptPath = path.join(__dirname, "scripts", "backgroundremover-run.py");
 const backgroundRemoverSitecustomizeDir = path.join(__dirname, "scripts", "backgroundremover_sitecustomize");
 const irodoriVendorDir = path.join(__dirname, "vendor", "Irodori-TTS");
+const voxcpmVendorDir = path.join(__dirname, "vendor", "VoxCPM");
 const rembgVenvDir = path.join(__dirname, "vendor", "rembg-venv");
 const rembgModelsDir = path.join(dataDir, "rembg-models");
 const backgroundRemoverVenvDir = path.join(__dirname, "vendor", "backgroundremover-venv");
@@ -106,6 +109,19 @@ const emptyDb = {
       cfgScaleCaption: 4,
       cfgScaleSpeaker: 5,
       customCheckpoint: ""
+    },
+    voxcpmAppDir: "vendor/VoxCPM",
+    voxcpmDefaults: {
+      mode: "VoiceDesign",
+      voicePrompt: "落ち着いた自然な日本語の声。近い距離感で、感情を少し抑えて読み上げる。",
+      modelId: "openbmb/VoxCPM2",
+      device: "cpu",
+      noOptimize: true,
+      cfgValue: 2,
+      inferenceTimesteps: 10,
+      normalize: true,
+      denoise: false,
+      promptText: ""
     },
     seedanceBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3",
     seedanceModel: "dreamina-seedance-2-0-260128",
@@ -312,6 +328,8 @@ const lanAllowedApiRoutes = new Set([
   "GET /api/animadex/media",
   "POST /api/irodori/status",
   "POST /api/irodori/speech",
+  "POST /api/voxcpm/status",
+  "POST /api/voxcpm/speech",
   "GET /api/exchange-rate/usd-jpy",
   "GET /api/seedance/guide",
   "POST /api/seedance/create",
@@ -635,6 +653,63 @@ async function resolveIrodoriWorkspace(configuredPath = "") {
     candidates: [...seen],
     setupScript: irodoriSetupScriptPath,
     suggestedPath: path.relative(__dirname, irodoriVendorDir) || irodoriVendorDir
+  };
+}
+
+function voxcpmPythonPath(appDir) {
+  const venvDir = path.join(appDir, ".venv");
+  return process.platform === "win32"
+    ? path.join(venvDir, "Scripts", "python.exe")
+    : path.join(venvDir, "bin", "python");
+}
+
+async function inspectVoxcpmPython(pythonPath) {
+  if (!await isFile(pythonPath)) return null;
+  const result = await runProcess([
+    pythonPath,
+    "-c",
+    "import importlib.metadata as m; print(m.version('voxcpm'))"
+  ], { timeoutMs: 30000 });
+  return {
+    ok: result.ok,
+    version: result.ok ? result.stdout.trim() : "",
+    result
+  };
+}
+
+async function resolveVoxcpmWorkspace(configuredPath = "") {
+  const candidates = [
+    configuredPath,
+    process.env.VOXCPM_DIR,
+    voxcpmVendorDir
+  ]
+    .map(expandLocalPath)
+    .filter(Boolean);
+  const seen = new Set();
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    const pythonPath = voxcpmPythonPath(candidate);
+    const inspection = await inspectVoxcpmPython(pythonPath);
+    if (inspection?.ok) {
+      return {
+        found: true,
+        configuredPath: candidate,
+        appDir: candidate,
+        pythonPath,
+        packageVersion: inspection.version,
+        cacheDir: path.join(candidate, "hf-cache"),
+        runnerScript: voxcpmRunScriptPath
+      };
+    }
+  }
+  return {
+    found: false,
+    configuredPath: expandLocalPath(configuredPath),
+    candidates: [...seen],
+    setupScript: voxcpmSetupScriptPath,
+    suggestedPath: path.relative(__dirname, voxcpmVendorDir) || voxcpmVendorDir,
+    runnerScript: voxcpmRunScriptPath
   };
 }
 
@@ -3613,6 +3688,182 @@ async function handleIrodoriSpeech(req, res) {
   });
 }
 
+function voxcpmMode(value) {
+  const clean = String(value || "").trim();
+  return ["VoiceDesign", "Reference", "HiFi"].includes(clean) ? clean : "VoiceDesign";
+}
+
+function voxcpmDevice(value) {
+  const clean = String(value || "cpu").trim().toLowerCase();
+  if (/^cuda(?::\d+)?$/.test(clean)) return clean;
+  return ["auto", "cpu", "mps"].includes(clean) ? clean : "cpu";
+}
+
+function voxcpmFailureMessage(result = {}) {
+  const text = `${result.stderr || ""}\n${result.stdout || ""}\n${result.error || ""}`;
+  if (/MPS backend out of memory/i.test(text)) {
+    return "VoxCPM 音声生成に失敗しました: MacのMPS/GPUメモリ不足です。VoxCPMのデバイスを cpu に変更して再試行してください。";
+  }
+  if (/No space left on device/i.test(text)) {
+    return "VoxCPM 音声生成に失敗しました: ディスク空き容量が不足しています。vendor/VoxCPM/hf-cache と空き容量を確認してください。";
+  }
+  if (/Connection|Read timed out|NameResolution|Temporary failure|Failed to establish/i.test(text)) {
+    return "VoxCPM 音声生成に失敗しました: モデル取得中のネットワーク接続に失敗しました。通信が安定した状態で再試行してください。";
+  }
+  return `VoxCPM 音声生成に失敗しました: ${result.error || result.stderr || "unknown error"}`;
+}
+
+async function handleVoxcpmStatus(req, res) {
+  const { appDir } = await readJson(req, 256 * 1024);
+  const workspace = await resolveVoxcpmWorkspace(appDir);
+  const uv = await findUvCommand();
+  const pythonCandidates = [];
+  for (const command of [process.env.VOXCPM_PYTHON, "python3.12", "python3.11", "python3.10", "python3"].filter(Boolean)) {
+    const result = await runProcess([command, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"], { timeoutMs: 10000 });
+    if (result.ok) pythonCandidates.push({ command, version: result.stdout.trim() });
+  }
+  return sendJson(res, 200, {
+    ...workspace,
+    uvFound: Boolean(uv),
+    uvCommand: uv ? commandLabel(uv.command) : "",
+    uvVersion: uv?.version || "",
+    pythonCandidates,
+    setupScript: voxcpmSetupScriptPath,
+    suggestedPath: path.relative(__dirname, voxcpmVendorDir) || voxcpmVendorDir
+  });
+}
+
+async function handleVoxcpmSetup(req, res) {
+  const exists = await isFile(voxcpmSetupScriptPath);
+  if (!exists) return sendJson(res, 404, { error: "VoxCPM セットアップスクリプトが見つかりません。" });
+  const result = await runProcess(["bash", voxcpmSetupScriptPath], { cwd: __dirname, timeoutMs: 45 * 60 * 1000 });
+  const workspace = await resolveVoxcpmWorkspace(voxcpmVendorDir);
+  return sendJson(res, result.ok ? 200 : 500, {
+    ok: result.ok,
+    error: result.ok ? "" : `VoxCPM セットアップに失敗しました: ${result.error || result.stderr || "unknown error"}`,
+    workspace,
+    result
+  });
+}
+
+async function handleVoxcpmSpeech(req, res) {
+  const body = await readJson(req, 4 * 1024 * 1024);
+  const cleanInput = String(body.input || "").trim();
+  const title = String(body.title || "voxcpm-audio").trim() || "voxcpm-audio";
+  if (!cleanInput) return sendJson(res, 400, { error: "読み上げテキストが必要です。" });
+
+  const workspace = await resolveVoxcpmWorkspace(body.appDir);
+  if (!workspace.found) {
+    return sendJson(res, 400, {
+      error: "VoxCPM が見つかりません。設定画面でパスを指定するか、VoxCPM をセットアップしてください。",
+      workspace
+    });
+  }
+  if (!await isFile(voxcpmRunScriptPath)) {
+    return sendJson(res, 500, { error: "VoxCPM 実行スクリプトが見つかりません。" });
+  }
+
+  const mode = voxcpmMode(body.mode);
+  const voicePrompt = String(body.voicePrompt || body.control || "").trim();
+  const promptText = String(body.promptText || "").trim();
+  let referencePath = "";
+  if (body.referenceAudioUrl) {
+    try {
+      referencePath = localMediaPathFromUrl(body.referenceAudioUrl);
+      await fs.access(referencePath);
+    } catch (error) {
+      return sendJson(res, 400, { error: `参照音声を読み込めません: ${error.message}` });
+    }
+  }
+  if (mode === "Reference" && !referencePath) {
+    return sendJson(res, 400, { error: "VoxCPMの参照音声クローンには参照音声が必要です。" });
+  }
+  if (mode === "HiFi" && (!referencePath || !promptText)) {
+    return sendJson(res, 400, { error: "VoxCPMの高精度クローンには参照音声と参照音声の文字起こしが必要です。" });
+  }
+
+  const cfgValue = boundedNumber(body.cfgValue, 2, 1, 3);
+  const inferenceTimesteps = boundedNumber(body.inferenceTimesteps, 10, 4, 30, true);
+  const device = voxcpmDevice(body.device);
+  const modelId = String(body.modelId || "openbmb/VoxCPM2").trim() || "openbmb/VoxCPM2";
+  const targetDir = await ensureAudioTargetDir(body);
+  const outputPath = path.join(targetDir, safeUploadName(title, ".wav"));
+  await fs.mkdir(workspace.cacheDir, { recursive: true });
+
+  const args = [
+    workspace.pythonPath,
+    voxcpmRunScriptPath,
+    "--model-id",
+    modelId,
+    "--text",
+    cleanInput,
+    "--output-wav",
+    outputPath,
+    "--mode",
+    mode,
+    "--cfg-value",
+    String(cfgValue),
+    "--inference-timesteps",
+    String(inferenceTimesteps),
+    "--device",
+    device,
+    "--cache-dir",
+    workspace.cacheDir
+  ];
+  if (voicePrompt) args.push("--voice-prompt", voicePrompt);
+  if (referencePath) args.push("--reference-wav", referencePath);
+  if (mode === "HiFi") args.push("--prompt-wav", referencePath, "--prompt-text", promptText);
+  if (body.normalize !== false) args.push("--normalize");
+  if (body.denoise === true) args.push("--denoise");
+  if (body.noOptimize !== false) args.push("--no-optimize");
+
+  const result = await runProcess(args, {
+    cwd: workspace.appDir,
+    timeoutMs: 45 * 60 * 1000,
+    env: {
+      HF_HOME: path.join(workspace.appDir, "hf-home"),
+      HF_HUB_CACHE: workspace.cacheDir
+    }
+  });
+  if (!result.ok) {
+    return sendJson(res, 500, {
+      error: voxcpmFailureMessage(result),
+      result
+    });
+  }
+  if (!await isFile(outputPath)) {
+    return sendJson(res, 500, {
+      error: "VoxCPM は完了しましたが、出力 WAV が見つかりませんでした。",
+      result
+    });
+  }
+
+  const stat = await fs.stat(outputPath);
+  sendJson(res, 200, {
+    url: audioUrlFor(outputPath),
+    path: outputPath,
+    mimeType: "audio/wav",
+    format: "wav",
+    size: stat.size,
+    request: {
+      provider: "voxcpm",
+      mode,
+      voicePrompt,
+      promptText: mode === "HiFi" ? promptText.slice(0, 1200) : "",
+      modelId,
+      device,
+      noOptimize: body.noOptimize !== false,
+      normalize: body.normalize !== false,
+      denoise: body.denoise === true,
+      cfgValue,
+      inferenceTimesteps,
+      referenceAudio: Boolean(referencePath),
+      input: cleanInput.length > 1200 ? `${cleanInput.slice(0, 1200)}...` : cleanInput
+    },
+    result
+  });
+}
+
 function normalizeVideoDownloadUrl(videoUrl, baseUrl) {
   const raw = String(videoUrl || "").trim();
   if (!raw) return "";
@@ -6096,6 +6347,18 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/irodori/speech") {
       return await handleIrodoriSpeech(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/voxcpm/status") {
+      return await handleVoxcpmStatus(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/voxcpm/setup") {
+      return await handleVoxcpmSetup(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/voxcpm/speech") {
+      return await handleVoxcpmSpeech(req, res);
     }
 
     if (req.method === "GET" && url.pathname === "/api/exchange-rate/usd-jpy") {
