@@ -222,7 +222,7 @@ ZIPに含めないもの:
 - Forge NeoではVAE/Text Encoderなどの追加Module、Diffusion in Low Bits、Distilled CFG / Shift、Refiner、override_settings JSON、txt2img追加JSONを指定
 - LoRA名、Model強度、CLIP強度を指定し、ComfyUIではLoraLoaderとして読み込み、Forge / Forge Neoでは `<lora:name:strength>` をプロンプトに追加。Draw ThingsではLoRAファイル名をtxt2imgの `loras` 配列として送信
 - ComfyUI、Forge、Forge Neoのモデル（Checkpoint） / Sampler / LoRA一覧を取得し、Forge NeoではModule候補も入力候補として表示。Draw ThingsではHTTP Serverから取得できる現在設定、LoRA APIが返すLoRA、このMacのDraw Things保存先にあるLoRAファイルを候補として表示
-- 画像生成画面のAnimaDexポップアップからキャラクターtrigger、タグ、アーティストtagを検索し、Promptへ追加
+- 画像生成画面のAnimaDexポップアップからAPI経由で作品、キャラクターtrigger、タグ、アーティストtagを検索し、Promptへ追加
 - モデルライブラリ画面でCivitaiのCheckpoint / LoRAを検索し、参考画像、説明、トリガーワード、ファイルサイズ、Scan情報、商用利用メモを確認
 - 保存済み・未保存を同じ画面で絞り込み、ダウンロード時はComfyUI / Forge / Forge Neo / Draw Thingsの保存先プラットフォーム選択を必須化。選択したプラットフォームの標準モデルフォルダへ保存します。Draw Thingsはアプリ側にインポート済みのローカル資産も候補として取得します
 - 生成前にworkflowのNode ID、LoRA接続、モデル（Checkpoint） / LoRA名を事前チェック
@@ -302,7 +302,7 @@ ZIPに含めないもの:
 - 画像判別、テキスト生成、世界観読み込み、画像生成エージェント、動画エージェント、音声エージェントのモデルを個別に設定
 - OpenRouterのモデル一覧と動画モデル対応設定を再取得
 - 画像生成APIとしてComfyUI、Forge、Forge Neo、Draw Thingsを選択し、ComfyUIのローカルURL / クラウドURL、Forge URL、Forge Neo URL、Draw Things URL、workflow、Node ID、既定生成値、LoRA、workflow表示モード、モデル候補取得、事前チェック、プリセットを設定
-- AnimaDexのURLを設定し、キャラクター/アーティスト検索を画像生成プロンプトに反映
+- AnimaDex APIのURLを設定し、キャラクター/アーティスト検索を画像生成プロンプトに反映
 - モデルライブラリで保存先プラットフォームを指定し、Civitaiカタログ検索とローカル保存済みファイルを確認
 - 画像編集画面からローカルAI rembg / backgroundremoverの状態確認とセットアップ
 - 動画生成プロバイダーを公式 / OpenRouter / Replicateから選択
@@ -373,11 +373,11 @@ ZIPに含めないもの:
 - Workflow JSON: ComfyUIの `Save (API Format)` で保存したJSONを貼り付けます。
 - Node ID: Positive、Negative、Seed、Size、Steps、CFG、Sampler、モデル（Checkpoint）の入力を書き換えるノード番号を指定します。
 
-設定画面の「AnimaDex」セクションでは、AnimaDexのURLを指定します。既定は `http://127.0.0.1:5000` です。ローカルのAnimaDexに接続できない場合は、検索時に `https://animadex.net` の公式Web版へフォールバックします。最初から公式Web版を使う場合はAnimaDex URLに `https://animadex.net` を指定してください。画像生成画面のPrompt欄にある「AnimaDex」ボタンから大きな検索ポップアップを開き、キャラクターのTrigger / Tags、アーティストの `@Artist` tagをPrompt末尾へ追加できます。カード右上の星でお気に入りを保存し、キャラクターとアーティスト別に「お気に入り」表示へ切り替えられます。
+設定画面の「AnimaDex」セクションでは、AnimaDex APIのURLを指定します。既定は `http://127.0.0.1:5000` です。ローカルのAnimaDexに接続できない場合は、検索時に `https://animadex.net` の公式APIへフォールバックします。最初から公式APIを使う場合はAnimaDex API URLに `https://animadex.net` を指定してください。画像生成画面のPrompt欄にある「AnimaDex」ボタンから大きな検索ポップアップを開き、作品、キャラクター、アーティストを切り替えて検索できます。作品カードの「キャラ表示」から作品内キャラへ絞り込めます。キャラクター検索では作品、髪色、髪の長さ、目色、性別、LoRAありで絞り込み、アーティスト検索ではScore、スタイル分類で絞り込みます。キャラクターのTrigger / Tags、アーティストの `@Artist` tagはPrompt末尾へ追加できます。カード右上の星でお気に入りを保存し、キャラクターとアーティスト別に「お気に入り」表示へ切り替えられます。
 
 Macでは `start-mac.command` から起動すると、`~/AnimaDex` がセットアップ済みの場合にAnimaDexも自動起動します。AnimaDexの起動ログは `animadex-start.log` に保存されます。AnimaDexだけ別の場所に置いている場合は、起動前に `ANIMADEX_DIR` と `ANIMADEX_URL` を指定してください。
 
-AnimaDexの全リストはAnimaDex側のページングAPIから取得します。検索語を空にして `http://127.0.0.1:5000/api/characters/search?q=&page=1` または `http://127.0.0.1:5000/api/artists/search?q=&page=1` を開き、返ってくる `pages` の数だけ `page` を進めます。Creative File StudioのAnimaDexポップアップでも検索欄を空にすると同じ全リストをページ送りで確認できます。公式Web版のAPIは検索時のみ使い、短時間キャッシュして連続アクセスを抑えます。ローカルDBを直接見る場合は `~/animadex-data/animadex.db` が実体です。
+AnimaDexの全リストはAnimaDex側のページングAPIから取得します。検索語を空にして `http://127.0.0.1:5000/api/characters/search?q=&page=1`、`http://127.0.0.1:5000/api/artists/search?q=&page=1`、または `http://127.0.0.1:5000/api/copyrights/search?q=&page=1` を開き、返ってくる `pages` の数だけ `page` を進めます。Creative File StudioのAnimaDexポップアップでも検索欄を空にすると同じ全リストをページ送りで確認できます。絞り込み候補は `/api/characters/facets` と `/api/artists/facets` から取得します。公式APIは検索時のみ使い、短時間キャッシュして連続アクセスを抑えます。ローカルDBを直接見る場合は `~/animadex-data/animadex.db` が実体です。
 
 画像生成画面では、作品、キャラ、生成方式、ComfyUI選択時のGPU、幅、高さ、Steps、CFG、Sampler、Scheduler、Batch、Seed、モデル（Checkpoint）を指定できます。Forge / Forge Neo / Draw Things選択時の初期対応はtxt2imgです。Draw Thingsでモデル（Checkpoint）を空欄にすると、Draw Things側の現在設定を使います。Draw Thingsでは生成に使うモデルを事前にDraw Things側でダウンロードまたはインポートしておく必要があります。Cloud Compute / Server Offloadを使う場合もDraw Things側でモデルと実行先を選んでから送信してください。Forge Neo選択時は追加Module、Low Bits、Distilled CFG / Shift、Refiner、JSON拡張も生成ごとに指定できます。参照画像Nodeを使う生成はComfyUIを選択してください。エージェントに相談してプロンプト案を作ることも、プロンプト欄へ直接入力することもできます。生成比較モードをONにすると、Seed、CFG、Stepsのいずれかを軸に複数ジョブを投入し、比較結果から採用した案を生成設定へ戻せます。
 

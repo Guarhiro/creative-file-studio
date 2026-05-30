@@ -9988,14 +9988,52 @@ function appendPromptPart(current = "", addition = "") {
   return `${base}${/[,\n]$/.test(base) ? " " : ", "}${extra}`;
 }
 
+function normalizeAnimaDexModeValue(value = "characters") {
+  if (value === "artists") return "artists";
+  if (value === "copyrights" || value === "works") return "copyrights";
+  return "characters";
+}
+
+function animaDexModeLabel(mode = "characters") {
+  const normalizedMode = normalizeAnimaDexModeValue(mode);
+  if (normalizedMode === "artists") return "アーティスト";
+  if (normalizedMode === "copyrights") return "作品";
+  return "キャラクター";
+}
+
+function emptyAnimaDexFilterState() {
+  return { characters: {}, artists: {}, copyrights: {} };
+}
+
+function normalizeAnimaDexFilterState(value = {}) {
+  const next = emptyAnimaDexFilterState();
+  for (const mode of Object.keys(next)) {
+    const source = value?.[mode] && typeof value[mode] === "object" ? value[mode] : {};
+    Object.entries(source).forEach(([key, raw]) => {
+      if (raw === true) {
+        next[mode][key] = true;
+        return;
+      }
+      const text = String(raw || "").trim();
+      if (text) next[mode][key] = text;
+    });
+  }
+  return next;
+}
+
+function animaDexActiveFilters(filters = {}, mode = "characters") {
+  const source = filters[normalizeAnimaDexModeValue(mode)] || {};
+  return Object.fromEntries(Object.entries(source).filter(([, value]) => value === true || String(value || "").trim()));
+}
+
 function animadexItemKey(item = {}, mode = "") {
-  const normalizedMode = mode === "artists" || item.mode === "artists" ? "artists" : "characters";
+  const normalizedMode = normalizeAnimaDexModeValue(mode || item.mode);
   const raw = String(item.key || item.slug || item.trigger || item.name || "").trim();
   return raw.startsWith(`${normalizedMode}:`) ? raw : `${normalizedMode}:${raw}`;
 }
 
 function normalizeAnimaDexFavoriteItem(item = {}, mode = "") {
-  const normalizedMode = mode === "artists" || item.mode === "artists" ? "artists" : "characters";
+  const normalizedMode = item.mode === "artists" || mode === "artists" ? "artists" : "characters";
   const tags = Array.isArray(item.tags)
     ? item.tags.map((tag) => String(tag || "").trim()).filter(Boolean).slice(0, 32)
     : [];
@@ -10045,6 +10083,10 @@ function ensureAnimaDexFavorites() {
 function animadexFavoritesForMode(mode = "characters") {
   const normalizedMode = mode === "artists" ? "artists" : "characters";
   return ensureAnimaDexFavorites()[normalizedMode];
+}
+
+function canFavoriteAnimaDexItem(mode = "characters") {
+  return normalizeAnimaDexModeValue(mode) !== "copyrights";
 }
 
 function isAnimaDexFavorite(item = {}, mode = item.mode) {
@@ -10112,20 +10154,89 @@ function insertAnimaDexPromptText(text) {
 
 function renderAnimaDexSortOptions(mode, selected) {
   const options = [
-    ["count", mode === "artists" ? "Image Count" : "Image Count"],
+    ["count", normalizeAnimaDexModeValue(mode) === "copyrights" ? "Character Count" : "Image Count"],
     ["az", "A-Z"],
     ["random", "Random"],
-    ...(mode === "artists" ? [["score", "Score"]] : [])
+    ...(normalizeAnimaDexModeValue(mode) === "artists" ? [["score", "Score"]] : [])
   ];
   return options.map(([value, label]) => `<option value="${value}" ${selected === value ? "selected" : ""}>${escapeHtml(label)}</option>`).join("");
+}
+
+const animaDexFilterDefs = {
+  characters: [
+    ["copyright", "作品"],
+    ["hair_color", "髪色"],
+    ["hair_length", "髪の長さ"],
+    ["eye_color", "目色"],
+    ["gender", "性別"]
+  ],
+  artists: [
+    ["score", "Score"],
+    ["category", "スタイル分類"]
+  ],
+  copyrights: []
+};
+
+function renderAnimaDexFilterControls(mode = "characters", facets = {}, active = {}) {
+  const normalizedMode = normalizeAnimaDexModeValue(mode);
+  const defs = animaDexFilterDefs[normalizedMode] || [];
+  const selects = defs.map(([key, label]) => {
+    const facet = facets?.[key] || {};
+    const values = Array.isArray(facet.values) ? facet.values : [];
+    const selected = String(active[key] || "");
+    return `
+      <label>${escapeHtml(label)}
+        <select data-animadex-filter="${escapeHtml(key)}">
+          <option value="">すべて</option>
+          ${values.map((item) => `
+            <option value="${escapeHtml(item.value)}" ${selected === item.value ? "selected" : ""}>
+              ${escapeHtml(item.label || item.value)}${item.count ? ` (${Number(item.count).toLocaleString("ja-JP")})` : ""}
+            </option>
+          `).join("")}
+        </select>
+      </label>
+    `;
+  }).join("");
+  const loraToggle = normalizedMode === "characters"
+    ? `
+      <label class="animadex-checkbox-filter">
+        <input type="checkbox" data-animadex-filter="loras" ${active.loras ? "checked" : ""}>
+        <span>LoRAあり</span>
+      </label>
+    `
+    : "";
+  const activeCount = Object.values(active).filter((value) => value === true || String(value || "").trim()).length;
+  if (!selects && !loraToggle) return "";
+  return `
+    <div class="animadex-filter-grid">
+      ${selects}
+      ${loraToggle}
+      <button type="button" class="ghost" data-action="animadex-clear-filters" ${activeCount ? "" : "disabled"}>条件クリア</button>
+    </div>
+  `;
+}
+
+function renderAnimaDexBadges(item = {}) {
+  const badges = [];
+  if (item.favoriteCount) badges.push(`Fav ${Number(item.favoriteCount || 0).toLocaleString("ja-JP")}`);
+  if (item.rating && (item.rating.up || item.rating.down)) {
+    badges.push(`評価 +${Number(item.rating.up || 0).toLocaleString("ja-JP")} / -${Number(item.rating.down || 0).toLocaleString("ja-JP")}`);
+  }
+  if (Array.isArray(item.loras) && item.loras.length) {
+    badges.push(`LoRA ${item.loras.length.toLocaleString("ja-JP")}`);
+  }
+  return badges.length ? `<div class="animadex-badges">${badges.map((badge) => `<span>${escapeHtml(badge)}</span>`).join("")}</div>` : "";
 }
 
 function renderAnimaDexCard(item, index) {
   const tags = Array.isArray(item.tags) ? item.tags : [];
   const shownTags = tags.slice(0, 12);
   const previewUrl = item.imgUrl || item.thumbUrl;
-  const favorite = isAnimaDexFavorite(item);
-  const subtitle = item.mode === "artists"
+  const favoriteable = canFavoriteAnimaDexItem(item.mode);
+  const favorite = favoriteable && isAnimaDexFavorite(item);
+  const subtitle = item.mode === "copyrights"
+    ? `${(item.count || 0).toLocaleString("ja-JP")} characters`
+    : item.mode === "artists"
     ? [
         item.score !== null && Number.isFinite(item.score) ? `Score ${Math.round(item.score * 100)}%` : "",
         `${(item.count || 0).toLocaleString("ja-JP")} images`
@@ -10143,14 +10254,15 @@ function renderAnimaDexCard(item, index) {
         ${item.thumbUrl ? `<img src="${escapeHtml(item.thumbUrl)}" alt="${escapeHtml(item.name || item.trigger || "AnimaDex")}">` : `<div class="empty compact">No image</div>`}
       </div>
       <div class="animadex-card-body">
-        <div class="animadex-card-title-row">
+        <div class="animadex-card-title-row ${favoriteable ? "" : "no-favorite"}">
           <div class="animadex-card-title-text">
             <div class="char-name">${escapeHtml(item.name || item.trigger || item.slug || "Untitled")}</div>
             <div class="meta">${escapeHtml(subtitle || "AnimaDex")}</div>
           </div>
-          <button class="animadex-favorite-button ${favorite ? "active" : ""}" data-animadex-favorite="${index}" aria-pressed="${favorite ? "true" : "false"}" title="${favorite ? "お気に入りから外す" : "お気に入りに追加"}">★</button>
+          ${favoriteable ? `<button class="animadex-favorite-button ${favorite ? "active" : ""}" data-animadex-favorite="${index}" aria-pressed="${favorite ? "true" : "false"}" title="${favorite ? "お気に入りから外す" : "お気に入りに追加"}">★</button>` : ""}
         </div>
-        <div class="result-text">${escapeHtml(item.mode === "artists" ? animadexPromptText(item, "artist") : (item.trigger || ""))}</div>
+        <div class="result-text">${escapeHtml(item.mode === "copyrights" ? (item.slug || item.name || "") : item.mode === "artists" ? animadexPromptText(item, "artist") : (item.trigger || ""))}</div>
+        ${renderAnimaDexBadges(item)}
         ${item.mode === "characters" && tags.length ? `
           <div class="animadex-tags">
             ${shownTags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}
@@ -10158,7 +10270,9 @@ function renderAnimaDexCard(item, index) {
           </div>
         ` : ""}
         <div class="card-actions">
-          ${item.mode === "characters" ? `
+          ${item.mode === "copyrights" ? `
+            <button data-animadex-copyright="${index}">キャラ表示</button>
+          ` : item.mode === "characters" ? `
             <button class="ghost" data-animadex-insert="trigger" data-index="${index}">Trigger</button>
             <button class="ghost" data-animadex-insert="tags" data-index="${index}" ${tags.length ? "" : "disabled"}>Tags</button>
             <button data-animadex-insert="all" data-index="${index}">Trigger + Tags</button>
@@ -10177,8 +10291,8 @@ function openAnimaDexImagePreview(item = {}) {
   if (!imageUrl) return toast("拡大表示できるAnimaDex画像がありません。");
   const title = item.name || item.trigger || item.slug || "AnimaDex";
   const details = [
-    item.mode === "artists" ? "@Artist" : item.copyrightName || item.copyright,
-    item.count ? `${Number(item.count || 0).toLocaleString("ja-JP")} images` : ""
+    item.mode === "copyrights" ? "作品" : item.mode === "artists" ? "@Artist" : item.copyrightName || item.copyright,
+    item.count ? `${Number(item.count || 0).toLocaleString("ja-JP")} ${item.mode === "copyrights" ? "characters" : "images"}` : ""
   ].filter(Boolean).join(" / ");
   openModal(
     title,
@@ -10206,6 +10320,7 @@ function openAnimaDexPromptModal() {
           <div class="animadex-tabs">
             <button type="button" data-animadex-mode="characters">キャラクター</button>
             <button type="button" data-animadex-mode="artists">アーティスト</button>
+            <button type="button" data-animadex-mode="copyrights">作品</button>
             <button type="button" class="ghost animadex-favorites-toggle" data-action="animadex-favorites-toggle">★ お気に入り</button>
           </div>
           <div class="animadex-search-row">
@@ -10214,7 +10329,8 @@ function openAnimaDexPromptModal() {
             <button type="button" data-action="animadex-search">検索</button>
           </div>
         </div>
-        <div class="meta">接続先: ${escapeHtml(baseUrl)} / 失敗時は公式Web版を利用</div>
+        <div class="meta">接続先: ${escapeHtml(baseUrl)} / 失敗時は公式APIを利用</div>
+        <div id="animadex-filters" class="animadex-filters"></div>
         <div id="animadex-status" class="meta"></div>
         <div id="animadex-results" class="animadex-result-grid"></div>
       </div>
@@ -10226,16 +10342,19 @@ function openAnimaDexPromptModal() {
       const queryInput = modal.querySelector("#animadex-query");
       const sortSelect = modal.querySelector("#animadex-sort");
       const resultsEl = modal.querySelector("#animadex-results");
+      const filtersEl = modal.querySelector("#animadex-filters");
       const statusEl = modal.querySelector("#animadex-status");
       const pageStatusEl = modal.querySelector("#animadex-page-status");
       const prevButton = modal.querySelector("[data-action='animadex-prev']");
       const nextButton = modal.querySelector("[data-action='animadex-next']");
       const favoritesToggle = modal.querySelector("[data-action='animadex-favorites-toggle']");
-      let mode = state.animadexMode === "artists" ? "artists" : "characters";
+      let mode = normalizeAnimaDexModeValue(state.animadexMode);
       let query = state.animadexQuery || "";
       let sort = state.animadexSort || "count";
       let page = state.animadexPage || 1;
       let favoritesOnly = state.animadexFavoritesOnly === true;
+      let filters = normalizeAnimaDexFilterState(state.animadexFilters);
+      const facetCache = {};
       let pages = 1;
       let total = 0;
       let currentItems = [];
@@ -10246,13 +10365,41 @@ function openAnimaDexPromptModal() {
           : `<div class="empty compact">${escapeHtml(emptyText)}</div>`;
       };
 
+      const syncQueryPlaceholder = () => {
+        queryInput.placeholder = mode === "copyrights"
+          ? "作品名で検索"
+          : mode === "artists"
+            ? "アーティスト名で検索"
+            : "名前、作品、タグで検索";
+      };
+
+      const renderFilters = () => {
+        filtersEl.innerHTML = favoritesOnly
+          ? ""
+          : renderAnimaDexFilterControls(mode, facetCache[mode] || {}, animaDexActiveFilters(filters, mode));
+      };
+
+      const loadFacetsForMode = async () => {
+        if (mode === "copyrights" || facetCache[mode]) return;
+        try {
+          const data = await postJson("/api/animadex/facets", { mode });
+          facetCache[mode] = data.facets || {};
+        } catch (error) {
+          facetCache[mode] = {};
+          console.warn(error);
+        }
+      };
+
       const syncControls = () => {
         if (mode !== "artists" && sort === "score") sort = "count";
+        if (mode === "copyrights" && favoritesOnly) favoritesOnly = false;
         root.dataset.mode = mode;
+        syncQueryPlaceholder();
         modal.querySelectorAll("[data-animadex-mode]").forEach((button) => {
           button.classList.toggle("active", button.dataset.animadexMode === mode);
         });
-        const favoriteCount = animadexFavoritesForMode(mode).length;
+        const favoriteCount = canFavoriteAnimaDexItem(mode) ? animadexFavoritesForMode(mode).length : 0;
+        favoritesToggle.hidden = !canFavoriteAnimaDexItem(mode);
         favoritesToggle.classList.toggle("active", favoritesOnly);
         favoritesToggle.setAttribute("aria-pressed", favoritesOnly ? "true" : "false");
         favoritesToggle.textContent = `★ お気に入り ${favoriteCount.toLocaleString("ja-JP")}`;
@@ -10261,6 +10408,7 @@ function openAnimaDexPromptModal() {
         prevButton.disabled = page <= 1;
         nextButton.disabled = page >= pages;
         pageStatusEl.textContent = `${total.toLocaleString("ja-JP")}件 / ${page.toLocaleString("ja-JP")} / ${pages.toLocaleString("ja-JP")}ページ`;
+        renderFilters();
       };
 
       const loadFavoritePage = (nextPage = 1) => {
@@ -10274,6 +10422,7 @@ function openAnimaDexPromptModal() {
         state.animadexSort = sort;
         state.animadexPage = page;
         state.animadexFavoritesOnly = favoritesOnly;
+        state.animadexFilters = filters;
         currentItems = favoriteItems.slice((page - 1) * pageSize, page * pageSize);
         statusEl.textContent = currentItems.length
           ? `${mode === "artists" ? "アーティスト" : "キャラクター"}のお気に入りを表示しています。`
@@ -10291,27 +10440,32 @@ function openAnimaDexPromptModal() {
         state.animadexSort = sort;
         state.animadexPage = page;
         state.animadexFavoritesOnly = favoritesOnly;
+        state.animadexFilters = filters;
         syncControls();
         if (favoritesOnly) {
           loadFavoritePage(page);
           return;
         }
+        await loadFacetsForMode();
+        syncControls();
         statusEl.textContent = "読み込み中...";
         resultsEl.innerHTML = Array.from({ length: 8 }, () => `<div class="animadex-card skeleton"><div></div><div></div></div>`).join("");
         try {
-          const data = await postJson("/api/animadex/search", { mode, q: query, sort, page });
+          const activeFilters = animaDexActiveFilters(filters, mode);
+          const { loras, ...facetFilters } = activeFilters;
+          const data = await postJson("/api/animadex/search", { mode, q: query, sort, page, filters: facetFilters, loras });
           currentItems = Array.isArray(data.results) ? data.results : [];
           page = Number(data.page || page) || page;
           pages = Math.max(1, Number(data.pages || 1) || 1);
           total = Number(data.total || currentItems.length) || 0;
           const sourceLabel = data.fallback
-            ? "公式Web版から取得しました。"
+            ? "公式APIから取得しました。"
             : String(data.baseUrl || "").includes("animadex.net")
-              ? "公式Web版から取得しました。"
+              ? "公式APIから取得しました。"
               : "取得しました。";
           statusEl.textContent = currentItems.length
-            ? `${mode === "artists" ? "アーティスト" : "キャラクター"}を${sourceLabel}`
-            : `該当する項目がありません。${data.fallback ? "公式Web版を確認しました。" : ""}`;
+            ? `${animaDexModeLabel(mode)}を${sourceLabel}`
+            : `該当する項目がありません。${data.fallback ? "公式APIを確認しました。" : ""}`;
           renderCurrentItems();
         } catch (error) {
           currentItems = [];
@@ -10325,13 +10479,39 @@ function openAnimaDexPromptModal() {
 
       modal.querySelectorAll("[data-animadex-mode]").forEach((button) => {
         button.addEventListener("click", () => {
-          mode = button.dataset.animadexMode === "artists" ? "artists" : "characters";
+          mode = normalizeAnimaDexModeValue(button.dataset.animadexMode);
+          if (mode === "copyrights") favoritesOnly = false;
           page = 1;
           loadPage(1);
         });
       });
       favoritesToggle.addEventListener("click", () => {
+        if (!canFavoriteAnimaDexItem(mode)) return;
         favoritesOnly = !favoritesOnly;
+        page = 1;
+        loadPage(1);
+      });
+      filtersEl.addEventListener("change", (event) => {
+        const control = event.target.closest("[data-animadex-filter]");
+        if (!control) return;
+        const key = control.dataset.animadexFilter;
+        const target = filters[mode] || {};
+        if (control.type === "checkbox") {
+          if (control.checked) target[key] = true;
+          else delete target[key];
+        } else {
+          const value = control.value.trim();
+          if (value) target[key] = value;
+          else delete target[key];
+        }
+        filters[mode] = target;
+        page = 1;
+        loadPage(1);
+      });
+      filtersEl.addEventListener("click", (event) => {
+        const clearButton = event.target.closest("[data-action='animadex-clear-filters']");
+        if (!clearButton) return;
+        filters[mode] = {};
         page = 1;
         loadPage(1);
       });
@@ -10377,6 +10557,19 @@ function openAnimaDexPromptModal() {
           const text = animadexPromptText(item, button.dataset.animadexInsert);
           if (!text) return toast("追加できるタグがありません。");
           insertAnimaDexPromptText(text);
+          return;
+        }
+        const copyrightButton = event.target.closest("[data-animadex-copyright]");
+        if (copyrightButton) {
+          const item = currentItems[Number(copyrightButton.dataset.animadexCopyright)];
+          if (!item?.slug) return;
+          mode = "characters";
+          favoritesOnly = false;
+          query = "";
+          queryInput.value = "";
+          filters.characters = { ...(filters.characters || {}), copyright: item.slug };
+          page = 1;
+          loadPage(1);
           return;
         }
         if (event.target.closest("a, button, input, select, textarea")) return;
@@ -13067,10 +13260,10 @@ function renderAnimaDexSettings() {
         <button class="ghost" data-action="check-animadex">接続確認</button>
       </div>
       <div class="panel-body form-grid">
-        <label class="full">AnimaDex URL
+        <label class="full">AnimaDex API URL
           <input id="setting-animadex-base-url" placeholder="http://127.0.0.1:5000 または https://animadex.net" value="${escapeHtml(state.db.settings.animadexBaseUrl || "http://127.0.0.1:5000")}">
         </label>
-        <div class="full meta">画像生成画面のAnimaDexポップアップで、キャラクターtrigger、タグ、アーティストtagをPromptへ追加します。設定URLが使えない場合は公式Web版を検索時に利用します。</div>
+        <div class="full meta">画像生成画面のAnimaDexポップアップで、キャラクターtrigger、タグ、アーティストtagをPromptへ追加します。設定URLが使えない場合は公式APIを検索時に利用します。</div>
       </div>
     </section>
   `;
@@ -15509,7 +15702,7 @@ async function checkAnimaDexConnection() {
   await saveDb();
   try {
     const data = await postJson("/api/animadex/search", { mode: "characters", q: "", sort: "count", page: 1 });
-    const source = data.fallback || String(data.baseUrl || "").includes("animadex.net") ? "公式Web版" : "設定URL";
+    const source = data.fallback || String(data.baseUrl || "").includes("animadex.net") ? "公式API" : "設定URL";
     toast(`AnimaDexに接続できました（${source}）。キャラクター ${Number(data.total || 0).toLocaleString("ja-JP")} 件`);
   } catch (error) {
     toast(error.message);

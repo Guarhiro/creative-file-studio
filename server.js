@@ -325,6 +325,7 @@ const lanAllowedApiRoutes = new Set([
   "POST /api/voicebox/profiles",
   "POST /api/voicebox/speech",
   "POST /api/animadex/search",
+  "POST /api/animadex/facets",
   "GET /api/animadex/media",
   "POST /api/irodori/status",
   "POST /api/irodori/speech",
@@ -2416,7 +2417,7 @@ function normalizeAnimaDexBaseUrl(value = "") {
   const raw = (/^https?:\/\//i.test(input) ? input : `http://${input}`).replace(/\/+$/g, "");
   const parsed = new URL(raw);
   if (!["http:", "https:"].includes(parsed.protocol)) {
-    throw new Error("AnimaDex URL は http または https で指定してください。");
+    throw new Error("AnimaDex API URL は http または https で指定してください。");
   }
   parsed.pathname = parsed.pathname.replace(/\/+$/g, "");
   parsed.search = "";
@@ -2430,13 +2431,43 @@ async function animaDexBaseUrlFromDb() {
 }
 
 function normalizeAnimaDexMode(value) {
-  return value === "artists" ? "artists" : "characters";
+  if (value === "artists") return "artists";
+  if (value === "copyrights" || value === "works") return "copyrights";
+  return "characters";
 }
 
 function normalizeAnimaDexSort(value, mode) {
   if (value === "az" || value === "random") return value;
   if (mode === "artists" && value === "score") return "score";
   return "count";
+}
+
+const animaDexFilterKeysByMode = {
+  characters: ["character", "copyright", "hair_color", "hair_length", "eye_color", "gender"],
+  artists: ["artist", "score", "category"],
+  copyrights: []
+};
+
+function normalizeAnimaDexFilterValue(value) {
+  const list = Array.isArray(value) ? value : [value];
+  return [...new Set(list
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .map((item) => item.slice(0, 120)))]
+    .slice(0, 24);
+}
+
+function normalizeAnimaDexFilters(body = {}, mode = "characters") {
+  const filters = {};
+  const source = body.filters && typeof body.filters === "object" ? body.filters : {};
+  for (const key of animaDexFilterKeysByMode[mode] || []) {
+    const value = normalizeAnimaDexFilterValue(source[key] ?? body[key]);
+    if (value.length) filters[key] = value;
+  }
+  if (mode === "characters" && (body.loras === true || body.loras === "1" || body.lorasOnly === true)) {
+    filters.loras = true;
+  }
+  return filters;
 }
 
 function animaDexMediaPathAllowed(pathname = "") {
@@ -2477,7 +2508,7 @@ function normalizeAnimaDexItem(item = {}, mode = "characters", baseUrl = "") {
     slug: String(item.slug || "").trim(),
     name: String(item.name || item.trigger || item.slug || "").trim(),
     copyright: String(item.copyright || "").trim(),
-    copyrightName: String(item.copyright_name || "").trim(),
+    copyrightName: String(item.copyright_name || item.copyrightName || "").trim(),
     trigger: String(item.trigger || item.name || "").trim(),
     tags,
     count: Number(item.count || 0) || 0,
@@ -2485,7 +2516,14 @@ function normalizeAnimaDexItem(item = {}, mode = "characters", baseUrl = "") {
     sourceUrl: String(item.url || "").trim(),
     thumbUrl: animaDexProxyUrl(item.thumb_url || item.thumbUrl, baseUrl),
     imgUrl: animaDexProxyUrl(item.img_url || item.imgUrl, baseUrl),
-    loras: Array.isArray(item.loras) ? item.loras : []
+    loras: Array.isArray(item.loras) ? item.loras : [],
+    rating: item.rating && typeof item.rating === "object"
+      ? {
+          up: Number(item.rating.up || 0) || 0,
+          down: Number(item.rating.down || 0) || 0
+        }
+      : null,
+    favoriteCount: Number(item.fav_count ?? item.favoriteCount ?? 0) || 0
   };
 }
 
@@ -2497,18 +2535,37 @@ function compactAnimaDexCache() {
   }
 }
 
-function animaDexSearchCacheKey({ baseUrl, mode, query, sort, page, seed }) {
-  return [baseUrl, mode, query, sort, page, seed || ""].join("\n");
+function animaDexFilterCacheKey(filters = {}) {
+  return JSON.stringify(Object.keys(filters).sort().map((key) => [key, filters[key]]));
 }
 
-async function fetchAnimaDexSearchPayload({ baseUrl, mode, sort, page, query, seed }) {
+function animaDexSearchCacheKey({ baseUrl, mode, query, sort, page, seed, filters }) {
+  return [baseUrl, mode, query, sort, page, seed || "", animaDexFilterCacheKey(filters)].join("\n");
+}
+
+function appendAnimaDexFilterParams(endpoint, filters = {}) {
+  for (const [key, value] of Object.entries(filters)) {
+    if (key === "loras" && value === true) {
+      endpoint.searchParams.set("loras", "1");
+      continue;
+    }
+    const values = Array.isArray(value) ? value : [value];
+    for (const item of values) {
+      const text = String(item || "").trim();
+      if (text) endpoint.searchParams.append(key, text);
+    }
+  }
+}
+
+async function fetchAnimaDexSearchPayload({ baseUrl, mode, sort, page, query, seed, filters }) {
   const endpoint = new URL(`/api/${mode}/search`, `${baseUrl}/`);
   endpoint.searchParams.set("q", query);
   endpoint.searchParams.set("sort", sort);
   endpoint.searchParams.set("page", String(page));
+  appendAnimaDexFilterParams(endpoint, filters);
   if (sort === "random" && seed) endpoint.searchParams.set("seed", String(seed).slice(0, 24));
   const cacheable = sort !== "random" || Boolean(seed);
-  const cacheKey = animaDexSearchCacheKey({ baseUrl, mode, query, sort, page, seed });
+  const cacheKey = animaDexSearchCacheKey({ baseUrl, mode, query, sort, page, seed, filters });
   const cached = cacheable ? animaDexSearchCache.get(cacheKey) : null;
   if (cached && Date.now() - cached.createdAt < animaDexSearchCacheTtlMs) {
     return { payload: cached.payload, status: 200, fromCache: true, endpoint };
@@ -2528,6 +2585,51 @@ async function fetchAnimaDexSearchPayload({ baseUrl, mode, sort, page, query, se
   return { payload, status: response.status, fromCache: false, endpoint };
 }
 
+async function fetchAnimaDexFacetsPayload({ baseUrl, mode }) {
+  const endpoint = new URL(`/api/${mode}/facets`, `${baseUrl}/`);
+  const cacheKey = ["facets", baseUrl, mode].join("\n");
+  const cached = animaDexSearchCache.get(cacheKey);
+  if (cached && Date.now() - cached.createdAt < animaDexSearchCacheTtlMs) {
+    return { payload: cached.payload, status: 200, fromCache: true, endpoint };
+  }
+  const response = await fetch(endpoint, {
+    headers: {
+      accept: "application/json",
+      "user-agent": "CreativeFileStudio/0.1 AnimaDex integration"
+    },
+    signal: AbortSignal.timeout(20000)
+  });
+  const payload = await comfyJson(response);
+  if (response.ok) {
+    animaDexSearchCache.set(cacheKey, { createdAt: Date.now(), payload });
+    compactAnimaDexCache();
+  }
+  return { payload, status: response.status, fromCache: false, endpoint };
+}
+
+function normalizeAnimaDexFacetValue(value = {}) {
+  return {
+    value: String(value.value || "").trim(),
+    label: String(value.label || value.value || "").trim(),
+    count: Number(value.count || 0) || 0
+  };
+}
+
+function normalizeAnimaDexFacets(payload = {}) {
+  const facets = {};
+  const source = payload.facets && typeof payload.facets === "object" ? payload.facets : {};
+  for (const [key, facet] of Object.entries(source)) {
+    facets[key] = {
+      label: String(facet?.label || key).trim(),
+      total: Number(facet?.total || 0) || 0,
+      values: Array.isArray(facet?.values)
+        ? facet.values.map(normalizeAnimaDexFacetValue).filter((item) => item.value)
+        : []
+    };
+  }
+  return facets;
+}
+
 function readableAnimaDexFetchError(error, baseUrl = "") {
   if (error?.name === "TimeoutError") {
     return `AnimaDex の応答が20秒以内に返りませんでした。設定URL: ${baseUrl}`;
@@ -2535,12 +2637,12 @@ function readableAnimaDexFetchError(error, baseUrl = "") {
   const code = String(error?.cause?.code || error?.code || "").trim();
   if (code === "ECONNREFUSED" || /fetch failed/i.test(String(error?.message || ""))) {
     if (baseUrl === normalizeAnimaDexBaseUrl(animaDexOfficialBaseUrl)) {
-      return `AnimaDex公式Web版に接続できません。設定URL: ${baseUrl}`;
+      return `AnimaDex公式APIに接続できません。設定URL: ${baseUrl}`;
     }
-    return `AnimaDexに接続できません。AnimaDex本体が起動しているか、設定画面のAnimaDex URL（現在: ${baseUrl}）を確認してください。`;
+    return `AnimaDexに接続できません。AnimaDex本体が起動しているか、設定画面のAnimaDex API URL（現在: ${baseUrl}）を確認してください。`;
   }
   if (code === "ENOTFOUND" || code === "EAI_AGAIN") {
-    return `AnimaDex URLのホスト名を解決できません。設定URL: ${baseUrl}`;
+    return `AnimaDex API URLのホスト名を解決できません。設定URL: ${baseUrl}`;
   }
   return `AnimaDexへの接続に失敗しました。設定URL: ${baseUrl} / ${error.message}`;
 }
@@ -2557,6 +2659,7 @@ async function handleAnimaDexSearch(req, res) {
   const sort = normalizeAnimaDexSort(body.sort, mode);
   const page = Math.max(1, Math.min(999, Number.parseInt(body.page || "1", 10) || 1));
   const query = String(body.q || body.query || "").trim().slice(0, 240);
+  const filters = normalizeAnimaDexFilters(body, mode);
   const officialBaseUrl = normalizeAnimaDexBaseUrl(animaDexOfficialBaseUrl);
   const targets = baseUrl === officialBaseUrl ? [baseUrl] : [baseUrl, officialBaseUrl];
   const failures = [];
@@ -2568,7 +2671,8 @@ async function handleAnimaDexSearch(req, res) {
         sort,
         page,
         query,
-        seed: body.seed
+        seed: body.seed,
+        filters
       });
       if (status < 200 || status >= 300) {
         const message = readableProviderError(payload) || `AnimaDex が ${status} を返しました。`;
@@ -2592,6 +2696,7 @@ async function handleAnimaDexSearch(req, res) {
         mode,
         q: query,
         sort,
+        filters,
         page: Number(payload.page || page) || page,
         pageSize: Number(payload.page_size || payload.pageSize || results.length) || results.length,
         total: Number(payload.total || results.length) || 0,
@@ -2605,6 +2710,51 @@ async function handleAnimaDexSearch(req, res) {
     }
   }
   sendJson(res, 502, { error: `AnimaDex検索に失敗しました: ${failures.join(" / ")}` });
+}
+
+async function handleAnimaDexFacets(req, res) {
+  const body = await readJson(req, 128 * 1024).catch(() => ({}));
+  let baseUrl;
+  try {
+    baseUrl = await animaDexBaseUrlFromDb();
+  } catch (error) {
+    return sendJson(res, 400, { error: error.message });
+  }
+  const mode = normalizeAnimaDexMode(body.mode);
+  const officialBaseUrl = normalizeAnimaDexBaseUrl(animaDexOfficialBaseUrl);
+  const targets = baseUrl === officialBaseUrl ? [baseUrl] : [baseUrl, officialBaseUrl];
+  const failures = [];
+  for (const targetBaseUrl of targets) {
+    try {
+      const { payload, status, fromCache } = await fetchAnimaDexFacetsPayload({ baseUrl: targetBaseUrl, mode });
+      if (status < 200 || status >= 300) {
+        const message = readableProviderError(payload) || `AnimaDex が ${status} を返しました。`;
+        failures.push(`${targetBaseUrl}: ${message}`);
+        if (targetBaseUrl !== targets.at(-1)) continue;
+        return sendJson(res, status, {
+          error: `AnimaDex検索条件の取得に失敗しました: ${failures.join(" / ")}`,
+          providerPayload: payload,
+          fallbackErrors: failures
+        });
+      }
+      return sendJson(res, 200, {
+        ok: true,
+        source: "animadex",
+        baseUrl: targetBaseUrl,
+        preferredBaseUrl: baseUrl,
+        fallback: targetBaseUrl !== baseUrl,
+        fromCache,
+        mode,
+        total: Number(payload.total || 0) || 0,
+        facets: normalizeAnimaDexFacets(payload),
+        fallbackErrors: targetBaseUrl !== baseUrl ? failures : [],
+        updatedAt: new Date().toISOString()
+      });
+    } catch (error) {
+      failures.push(`${targetBaseUrl}: ${readableAnimaDexFetchError(error, targetBaseUrl)}`);
+    }
+  }
+  sendJson(res, 502, { error: `AnimaDex検索条件の取得に失敗しました: ${failures.join(" / ")}` });
 }
 
 async function handleAnimaDexMedia(req, res, url) {
@@ -6367,6 +6517,10 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/animadex/search") {
       return await handleAnimaDexSearch(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/animadex/facets") {
+      return await handleAnimaDexFacets(req, res);
     }
 
     if (req.method === "GET" && url.pathname === "/api/animadex/media") {

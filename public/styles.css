@@ -770,6 +770,43 @@ textarea {
   width: 140px;
 }
 
+.animadex-filters {
+  display: grid;
+  gap: 8px;
+}
+
+.animadex-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+  align-items: end;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fafbfc;
+}
+
+.animadex-filter-grid label {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.animadex-filter-grid select {
+  width: 100%;
+}
+
+.animadex-checkbox-filter {
+  min-height: 40px;
+  align-content: center;
+}
+
+.animadex-checkbox-filter input {
+  width: auto;
+  margin-right: 6px;
+}
+
 .animadex-result-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -837,6 +874,10 @@ textarea {
   align-items: start;
 }
 
+.animadex-card-title-row.no-favorite {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .animadex-card-title-text {
   min-width: 0;
 }
@@ -873,6 +914,22 @@ textarea {
   white-space: normal;
   overflow: visible;
   text-overflow: clip;
+}
+
+.animadex-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.animadex-badges span {
+  border: 1px solid rgba(183, 128, 23, 0.22);
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: rgba(183, 128, 23, 0.08);
+  color: #5f430a;
+  font-size: 12px;
+  line-height: 1.2;
 }
 
 .animadex-tags {
@@ -2812,6 +2869,7 @@ textarea {
   .comfy-reference-row,
 	  .image-compare-controls,
   .model-library-control-grid,
+  .animadex-filter-grid,
   .model-detail-list div,
 	  .image-edit-preview-grid,
   .image-edit-range-number,
