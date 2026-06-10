@@ -1,7 +1,7 @@
 # Creative File Studio
 
 ローカル環境で動く、創作支援向けのファイル管理アプリです。作品、キャラ設定、取り込み画像、世界観資料、生成プロンプト、画像生成、画像編集、音声、動画をまとめて扱えます。
-画像生成はComfyUI互換API、Stable Diffusion WebUI Forge、Forge Neo、Draw Thingsを選択でき、ComfyUIではローカルGPUとクラウドGPUを切り替え、Forge / Forge Neo / Draw Thingsではtxt2img APIに送信できます。モデルライブラリではCheckpoint / LoRAを参考画像つきで検索し、保存済み・未保存を見ながら選択、ダウンロード、生成設定への反映ができます。画像編集は簡易ローカル処理、アスペクト比変換、手動フリーモード、ローカルAI rembg、ローカルAI backgroundremover、remove.bgクラウドAPIを切り替え、動画背景除去と動画GIF化も扱えます。動画生成は公式Seedance APIまたはOpenRouterの動画モデル、音声生成はOpenRouter TTS、ElevenLabs、Voicebox、ローカル VoxCPM、ローカル Irodori-TTS を切り替えて使えます。音声編集ではmp3/wavの複数分割、不要範囲カット、音量変更、ピッチ変更ができます。
+画像生成はComfyUI互換API、Stable Diffusion WebUI Forge、Forge Neo、Draw Thingsを選択でき、ComfyUIではローカルGPUとクラウドGPUを切り替え、Forge / Forge Neo / Draw Thingsではtxt2img APIに送信できます。モデルライブラリではCheckpoint / LoRAを参考画像つきで検索し、保存済み・未保存を見ながら選択、ダウンロード、生成設定への反映ができます。画像編集は簡易ローカル処理、アスペクト比変換、手動フリーモード、ローカルAI rembg、ローカルAI backgroundremover、remove.bgクラウドAPIを切り替え、動画背景除去と動画GIF化も扱えます。動画生成は公式Seedance APIまたはOpenRouterの動画モデル、音声生成はOpenRouter TTS、ElevenLabs、Voicebox、ローカル VoxCPM、ローカル MisoTTS、ローカル Irodori-TTS を切り替えて使えます。音声編集ではmp3/wavの複数分割、不要範囲カット、音量変更、ピッチ変更ができます。
 
 ## 初回セットアップ
 
@@ -154,6 +154,8 @@ ZIPに含めるもの:
 - `scripts/backgroundremover_sitecustomize/`
 - `scripts/setup-voxcpm.sh`
 - `scripts/voxcpm-run.py`
+- `scripts/setup-misotts.sh`
+- `scripts/misotts-run.py`
 - `public/`
 - `data/.gitkeep`
 
@@ -274,11 +276,12 @@ ZIPに含めないもの:
 ### 音声生成
 
 - 作品情報、世界観、キャラ情報を読んだ音声生成エージェント
-- OpenRouter TTS、ElevenLabs、Voicebox、ローカル VoxCPM、ローカル Irodori-TTS を切り替え
+- OpenRouter TTS、ElevenLabs、Voicebox、ローカル VoxCPM、ローカル MisoTTS、ローカル Irodori-TTS を切り替え
 - OpenRouterでは `google/gemini-3.1-flash-tts-preview` と `x-ai/grok-voice-tts-1.0` を切り替え
 - ElevenLabsではVoice ID、モデル、出力形式、Stability、Similarity、Style、Speed、Speaker Boost、言語コード、Seedを指定
 - VoiceboxではローカルAPI URL、プロファイル、言語、Model size、Seed、演技指示を指定
 - VoxCPMでは音色デザイン、参照音声クローン、高精度クローン、声の指定、参照音声、CFG、Steps、デバイスを指定
+- MisoTTSでは通常生成、Prompted生成、Speaker、参照音声、参照音声の英語文字起こし、最大音声長、Temperature、Top-k、デバイス、Dtype、モデルソースを指定
 - Irodori-TTSではVoiceDesign/Reference、Steps、候補数、Seed、CFG、デバイス、精度、参照音声を指定
 - 生成音声をキャラ情報に紐づけ、作品ページのキャラカードから確認
 - キャラに紐づいた生成音声を、動画生成の参照素材「音声」として選択
@@ -307,7 +310,7 @@ ZIPに含めないもの:
 - 画像編集画面からローカルAI rembg / backgroundremoverの状態確認とセットアップ
 - 動画生成プロバイダーを公式 / OpenRouter / Replicateから選択
 - VoiceboxのAPI URL、既定プロファイル、言語、Model sizeを設定
-- Irodori-TTSの既存フォルダ指定、または `scripts/setup-irodori.sh` による取得
+- MisoTTS / Irodori-TTSの既存フォルダ指定、または `scripts/setup-misotts.sh` / `scripts/setup-irodori.sh` による取得
 
 ## 保存場所
 
@@ -349,7 +352,7 @@ ZIPに含めないもの:
 - 世界観読み込みモデル: 設定シート画像、Markdown/Textファイル、直接入力テキストの読解に使います。vision と長文JSONに強いモデルが向いています。
 - 画像生成エージェントモデル: 画像生成画面のチャットエージェントに使います。
 - 動画エージェントモデル: 動画生成画面のチャットエージェントに使います。参照画像を読むため、vision 対応モデルが向いています。
-- 音声エージェントモデル: 音声生成画面のチャットエージェントに使います。実際の音声生成は、音声生成画面で選んだ OpenRouter TTS、ElevenLabs、Voicebox、VoxCPM、または Irodori-TTS で行います。
+- 音声エージェントモデル: 音声生成画面のチャットエージェントに使います。実際の音声生成は、音声生成画面で選んだ OpenRouter TTS、ElevenLabs、Voicebox、VoxCPM、MisoTTS、または Irodori-TTS で行います。
 
 モデル一覧は設定画面の「モデル一覧を再取得」で OpenRouter から読み込みます。
 
@@ -409,6 +412,7 @@ ComfyUI、Forge、Forge Neo、Draw Thingsで直接使いたい場合は、モデ
 - ElevenLabs: 指定した Voice ID とモデルでElevenLabs APIを呼び出し、音声ファイルを保存します。
 - Voicebox: この端末またはリモートで起動したVoicebox APIへ接続し、保存済みプロファイルの声で音声ファイルを保存します。
 - VoxCPM: この端末上の専用Python環境で `voxcpm` を実行し、WAVを保存します。
+- MisoTTS: この端末上のMisoTTS 8Bを実行し、英語音声のWAVを保存します。
 - Irodori-TTS: この端末上の Irodori-TTS を `uv run python infer.py` で実行し、WAVを保存します。
 
 OpenRouter選択時:
@@ -451,6 +455,20 @@ VoxCPM選択時:
 - CFG、Steps、モデルID、デバイス、テキスト正規化、参照音声の降噪、`torch.compile` の無効化を指定できます。MacのMPSでメモリ不足になる場合はデバイスを `cpu` に変更してください。
 - 設定画面の「VoxCPM連携」で専用Python環境を確認できます。
 - 未導入環境では「VoxCPMを取得」を押すと `scripts/setup-voxcpm.sh` が `vendor/VoxCPM/.venv` を作成し、`voxcpm` と `soundfile` をインストールします。モデル本体は初回生成時に `vendor/VoxCPM/hf-cache` へ保存されます。
+
+MisoTTS選択時:
+
+- 出力形式: WAV
+- 現在のMisoTTS 8Bは英語専用です。日本語本文は意図どおり読めない場合があります。
+- モード: 通常生成は本文だけで作ります。Prompted生成は参照音声と、その参照音声で実際に話している英語文字起こしをcontextとして使います。
+- Speaker / Prompt Speaker: 生成本文側と参照音声側のspeaker IDを指定します。
+- 参照音声: Prompted生成で使います。
+- 参照音声の英語文字起こし: Prompted生成で、参照音声が実際に話している内容を英語で入力します。生成したい本文ではありません。
+- 最大音声長、Temperature、Top-k、モデルソース、デバイス、Dtypeを指定できます。上流のサンプルと同じくMPSは使わず、`auto` はCUDAがあればCUDA、なければCPUを選びます。
+- 設定画面の「MisoTTS連携」で既存のMisoTTSフォルダを指定できます。
+- 未導入環境では「MisoTTSを取得」を押すと `scripts/setup-misotts.sh` が `vendor/MisoTTS` にGitHubから取得し、`uv sync --python 3.10` を実行します。モデル本体は初回生成時に `vendor/MisoTTS/hf-cache` へ保存されます。
+- MisoTTSの上流実装では、生成音声にAI生成識別用のウォーターマークが入ります。
+- MisoTTS 8Bは大きなモデルです。実用速度と安定性のためCUDA GPUと十分なVRAMを推奨します。
 
 Irodori-TTS選択時:
 

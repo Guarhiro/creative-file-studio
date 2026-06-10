@@ -1659,7 +1659,7 @@ textarea {
 
 .model-card-actions {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(46px, auto);
+  grid-template-columns: repeat(auto-fit, minmax(58px, 1fr));
   gap: 8px;
   padding: 0 12px 12px;
 }

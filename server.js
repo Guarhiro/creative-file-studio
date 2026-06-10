@@ -22,6 +22,8 @@ const seedanceGuidePath = path.join(__dirname, "Seedance2.0_Prompt_Guide_v2.md")
 const irodoriSetupScriptPath = path.join(__dirname, "scripts", "setup-irodori.sh");
 const voxcpmSetupScriptPath = path.join(__dirname, "scripts", "setup-voxcpm.sh");
 const voxcpmRunScriptPath = path.join(__dirname, "scripts", "voxcpm-run.py");
+const misottsSetupScriptPath = path.join(__dirname, "scripts", "setup-misotts.sh");
+const misottsRunScriptPath = path.join(__dirname, "scripts", "misotts-run.py");
 const rembgSetupScriptPath = path.join(__dirname, "scripts", "setup-rembg.sh");
 const rembgRemoveScriptPath = path.join(__dirname, "scripts", "rembg-remove.py");
 const backgroundRemoverSetupScriptPath = path.join(__dirname, "scripts", "setup-backgroundremover.sh");
@@ -29,6 +31,7 @@ const backgroundRemoverRunScriptPath = path.join(__dirname, "scripts", "backgrou
 const backgroundRemoverSitecustomizeDir = path.join(__dirname, "scripts", "backgroundremover_sitecustomize");
 const irodoriVendorDir = path.join(__dirname, "vendor", "Irodori-TTS");
 const voxcpmVendorDir = path.join(__dirname, "vendor", "VoxCPM");
+const misottsVendorDir = path.join(__dirname, "vendor", "MisoTTS");
 const rembgVenvDir = path.join(__dirname, "vendor", "rembg-venv");
 const rembgModelsDir = path.join(dataDir, "rembg-models");
 const backgroundRemoverVenvDir = path.join(__dirname, "vendor", "backgroundremover-venv");
@@ -121,6 +124,19 @@ const emptyDb = {
       inferenceTimesteps: 10,
       normalize: true,
       denoise: false,
+      promptText: ""
+    },
+    misottsAppDir: "vendor/MisoTTS",
+    misottsDefaults: {
+      mode: "Text",
+      speaker: 0,
+      promptSpeaker: 0,
+      modelSource: "MisoLabs/MisoTTS",
+      device: "auto",
+      dtype: "bfloat16",
+      maxAudioLengthMs: 10000,
+      temperature: 0.9,
+      topk: 50,
       promptText: ""
     },
     seedanceBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3",
@@ -331,6 +347,8 @@ const lanAllowedApiRoutes = new Set([
   "POST /api/irodori/speech",
   "POST /api/voxcpm/status",
   "POST /api/voxcpm/speech",
+  "POST /api/misotts/status",
+  "POST /api/misotts/speech",
   "GET /api/exchange-rate/usd-jpy",
   "GET /api/seedance/guide",
   "POST /api/seedance/create",
@@ -711,6 +729,66 @@ async function resolveVoxcpmWorkspace(configuredPath = "") {
     setupScript: voxcpmSetupScriptPath,
     suggestedPath: path.relative(__dirname, voxcpmVendorDir) || voxcpmVendorDir,
     runnerScript: voxcpmRunScriptPath
+  };
+}
+
+function misottsPythonPath(appDir) {
+  const venvDir = path.join(appDir, ".venv");
+  return process.platform === "win32"
+    ? path.join(venvDir, "Scripts", "python.exe")
+    : path.join(venvDir, "bin", "python");
+}
+
+async function inspectMisoTtsPython(pythonPath, appDir) {
+  if (!await isFile(pythonPath)) return null;
+  const result = await runProcess([
+    pythonPath,
+    "-c",
+    "import importlib.metadata as m; import generator; print(m.version('miso-tts'))"
+  ], { cwd: appDir, timeoutMs: 30000 });
+  return {
+    ok: result.ok,
+    version: result.ok ? result.stdout.trim() : "",
+    result
+  };
+}
+
+async function resolveMisoTtsWorkspace(configuredPath = "") {
+  const candidates = [
+    configuredPath,
+    process.env.MISOTTS_DIR,
+    process.env.MISO_TTS_DIR,
+    misottsVendorDir
+  ]
+    .map(expandLocalPath)
+    .filter(Boolean);
+  const seen = new Set();
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    const generatorPath = path.join(candidate, "generator.py");
+    const pythonPath = misottsPythonPath(candidate);
+    const inspection = await inspectMisoTtsPython(pythonPath, candidate);
+    if (await isFile(generatorPath) && inspection?.ok) {
+      return {
+        found: true,
+        configuredPath: candidate,
+        appDir: candidate,
+        pythonPath,
+        packageVersion: inspection.version,
+        cacheDir: path.join(candidate, "hf-cache"),
+        hfHomeDir: path.join(candidate, "hf-home"),
+        runnerScript: misottsRunScriptPath
+      };
+    }
+  }
+  return {
+    found: false,
+    configuredPath: expandLocalPath(configuredPath),
+    candidates: [...seen],
+    setupScript: misottsSetupScriptPath,
+    suggestedPath: path.relative(__dirname, misottsVendorDir) || misottsVendorDir,
+    runnerScript: misottsRunScriptPath
   };
 }
 
@@ -4014,6 +4092,198 @@ async function handleVoxcpmSpeech(req, res) {
   });
 }
 
+function misottsMode(value) {
+  return String(value || "").trim() === "Prompted" ? "Prompted" : "Text";
+}
+
+function misottsDevice(value) {
+  const clean = String(value || "auto").trim().toLowerCase();
+  return ["auto", "cpu", "cuda"].includes(clean) ? clean : "auto";
+}
+
+function misottsDtype(value) {
+  const clean = String(value || "bfloat16").trim().toLowerCase();
+  return ["bfloat16", "float16", "float32"].includes(clean) ? clean : "bfloat16";
+}
+
+function misottsFailureMessage(result = {}) {
+  const text = `${result.stderr || ""}\n${result.stdout || ""}\n${result.error || ""}`;
+  if (/CUDA is not available/i.test(text)) {
+    return "MisoTTS 音声生成に失敗しました: CUDA GPU が見つかりません。デバイスを cpu または auto に変更してください。";
+  }
+  if (/out of memory|CUDA out of memory/i.test(text)) {
+    return "MisoTTS 音声生成に失敗しました: GPU/メモリが不足しています。最大音声長を短くするか、cpu で再試行してください。";
+  }
+  if (/No space left on device/i.test(text)) {
+    return "MisoTTS 音声生成に失敗しました: ディスク空き容量が不足しています。vendor/MisoTTS/hf-cache と空き容量を確認してください。";
+  }
+  if (/401|403|gated|token|authentication|Unauthorized/i.test(text)) {
+    return "MisoTTS 音声生成に失敗しました: Hugging Face のモデル取得に認証または利用許諾が必要な可能性があります。HF_TOKEN を設定し、モデルページの利用条件を確認してください。";
+  }
+  if (/Connection|Read timed out|NameResolution|Temporary failure|Failed to establish|timed out/i.test(text)) {
+    return "MisoTTS 音声生成に失敗しました: モデル取得中のネットワーク接続に失敗しました。通信が安定した状態で再試行してください。";
+  }
+  return `MisoTTS 音声生成に失敗しました: ${result.error || result.stderr || "unknown error"}`;
+}
+
+async function handleMisoTtsStatus(req, res) {
+  const { appDir } = await readJson(req, 256 * 1024);
+  const workspace = await resolveMisoTtsWorkspace(appDir);
+  const uv = await findUvCommand();
+  const pythonCandidates = [];
+  for (const command of [process.env.MISOTTS_PYTHON, "python3.10", "python3.11", "python3.12", "python3"].filter(Boolean)) {
+    const result = await runProcess([command, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"], { timeoutMs: 10000 });
+    if (result.ok) pythonCandidates.push({ command, version: result.stdout.trim() });
+  }
+  return sendJson(res, 200, {
+    ...workspace,
+    uvFound: Boolean(uv),
+    uvCommand: uv ? commandLabel(uv.command) : "",
+    uvVersion: uv?.version || "",
+    pythonCandidates,
+    setupScript: misottsSetupScriptPath,
+    suggestedPath: path.relative(__dirname, misottsVendorDir) || misottsVendorDir
+  });
+}
+
+async function handleMisoTtsSetup(req, res) {
+  const exists = await isFile(misottsSetupScriptPath);
+  if (!exists) return sendJson(res, 404, { error: "MisoTTS セットアップスクリプトが見つかりません。" });
+  const result = await runProcess(["bash", misottsSetupScriptPath], { cwd: __dirname, timeoutMs: 60 * 60 * 1000 });
+  const workspace = await resolveMisoTtsWorkspace(misottsVendorDir);
+  return sendJson(res, result.ok ? 200 : 500, {
+    ok: result.ok,
+    error: result.ok ? "" : `MisoTTS セットアップに失敗しました: ${result.error || result.stderr || "unknown error"}`,
+    workspace,
+    result
+  });
+}
+
+async function handleMisoTtsSpeech(req, res) {
+  const body = await readJson(req, 4 * 1024 * 1024);
+  const cleanInput = String(body.input || "").trim();
+  const title = String(body.title || "misotts-audio").trim() || "misotts-audio";
+  if (!cleanInput) return sendJson(res, 400, { error: "読み上げテキストが必要です。" });
+
+  const workspace = await resolveMisoTtsWorkspace(body.appDir);
+  if (!workspace.found) {
+    return sendJson(res, 400, {
+      error: "MisoTTS が見つかりません。設定画面でパスを指定するか、MisoTTS をセットアップしてください。",
+      workspace
+    });
+  }
+  if (!await isFile(misottsRunScriptPath)) {
+    return sendJson(res, 500, { error: "MisoTTS 実行スクリプトが見つかりません。" });
+  }
+
+  const mode = misottsMode(body.mode);
+  const promptText = String(body.promptText || "").trim();
+  let referencePath = "";
+  if (body.referenceAudioUrl) {
+    try {
+      referencePath = localMediaPathFromUrl(body.referenceAudioUrl);
+      await fs.access(referencePath);
+    } catch (error) {
+      return sendJson(res, 400, { error: `参照音声を読み込めません: ${error.message}` });
+    }
+  }
+  if (mode === "Prompted" && (!referencePath || !promptText)) {
+    return sendJson(res, 400, { error: "MisoTTSのPrompted生成には参照音声と、その参照音声の英語文字起こしが必要です。" });
+  }
+
+  const speaker = boundedNumber(body.speaker, 0, 0, 999, true);
+  const promptSpeaker = boundedNumber(body.promptSpeaker, 0, 0, 999, true);
+  const maxAudioLengthMs = boundedNumber(body.maxAudioLengthMs, 10000, 1000, 90000, true);
+  const temperature = boundedNumber(body.temperature, 0.9, 0.1, 2);
+  const topk = boundedNumber(body.topk, 50, 1, 200, true);
+  const modelSource = String(body.modelSource || "MisoLabs/MisoTTS").trim() || "MisoLabs/MisoTTS";
+  const device = misottsDevice(body.device);
+  const dtype = misottsDtype(body.dtype);
+  const targetDir = await ensureAudioTargetDir(body);
+  const outputPath = path.join(targetDir, safeUploadName(title, ".wav"));
+  await fs.mkdir(workspace.cacheDir, { recursive: true });
+  await fs.mkdir(workspace.hfHomeDir, { recursive: true });
+
+  const args = [
+    workspace.pythonPath,
+    misottsRunScriptPath,
+    "--app-dir",
+    workspace.appDir,
+    "--model-source",
+    modelSource,
+    "--text",
+    cleanInput,
+    "--output-wav",
+    outputPath,
+    "--mode",
+    mode,
+    "--speaker",
+    String(speaker),
+    "--prompt-speaker",
+    String(promptSpeaker),
+    "--max-audio-length-ms",
+    String(maxAudioLengthMs),
+    "--temperature",
+    String(temperature),
+    "--topk",
+    String(topk),
+    "--device",
+    device,
+    "--dtype",
+    dtype
+  ];
+  if (referencePath) args.push("--prompt-wav", referencePath);
+  if (mode === "Prompted") args.push("--prompt-text", promptText);
+
+  const result = await runProcess(args, {
+    cwd: workspace.appDir,
+    timeoutMs: 60 * 60 * 1000,
+    env: {
+      HF_HOME: workspace.hfHomeDir,
+      HF_HUB_CACHE: workspace.cacheDir,
+      PYTHONUNBUFFERED: "1",
+      NO_TORCH_COMPILE: "1"
+    }
+  });
+  if (!result.ok) {
+    return sendJson(res, 500, {
+      error: misottsFailureMessage(result),
+      result
+    });
+  }
+  if (!await isFile(outputPath)) {
+    return sendJson(res, 500, {
+      error: "MisoTTS は完了しましたが、出力 WAV が見つかりませんでした。",
+      result
+    });
+  }
+
+  const stat = await fs.stat(outputPath);
+  sendJson(res, 200, {
+    url: audioUrlFor(outputPath),
+    path: outputPath,
+    mimeType: "audio/wav",
+    format: "wav",
+    size: stat.size,
+    request: {
+      provider: "misotts",
+      mode,
+      speaker,
+      promptSpeaker,
+      promptText: mode === "Prompted" ? promptText.slice(0, 1200) : "",
+      modelSource,
+      device,
+      dtype,
+      maxAudioLengthMs,
+      temperature,
+      topk,
+      referenceAudio: Boolean(referencePath),
+      input: cleanInput.length > 1200 ? `${cleanInput.slice(0, 1200)}...` : cleanInput
+    },
+    result
+  });
+}
+
 function normalizeVideoDownloadUrl(videoUrl, baseUrl) {
   const raw = String(videoUrl || "").trim();
   if (!raw) return "";
@@ -4804,6 +5074,70 @@ async function handleModelLibraryDownloadStatus(req, res) {
   const job = modelDownloadJobs.get(jobId);
   if (!job) return sendJson(res, 404, { error: "ダウンロードジョブが見つかりません。" });
   sendJson(res, 200, { job: modelDownloadSnapshot(job) });
+}
+
+async function resolveModelLibraryUninstallTarget(body = {}) {
+  const provider = modelLibraryProviderFromValue(body.provider);
+  if (!provider) throw new Error("保存先プラットフォームを選択してください。");
+  const type = modelLibraryTypeFromValue(body.type) || "Checkpoint";
+  const kind = modelLibraryKindFromType(type);
+  const rootDir = await resolveModelLibraryDir(kind, "", provider);
+  const relativePath = safeRelativePath(body.relativePath || body.fileName || body.name);
+  if (!relativePath) throw new Error("削除対象のモデルファイルが不明です。ローカル一覧を再読み込みしてください。");
+
+  const targetPath = path.resolve(rootDir, relativePath);
+  if (!isInsideDir(targetPath, rootDir) || path.resolve(targetPath) === path.resolve(rootDir)) {
+    throw new Error("保存先フォルダ外のファイルは削除できません。");
+  }
+  const ext = path.extname(targetPath).toLowerCase();
+  if (!modelLibraryExtensions.has(ext)) {
+    throw new Error("対応していないモデルファイル形式です。");
+  }
+
+  let stat;
+  try {
+    stat = await fs.stat(targetPath);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      const missing = new Error("モデルファイルが見つかりません。ローカル一覧を再読み込みしてください。");
+      missing.statusCode = 404;
+      throw missing;
+    }
+    throw error;
+  }
+  if (!stat.isFile()) throw new Error("削除対象がファイルではありません。");
+
+  return {
+    provider,
+    type,
+    rootDir,
+    path: targetPath,
+    relativePath: path.relative(rootDir, targetPath),
+    fileName: path.basename(targetPath),
+    size: stat.size
+  };
+}
+
+async function handleModelLibraryUninstall(req, res) {
+  const body = await readJson(req, 1024 * 1024).catch(() => ({}));
+  try {
+    const target = await resolveModelLibraryUninstallTarget(body);
+    const trashed = await moveFileToSystemTrash(target.path);
+    sendJson(res, 200, {
+      ok: true,
+      uninstalled: true,
+      provider: target.provider,
+      type: target.type,
+      fileName: target.fileName,
+      relativePath: target.relativePath,
+      path: target.path,
+      size: target.size,
+      ...trashed,
+      updatedAt: new Date().toISOString()
+    });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message });
+  }
 }
 
 function normalizeComfyBaseUrl(value) {
@@ -6511,6 +6845,18 @@ const server = http.createServer(async (req, res) => {
       return await handleVoxcpmSpeech(req, res);
     }
 
+    if (req.method === "POST" && url.pathname === "/api/misotts/status") {
+      return await handleMisoTtsStatus(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/misotts/setup") {
+      return await handleMisoTtsSetup(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/misotts/speech") {
+      return await handleMisoTtsSpeech(req, res);
+    }
+
     if (req.method === "GET" && url.pathname === "/api/exchange-rate/usd-jpy") {
       return await handleUsdJpyRate(req, res);
     }
@@ -6545,6 +6891,10 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/model-library/download-status") {
       return await handleModelLibraryDownloadStatus(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/model-library/uninstall") {
+      return await handleModelLibraryUninstall(req, res);
     }
 
     if (req.method === "POST" && url.pathname === "/api/comfy/check") {

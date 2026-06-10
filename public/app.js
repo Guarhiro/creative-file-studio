@@ -124,6 +124,7 @@ const state = {
   audioProvider: "openrouter",
   audioIrodoriReference: null,
   audioVoxcpmReference: null,
+  audioMisoTtsReference: null,
   audioChatMessages: [
     { role: "assistant", content: "音声生成エージェントです。台詞、ナレーション、声の雰囲気、キャラ指定があれば教えてください。" }
   ],
@@ -158,6 +159,8 @@ const state = {
   irodoriStatusMessage: "",
   voxcpmStatus: "idle",
   voxcpmStatusMessage: "",
+  misottsStatus: "idle",
+  misottsStatusMessage: "",
   seedanceGuide: "",
   worldSheetFiles: [],
   worldTextDraft: "",
@@ -479,7 +482,7 @@ const screenHelpContent = {
   },
   audio: {
     title: "音声生成のヘルプ",
-    lead: "台詞やナレーションを、OpenRouter TTS、ElevenLabs、Voicebox、VoxCPM、Irodori-TTSで生成する画面です。",
+    lead: "台詞やナレーションを、OpenRouter TTS、ElevenLabs、Voicebox、VoxCPM、MisoTTS、Irodori-TTSで生成する画面です。",
     sections: [
       {
         title: "使い方",
@@ -500,6 +503,7 @@ const screenHelpContent = {
           { term: "演技指示", description: "声色、感情、間、距離感など、読み方に関する指示です。" },
           { term: "Stability / Similarity / Style / Speed", description: "ElevenLabsの安定度、声の近さ、表現量、速度です。" },
           { term: "VoxCPMのモード", description: "音色デザインは声の指定だけで作ります。参照音声クローンは参照音声の声質や話し方に近づけます。高精度クローンは参照音声とその文字起こしをペアで使い、より厳密に声を合わせます。" },
+          { term: "MisoTTS", description: "英語専用の8BローカルTTSです。通常生成と、参照音声＋英語文字起こしで声を引き継ぐPrompted生成を使えます。" },
           { term: "テキスト正規化", description: "数字、記号、英字などを読み上げやすい形へ整える処理です。固有名詞や記号の読みを厳密に手書きしたい時はOFFも試せます。" },
           { term: "参照音声を降噪", description: "参照音声に入った環境音やノイズを抑えてから声を参照します。元音声がきれいな場合はOFFのままで問題ありません。" },
           { term: "torch.compileを無効化", description: "PyTorchのコンパイル最適化を使わずに動かします。初回の待ち時間やMac/MPSでの不安定さを避けたい場合はONが安全です。" },
@@ -646,6 +650,7 @@ const screenHelpContent = {
           { term: "ElevenLabs", description: "APIキー、Voice ID、モデル、出力形式、声質パラメータを管理します。" },
           { term: "Voicebox", description: "ローカルVoicebox APIのURLと既定プロファイルを管理します。" },
           { term: "VoxCPM連携", description: "ローカルVoxCPMの専用Python環境、モデルキャッシュ、セットアップを管理します。" },
+          { term: "MisoTTS連携", description: "ローカルMisoTTSの取得、uv環境、モデルキャッシュ、セットアップを管理します。" },
           { term: "Irodori-TTS連携", description: "ローカルIrodori-TTSの場所確認やセットアップを行います。" },
           { term: "ComfyUI", description: "ローカル/クラウドURL、workflow JSON、差し替えるNode ID、既定生成値を管理します。" },
           { term: "Seedance", description: "BytePlus、OpenRouter、Replicateなどの動画生成API接続と既定モデルを管理します。" }
@@ -663,6 +668,7 @@ const audioProviders = [
   ["elevenlabs", "ElevenLabs"],
   ["voicebox", "Voicebox"],
   ["voxcpm", "VoxCPM"],
+  ["misotts", "MisoTTS"],
   ["irodori", "Irodori-TTS"]
 ];
 
@@ -773,6 +779,19 @@ const voxcpmDefaultSettings = {
   inferenceTimesteps: 10,
   normalize: true,
   denoise: false,
+  promptText: ""
+};
+
+const misottsDefaultSettings = {
+  mode: "Text",
+  speaker: 0,
+  promptSpeaker: 0,
+  modelSource: "MisoLabs/MisoTTS",
+  device: "auto",
+  dtype: "bfloat16",
+  maxAudioLengthMs: 10000,
+  temperature: 0.9,
+  topk: 50,
   promptText: ""
 };
 
@@ -1954,6 +1973,7 @@ function normalizeAudioItem(item = {}) {
   const irodori = provider === "irodori" ? normalizedIrodoriSettings(item.irodori || item.parameters || item.request || {}) : null;
   const voicebox = provider === "voicebox" ? voiceboxSettingsFromControls(item.voicebox || item.parameters || item.request || {}) : null;
   const voxcpm = provider === "voxcpm" ? normalizedVoxcpmSettings(item.voxcpm || item.parameters || item.request || {}) : null;
+  const misotts = provider === "misotts" ? normalizedMisoTtsSettings(item.misotts || item.parameters || item.request || {}) : null;
   return {
     id: item.id || uid(),
     workId: item.workId || null,
@@ -1961,12 +1981,12 @@ function normalizeAudioItem(item = {}) {
     title: item.title || item.name || (provider === "audio-edit" ? "編集音声" : "生成音声"),
     input: item.input || item.text || "",
     provider,
-    voice: item.voice || (provider === "irodori" ? irodori?.mode || "VoiceDesign" : provider === "voxcpm" ? voxcpm?.mode || "VoiceDesign" : provider === "voicebox" ? voicebox?.profileId || "Voicebox" : provider === "audio-edit" ? "音声編集" : "Kore"),
-    model: item.model || (provider === "irodori" ? "Irodori-TTS" : provider === "voxcpm" ? "openbmb/VoxCPM2" : provider === "voicebox" ? "Voicebox" : provider === "audio-edit" ? "ffmpeg" : defaultOpenRouterTtsModel),
-    format: item.format || (provider === "irodori" || provider === "voxcpm" || provider === "voicebox" || provider === "audio-edit" ? "wav" : "mp3"),
+    voice: item.voice || (provider === "irodori" ? irodori?.mode || "VoiceDesign" : provider === "voxcpm" ? voxcpm?.mode || "VoiceDesign" : provider === "misotts" ? `Speaker ${misotts?.speaker ?? 0}` : provider === "voicebox" ? voicebox?.profileId || "Voicebox" : provider === "audio-edit" ? "音声編集" : "Kore"),
+    model: item.model || (provider === "irodori" ? "Irodori-TTS" : provider === "voxcpm" ? "openbmb/VoxCPM2" : provider === "misotts" ? "MisoLabs/MisoTTS" : provider === "voicebox" ? "Voicebox" : provider === "audio-edit" ? "ffmpeg" : defaultOpenRouterTtsModel),
+    format: item.format || (provider === "irodori" || provider === "voxcpm" || provider === "misotts" || provider === "voicebox" || provider === "audio-edit" ? "wav" : "mp3"),
     url: item.url || "",
     localPath: item.localPath || item.path || "",
-    mimeType: item.mimeType || (provider === "irodori" || provider === "voxcpm" || provider === "voicebox" || provider === "audio-edit" ? "audio/wav" : "audio/mpeg"),
+    mimeType: item.mimeType || (provider === "irodori" || provider === "voxcpm" || provider === "misotts" || provider === "voicebox" || provider === "audio-edit" ? "audio/wav" : "audio/mpeg"),
     generationId: item.generationId || "",
     size: Number(item.size) || null,
     agentNote: item.agentNote || "",
@@ -1975,6 +1995,7 @@ function normalizeAudioItem(item = {}) {
     audioResponseFormat: item.audioResponseFormat || item.responseFormat || "",
     irodori,
     voxcpm,
+    misotts,
     elevenLabs: item.elevenLabs || null,
     voicebox,
     audioEdit: item.audioEdit || null,
@@ -2487,6 +2508,25 @@ function normalizedVoxcpmSettings(value = {}) {
   };
 }
 
+function normalizedMisoTtsSettings(value = {}) {
+  const source = { ...misottsDefaultSettings, ...(value || {}) };
+  const mode = source.mode === "Prompted" ? "Prompted" : "Text";
+  const device = ["auto", "cpu", "cuda"].includes(source.device) ? source.device : "auto";
+  const dtype = ["bfloat16", "float16", "float32"].includes(source.dtype) ? source.dtype : "bfloat16";
+  return {
+    mode,
+    speaker: boundedSettingNumber(source.speaker, 0, 0, 999, true),
+    promptSpeaker: boundedSettingNumber(source.promptSpeaker, 0, 0, 999, true),
+    modelSource: String(source.modelSource || source.model || "MisoLabs/MisoTTS").trim() || "MisoLabs/MisoTTS",
+    device,
+    dtype,
+    maxAudioLengthMs: boundedSettingNumber(source.maxAudioLengthMs, 10000, 1000, 90000, true),
+    temperature: boundedSettingNumber(source.temperature, 0.9, 0.1, 2),
+    topk: boundedSettingNumber(source.topk, 50, 1, 200, true),
+    promptText: String(source.promptText || "").trim()
+  };
+}
+
 function voiceboxSettingsFromControls(source = {}) {
   const defaults = {
     ...voiceboxDefaultSettings,
@@ -2616,6 +2656,8 @@ function normalizeSettings() {
     irodoriDefaults: { ...irodoriDefaultSettings },
     voxcpmAppDir: "vendor/VoxCPM",
     voxcpmDefaults: { ...voxcpmDefaultSettings },
+    misottsAppDir: "vendor/MisoTTS",
+    misottsDefaults: { ...misottsDefaultSettings },
     seedanceBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3",
     seedanceModel: "dreamina-seedance-2-0-260128",
     seedanceResolution: "720p",
@@ -2663,6 +2705,8 @@ function normalizeSettings() {
   state.db.settings.irodoriDefaults = normalizedIrodoriSettings(state.db.settings.irodoriDefaults);
   state.db.settings.voxcpmAppDir = String(state.db.settings.voxcpmAppDir || "vendor/VoxCPM").trim() || "vendor/VoxCPM";
   state.db.settings.voxcpmDefaults = normalizedVoxcpmSettings(state.db.settings.voxcpmDefaults);
+  state.db.settings.misottsAppDir = String(state.db.settings.misottsAppDir || "vendor/MisoTTS").trim() || "vendor/MisoTTS";
+  state.db.settings.misottsDefaults = normalizedMisoTtsSettings(state.db.settings.misottsDefaults);
   state.db.settings.comfy = normalizedComfySettings(state.db.settings.comfy);
   state.db.settings.comfyPresets = normalizedComfyPresets(state.db.settings.comfyPresets);
   state.db.settings.modelLibrary = normalizedModelLibrarySettings(state.db.settings.modelLibrary);
@@ -4127,7 +4171,7 @@ function currentTitle() {
   if (state.view === "edit") return ["背景除去", "背景除去と透過PNG変換を行います。"];
   if (state.view === "edit-aspect") return ["アスペクト比変換", "指定比率へ配置し、位置と拡大率を調整します。"];
   if (state.view === "edit-gif") return ["動画GIF化", "動画をGIFに変換して画像一覧へ保存します。"];
-  if (state.view === "audio") return ["音声生成", "OpenRouter、ElevenLabs、Voicebox、VoxCPM、Irodori-TTSでキャラ音声やナレーションを作ります。"];
+  if (state.view === "audio") return ["音声生成", "OpenRouter、ElevenLabs、Voicebox、VoxCPM、MisoTTS、Irodori-TTSでキャラ音声やナレーションを作ります。"];
   if (state.view === "audio-edit") return ["音声編集", "mp3/wavを分割、カット、音量・ピッチ変更します。"];
   if (state.view === "video") return ["動画生成", "選択した動画モデル向けの指示書作成と生成を行います。"];
   if (state.view === "library") return ["画像整理", "取り込んだ画像を作品・キャラ・状態で確認します。"];
@@ -9304,6 +9348,36 @@ function modelLibraryItemInstalled(item) {
   return [item.fileName, item.name].some((value) => names.has(String(value || "").trim().toLowerCase()));
 }
 
+function modelLibraryLookupNames(item = {}) {
+  const names = [];
+  [item.fileName, item.name, item.relativePath].forEach((value) => {
+    const text = String(value || "").trim();
+    if (!text) return;
+    names.push(text.toLowerCase());
+    const lastPart = text.replace(/\\/g, "/").split("/").filter(Boolean).pop();
+    if (lastPart) names.push(lastPart.toLowerCase());
+  });
+  return [...new Set(names)];
+}
+
+function modelLibraryLocalTargetForItem(item = {}) {
+  const type = modelLibraryTypeFromValue(item.type);
+  const localItems = modelLibraryLocalItems(type);
+  if (item.source === "local") {
+    return localItems.find((candidate) => candidate.key === item.key) || item;
+  }
+  const itemNames = new Set(modelLibraryLookupNames(item));
+  if (!itemNames.size) return null;
+  return localItems.find((candidate) => modelLibraryLookupNames(candidate).some((name) => itemNames.has(name))) || null;
+}
+
+function modelLibraryItemCanUninstall(item = {}) {
+  const target = modelLibraryLocalTargetForItem(item);
+  return canUseDestructiveActions()
+    && Boolean(activeModelLibraryProvider())
+    && Boolean(target?.relativePath || target?.fileName || target?.name);
+}
+
 function modelLibraryDisplayItems() {
   const type = modelLibraryTypeFromValue(state.modelLibraryType);
   const query = state.modelLibraryQuery.trim().toLowerCase();
@@ -9585,6 +9659,15 @@ function setModelLibraryDownloadButtonsBusy(key, busy) {
   });
 }
 
+function setModelLibraryUninstallButtonsBusy(key, busy) {
+  document.querySelectorAll("[data-action='uninstall-model-library-item']").forEach((button) => {
+    if (button.dataset.key !== key) return;
+    if (!button.dataset.defaultLabel) button.dataset.defaultLabel = button.textContent || "";
+    button.disabled = Boolean(busy);
+    button.textContent = busy ? "移動中" : (button.dataset.defaultLabel || "削除");
+  });
+}
+
 function modelLibraryPrimaryActionLabel(item = {}, long = false) {
   const type = modelLibraryTypeFromValue(item.type);
   if (type === "LORA") return long ? "LoRAを追加" : "LoRA追加";
@@ -9597,6 +9680,7 @@ function renderModelLibraryCard(item) {
   const image = modelLibraryPreviewImage(item);
   const installed = modelLibraryItemInstalled(item);
   const providerSelected = Boolean(activeModelLibraryProvider());
+  const canUninstall = modelLibraryItemCanUninstall(item);
   const baseModel = modelLibraryItemBaseModel(item);
   const loraCategory = modelLibraryItemLoraCategory(item);
   const size = modelLibraryFileSizeText(item);
@@ -9620,6 +9704,7 @@ function renderModelLibraryCard(item) {
       <div class="model-card-actions">
         <button class="ghost" data-action="apply-model-library-item" data-key="${escapeHtml(item.key)}">${escapeHtml(modelLibraryPrimaryActionLabel(item))}</button>
         ${item.downloadUrl && !installed ? `<button class="ghost" data-action="download-model-library-item" data-key="${escapeHtml(item.key)}" ${providerSelected ? "" : "disabled"}>${providerSelected ? "DL" : "保存先選択"}</button>` : ""}
+        ${canUninstall ? `<button class="danger" data-action="uninstall-model-library-item" data-key="${escapeHtml(item.key)}">削除</button>` : ""}
       </div>
     </article>
   `;
@@ -9628,6 +9713,7 @@ function renderModelLibraryCard(item) {
 function renderModelLibraryDetail(item) {
   const installed = modelLibraryItemInstalled(item);
   const providerSelected = Boolean(activeModelLibraryProvider());
+  const canUninstall = modelLibraryItemCanUninstall(item);
   const imageUrls = modelLibraryImageUrls(item);
   const images = imageUrls.slice(0, 6);
   const previewImage = imageUrls[0] || "";
@@ -9650,6 +9736,7 @@ function renderModelLibraryDetail(item) {
       <div class="model-detail-actions">
         <button class="accent" data-action="apply-model-library-item" data-key="${escapeHtml(item.key)}">${escapeHtml(modelLibraryPrimaryActionLabel(item, true))}</button>
         ${item.downloadUrl && !installed ? `<button class="ghost" data-action="download-model-library-item" data-key="${escapeHtml(item.key)}" ${providerSelected ? "" : "disabled"}>${providerSelected ? "ダウンロード" : "保存先を選択"}</button>` : ""}
+        ${canUninstall ? `<button class="danger" data-action="uninstall-model-library-item" data-key="${escapeHtml(item.key)}">ゴミ箱へ移動</button>` : ""}
         ${item.pageUrl ? `<a class="ghost" href="${escapeHtml(item.pageUrl)}" target="_blank" rel="noreferrer">配布ページ</a>` : ""}
       </div>
       <dl class="model-detail-list">
@@ -11400,6 +11487,30 @@ async function uploadVoxcpmReferenceFile(file) {
   }
 }
 
+async function uploadMisoTtsReferenceFile(file) {
+  if (!file || !file.type.startsWith("audio/")) return toast("音声ファイルを選択してください。");
+  const selectedChar = byId(state.db.characters, state.audioCharacterId);
+  const work = byId(state.db.works, selectedChar?.workId || state.audioWorkId || state.selectedWorkId);
+  try {
+    const dataUrl = await fileToDataUrl(file);
+    const uploaded = await postJson("/api/media-upload", {
+      dataUrl,
+      name: file.name,
+      workName: work?.name
+    });
+    state.audioMisoTtsReference = {
+      name: file.name,
+      url: uploaded.url,
+      localPath: uploaded.path,
+      mimeType: uploaded.mimeType || file.type
+    };
+    render();
+    toast("MisoTTSの参照音声を設定しました。");
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
 function renderTtsVoiceOptions(selectedVoice = "Kore") {
   const current = ttsVoices.some(([voice]) => voice === selectedVoice) ? selectedVoice : "Kore";
   return ttsVoices.map(([voice, label]) => `<option value="${voice}" ${voice === current ? "selected" : ""}>${escapeHtml(voice)} (${escapeHtml(label)})</option>`).join("");
@@ -11638,6 +11749,61 @@ function renderVoxcpmParameters(params, referenceAudio) {
   `;
 }
 
+function renderMisoTtsParameters(params, referenceAudio) {
+  const settings = normalizedMisoTtsSettings(params);
+  return `
+    <div class="irodori-settings full">
+      <label>モード
+        <select id="audio-misotts-mode">
+          <option value="Text" ${settings.mode === "Text" ? "selected" : ""}>通常生成</option>
+          <option value="Prompted" ${settings.mode === "Prompted" ? "selected" : ""}>Prompted生成</option>
+        </select>
+      </label>
+      <label>Speaker
+        <input id="audio-misotts-speaker" type="number" min="0" max="999" step="1" value="${settings.speaker}">
+      </label>
+      <label>Prompt Speaker
+        <input id="audio-misotts-prompt-speaker" type="number" min="0" max="999" step="1" value="${settings.promptSpeaker}">
+      </label>
+      <label>デバイス
+        <select id="audio-misotts-device">${renderSimpleOptions(["auto", "cuda", "cpu"], settings.device)}</select>
+      </label>
+      <label>Dtype
+        <select id="audio-misotts-dtype">${renderSimpleOptions(["bfloat16", "float16", "float32"], settings.dtype)}</select>
+      </label>
+      <label>最大音声長 ms
+        <input id="audio-misotts-max-length" type="number" min="1000" max="90000" step="1000" value="${settings.maxAudioLengthMs}">
+      </label>
+      <label>Temperature
+        <input id="audio-misotts-temperature" type="number" min="0.1" max="2" step="0.05" value="${settings.temperature}">
+      </label>
+      <label>Top-k
+        <input id="audio-misotts-topk" type="number" min="1" max="200" step="1" value="${settings.topk}">
+      </label>
+      <label class="full">モデルソース / ローカルモデル
+        <input id="audio-misotts-model-source" value="${escapeHtml(settings.modelSource)}">
+      </label>
+      <label class="full">Prompted生成用の参照音声
+        <input id="audio-misotts-reference-file" type="file" accept="audio/*">
+      </label>
+      ${referenceAudio?.url ? `
+        <div class="full irodori-reference">
+          <div>
+            <strong>${escapeHtml(referenceAudio.name || "参照音声")}</strong>
+            <div class="meta">Prompted生成では、この音声と英語文字起こしをcontextとして使います。</div>
+          </div>
+          <audio controls preload="none" src="${escapeHtml(referenceAudio.url)}"></audio>
+          <button class="ghost" data-action="clear-misotts-reference">解除</button>
+        </div>
+      ` : `<div class="full meta">Prompted生成では参照音声と、その参照音声で実際に話している英語文字起こしが必要です。</div>`}
+      <label class="full">参照音声の英語文字起こし
+        <textarea id="audio-misotts-prompt-text" rows="3">${escapeHtml(settings.promptText)}</textarea>
+      </label>
+      <div class="full meta">MisoTTS 8Bは現在英語専用です。初回はMisoLabs/MisoTTSとSilentCipher関連モデルをHugging Faceから取得します。上流実装では生成音声にウォーターマークが入ります。</div>
+    </div>
+  `;
+}
+
 function elevenLabsSettingsFromControls(source = {}) {
   return {
     voiceId: String(source.voiceId || state.db.settings.elevenLabsVoiceId || "JBFqnCBsd6RMkjVDRZzb").trim(),
@@ -11812,6 +11978,20 @@ function audioControlsFromDom() {
     noOptimize: document.querySelector("#audio-voxcpm-no-optimize")?.checked ?? state.audioPromptDraft?.voxcpm?.noOptimize ?? state.db.settings.voxcpmDefaults?.noOptimize,
     promptText: document.querySelector("#audio-voxcpm-prompt-text")?.value || state.audioPromptDraft?.voxcpm?.promptText || ""
   });
+  const misotts = normalizedMisoTtsSettings({
+    ...state.db.settings.misottsDefaults,
+    ...(state.audioPromptDraft?.misotts || {}),
+    mode: document.querySelector("#audio-misotts-mode")?.value || state.audioPromptDraft?.misotts?.mode || state.db.settings.misottsDefaults?.mode,
+    speaker: document.querySelector("#audio-misotts-speaker")?.value || state.audioPromptDraft?.misotts?.speaker || state.db.settings.misottsDefaults?.speaker,
+    promptSpeaker: document.querySelector("#audio-misotts-prompt-speaker")?.value || state.audioPromptDraft?.misotts?.promptSpeaker || state.db.settings.misottsDefaults?.promptSpeaker,
+    modelSource: document.querySelector("#audio-misotts-model-source")?.value || state.audioPromptDraft?.misotts?.modelSource || state.db.settings.misottsDefaults?.modelSource,
+    device: document.querySelector("#audio-misotts-device")?.value || state.audioPromptDraft?.misotts?.device || state.db.settings.misottsDefaults?.device,
+    dtype: document.querySelector("#audio-misotts-dtype")?.value || state.audioPromptDraft?.misotts?.dtype || state.db.settings.misottsDefaults?.dtype,
+    maxAudioLengthMs: document.querySelector("#audio-misotts-max-length")?.value || state.audioPromptDraft?.misotts?.maxAudioLengthMs || state.db.settings.misottsDefaults?.maxAudioLengthMs,
+    temperature: document.querySelector("#audio-misotts-temperature")?.value || state.audioPromptDraft?.misotts?.temperature || state.db.settings.misottsDefaults?.temperature,
+    topk: document.querySelector("#audio-misotts-topk")?.value || state.audioPromptDraft?.misotts?.topk || state.db.settings.misottsDefaults?.topk,
+    promptText: document.querySelector("#audio-misotts-prompt-text")?.value || state.audioPromptDraft?.misotts?.promptText || ""
+  });
   const elevenLabs = elevenLabsSettingsFromControls({
     voiceId: document.querySelector("#audio-elevenlabs-voice-id")?.value || state.audioPromptDraft?.elevenLabs?.voiceId,
     modelId: document.querySelector("#audio-elevenlabs-model-id")?.value || state.audioPromptDraft?.elevenLabs?.modelId,
@@ -11841,15 +12021,18 @@ function audioControlsFromDom() {
         ? voicebox.profileId
         : provider === "voxcpm"
           ? voxcpm.mode
-          : openRouterVoice,
+          : provider === "misotts"
+            ? `Speaker ${misotts.speaker}`
+            : openRouterVoice,
     audioModel: openRouterModel,
     audioResponseFormat: openRouterResponseFormat,
     irodori,
     voxcpm,
+    misotts,
     elevenLabs,
     voicebox,
     actingPrompt,
-    caption: provider === "irodori" ? irodori.caption : provider === "voxcpm" ? voxcpm.voicePrompt : actingPrompt,
+    caption: provider === "irodori" ? irodori.caption : provider === "voxcpm" ? voxcpm.voicePrompt : provider === "misotts" ? misotts.promptText : actingPrompt,
     title: document.querySelector("#audio-title")?.value.trim() || state.audioPromptDraft?.title || "生成音声",
     input: audioInput ? audioInput.value : state.audioPromptDraft?.input || ""
   };
@@ -11910,8 +12093,9 @@ function buildAudioAgentSystemPrompt() {
 - ElevenLabsの場合は voice ID と voice_settings が主な制御なので、input は読み上げ本文に集中し、actingPrompt は画面で確認・保存できる演技指示として短くまとめる。
 - Voiceboxの場合は選択プロファイルで声が決まる。Qwen CustomVoice系では actingPrompt を自然言語の演技指示として使える。Chatterbox Turbo以外では角括弧タグがそのまま読まれる場合があるため、タグは必要最小限にする。
 - VoxCPMの場合は voicePrompt に声質、年齢感、感情、速度、距離感を自然言語で書く。input には読み上げ本文だけを書く。HiFiでは声質指定より参照音声と文字起こしが優先される。
+- MisoTTSの場合は現在英語専用なので、input は自然な英語の読み上げ本文にする。Prompted生成では参照音声の文字起こしと生成本文を混同しない。
 - 過剰な演技タグは避け、重要な間や感情だけに使う。1案につき1〜3個程度を目安にする。
-- 日本語の台詞は日本語のまま自然に整える。英語に翻訳しない。
+- MisoTTS以外の日本語の台詞は日本語のまま自然に整える。英語に翻訳しない。
 - Irodori-TTSの場合は caption に「低め、囁き、距離感、テンポ、感情」などの音声演出を書き、input には読み上げ本文だけを書く。
 
 利用可能ボイス:
@@ -11933,7 +12117,7 @@ function buildAudioAgentText(inputText, controls) {
 ${inputText}
 
 現在の設定:
-provider=${controls.provider}, voice=${controls.voice}, openRouterTtsModel=${controls.audioModel || ""}, openRouterResponseFormat=${controls.audioResponseFormat || ""}, actingPrompt=${controls.actingPrompt || ""}, elevenLabsVoiceId=${controls.elevenLabs?.voiceId || ""}, elevenLabsModel=${controls.elevenLabs?.modelId || ""}, voiceboxProfileId=${controls.voicebox?.profileId || ""}, voiceboxLanguage=${controls.voicebox?.language || ""}, voxcpmMode=${controls.voxcpm?.mode || "VoiceDesign"}, voxcpmVoicePrompt=${controls.voxcpm?.voicePrompt || ""}, irodoriMode=${controls.irodori?.mode || "VoiceDesign"}, caption=${controls.irodori?.caption || ""}, title=${controls.title}, characterId=${controls.characterId || "未指定"}
+provider=${controls.provider}, voice=${controls.voice}, openRouterTtsModel=${controls.audioModel || ""}, openRouterResponseFormat=${controls.audioResponseFormat || ""}, actingPrompt=${controls.actingPrompt || ""}, elevenLabsVoiceId=${controls.elevenLabs?.voiceId || ""}, elevenLabsModel=${controls.elevenLabs?.modelId || ""}, voiceboxProfileId=${controls.voicebox?.profileId || ""}, voiceboxLanguage=${controls.voicebox?.language || ""}, voxcpmMode=${controls.voxcpm?.mode || "VoiceDesign"}, voxcpmVoicePrompt=${controls.voxcpm?.voicePrompt || ""}, misottsMode=${controls.misotts?.mode || "Text"}, misottsSpeaker=${controls.misotts?.speaker ?? 0}, irodoriMode=${controls.irodori?.mode || "VoiceDesign"}, caption=${controls.irodori?.caption || ""}, title=${controls.title}, characterId=${controls.characterId || "未指定"}
 
 作品情報 / 世界観:
 ${buildPromptLabWorldContext(work)}
@@ -11965,6 +12149,7 @@ function mergeAudioDraft(result, fallbackControls) {
   const taggedInput = ensureAudioEmotionTag(source.input || "", actingPrompt);
   const irodori = normalizedIrodoriSettings({ ...fallbackControls.irodori, caption: source.caption || actingPrompt || fallbackControls.irodori?.caption });
   const voxcpm = normalizedVoxcpmSettings({ ...fallbackControls.voxcpm, voicePrompt: source.caption || actingPrompt || fallbackControls.voxcpm?.voicePrompt });
+  const misotts = normalizedMisoTtsSettings(fallbackControls.misotts || {});
   const audioModel = fallbackControls.audioModel || state.db.settings.audioModel || defaultOpenRouterTtsModel;
   return {
     title: source.title || fallbackControls.title || "生成音声",
@@ -11976,6 +12161,7 @@ function mergeAudioDraft(result, fallbackControls) {
     elevenLabs: fallbackControls.elevenLabs,
     voicebox: fallbackControls.voicebox,
     voxcpm,
+    misotts,
     ...irodori,
     actingPrompt,
     caption: fallbackControls.provider === "irodori" ? irodori.caption : fallbackControls.provider === "voxcpm" ? voxcpm.voicePrompt : actingPrompt,
@@ -12018,6 +12204,7 @@ async function handleAudioAgentMessage(forceDraft = false) {
   state.db.settings.audioVoice = controls.voice;
   state.db.settings.audioActingPrompt = controls.actingPrompt || defaultAudioActingPrompt;
   state.db.settings.irodoriDefaults = controls.irodori;
+  state.db.settings.misottsDefaults = controls.misotts;
   state.audioChatDraft = "";
   if (chatInput) chatInput.value = "";
   state.audioChatMessages.push({ role: "user", content: message });
@@ -12064,6 +12251,8 @@ async function startAudioGeneration() {
   if (controls.provider === "voicebox" && !controls.voicebox.profileId) return toast("Voiceboxプロファイルを指定してください。");
   if (controls.provider === "voxcpm" && controls.voxcpm.mode !== "VoiceDesign" && !state.audioVoxcpmReference?.url) return toast("VoxCPMの参照音声を指定してください。");
   if (controls.provider === "voxcpm" && controls.voxcpm.mode === "HiFi" && !controls.voxcpm.promptText) return toast("高精度クローンでは参照音声の文字起こしを入力してください。");
+  if (controls.provider === "misotts" && controls.misotts.mode === "Prompted" && !state.audioMisoTtsReference?.url) return toast("MisoTTSの参照音声を指定してください。");
+  if (controls.provider === "misotts" && controls.misotts.mode === "Prompted" && !controls.misotts.promptText) return toast("Prompted生成では参照音声の英語文字起こしを入力してください。");
   const selectedChar = byId(state.db.characters, controls.characterId);
   const work = byId(state.db.works, selectedChar?.workId || controls.workId);
   state.audioIsGenerating = true;
@@ -12090,6 +12279,7 @@ async function startAudioGeneration() {
   state.db.settings.voiceboxLanguage = controls.voicebox.language;
   state.db.settings.voiceboxModelSize = controls.voicebox.modelSize;
   state.db.settings.voxcpmDefaults = controls.voxcpm;
+  state.db.settings.misottsDefaults = controls.misotts;
   state.db.settings.irodoriDefaults = controls.irodori;
   startAudioGenerationClock();
   render();
@@ -12236,6 +12426,35 @@ async function startAudioGeneration() {
         agentNote: state.audioPromptDraft?.agentNote || "",
         createdAt: new Date().toISOString()
       })];
+    } else if (controls.provider === "misotts") {
+      const payload = await postJson("/api/misotts/speech", {
+        appDir: state.db.settings.misottsAppDir,
+        input: controls.input,
+        title: controls.title,
+        referenceAudioUrl: state.audioMisoTtsReference?.url || "",
+        ...audioSaveTargetPayload(work, selectedChar),
+        ...controls.misotts
+      });
+      created = [normalizeAudioItem({
+        id: uid(),
+        workId: work?.id || null,
+        characterId: selectedChar?.id || null,
+        provider: "misotts",
+        title: controls.title,
+        input: controls.input,
+        voice: `Speaker ${controls.misotts.speaker}`,
+        model: controls.misotts.modelSource,
+        format: "wav",
+        url: payload.url,
+        localPath: payload.path,
+        mimeType: payload.mimeType,
+        size: payload.size,
+        caption: controls.misotts.mode === "Prompted" ? controls.misotts.promptText : "",
+        misotts: controls.misotts,
+        referenceAudio: state.audioMisoTtsReference,
+        agentNote: [state.audioPromptDraft?.agentNote || "", "MisoTTS / English only / watermarked by upstream"].filter(Boolean).join(" / "),
+        createdAt: new Date().toISOString()
+      })];
     } else {
       const payload = await postJson("/api/irodori/speech", {
         appDir: state.db.settings.irodoriAppDir,
@@ -12285,12 +12504,14 @@ async function startAudioGeneration() {
 
 function renderAudioItem(audio, options = {}) {
   const historyKind = options.historyKind || "";
-  const providerLabel = audio.provider === "irodori" ? "Irodori-TTS" : audio.provider === "voxcpm" ? "VoxCPM" : audio.provider === "elevenlabs" ? "ElevenLabs" : audio.provider === "voicebox" ? "Voicebox" : audio.provider === "audio-edit" ? "音声編集" : "OpenRouter TTS";
+  const providerLabel = audio.provider === "irodori" ? "Irodori-TTS" : audio.provider === "voxcpm" ? "VoxCPM" : audio.provider === "misotts" ? "MisoTTS" : audio.provider === "elevenlabs" ? "ElevenLabs" : audio.provider === "voicebox" ? "Voicebox" : audio.provider === "audio-edit" ? "音声編集" : "OpenRouter TTS";
   const openRouterModelLabel = audio.provider === "openrouter" ? openRouterTtsModelConfig(audio.model).label : "";
   const voiceLabel = audio.provider === "irodori"
     ? `${audio.irodori?.mode || audio.voice || "VoiceDesign"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`
     : audio.provider === "voxcpm"
       ? `${audio.voxcpm?.mode || audio.voice || "VoiceDesign"} / ${audio.model || audio.voxcpm?.modelId || "openbmb/VoxCPM2"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`
+      : audio.provider === "misotts"
+        ? `${audio.misotts?.mode || "Text"} / Speaker ${audio.misotts?.speaker ?? 0} / ${audio.model || audio.misotts?.modelSource || "MisoLabs/MisoTTS"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`
       : audio.provider === "elevenlabs"
         ? `${audio.voice || "voice ID未設定"} / ${audio.model || "eleven_multilingual_v2"}${audio.caption ? ` / ${compactPromptText(audio.caption, 90)}` : ""}`
         : audio.provider === "voicebox"
@@ -12433,6 +12654,7 @@ function renderAudioAgent() {
   const elevenLabsValue = elevenLabsSettingsFromControls(controls.elevenLabs || {});
   const voiceboxValue = voiceboxSettingsFromControls(controls.voicebox || {});
   const voxcpmValue = normalizedVoxcpmSettings({ ...state.db.settings.voxcpmDefaults, ...(controls.voxcpm || {}) });
+  const misottsValue = normalizedMisoTtsSettings({ ...state.db.settings.misottsDefaults, ...(controls.misotts || {}) });
   const irodoriValue = normalizedIrodoriSettings({ ...state.db.settings.irodoriDefaults, ...controls });
   const allHistory = visibleAudioHistoryItems();
   const { items: history, pageInfo: historyPageInfo } = getPagedGenerationHistoryItems("audio", allHistory);
@@ -12485,6 +12707,9 @@ function renderAudioAgent() {
           ` : providerValue === "voxcpm" ? `
             <div class="full meta">VoxCPMをフルローカル実行します。連携先は設定画面の「VoxCPM連携」で変更できます。</div>
             ${renderVoxcpmParameters(voxcpmValue, state.audioVoxcpmReference)}
+          ` : providerValue === "misotts" ? `
+            <div class="full meta">MisoTTS 8Bをフルローカル実行します。英語専用です。連携先は設定画面の「MisoTTS連携」で変更できます。</div>
+            ${renderMisoTtsParameters(misottsValue, state.audioMisoTtsReference)}
           ` : `
             <div class="full meta">Irodori-TTSをローカル実行します。連携先は設定画面の「Irodori-TTS連携」で変更できます。</div>
             ${renderIrodoriParameters(irodoriValue, state.audioIrodoriReference)}
@@ -12547,7 +12772,7 @@ function renderAudioGenerating() {
       <div class="wave-loader"><span></span><span></span><span></span><span></span></div>
       <div>
         <strong>音声生成中</strong>
-        <div class="meta">経過 ${escapeHtml(elapsedText)}。VoxCPM、Irodori-TTS、Voiceboxの初回生成は数分かかることがあります。完了後にキャラ情報と参照素材へ保存します。</div>
+        <div class="meta">経過 ${escapeHtml(elapsedText)}。VoxCPM、MisoTTS、Irodori-TTS、Voiceboxの初回生成は数分かかることがあります。完了後にキャラ情報と参照素材へ保存します。</div>
       </div>
     </div>
   `;
@@ -13456,6 +13681,7 @@ function renderSettings() {
 	      : state.elevenLabsModelError || "未取得時は主要TTSモデルを候補表示します。";
 	  const irodoriStatusText = state.irodoriStatusMessage || "Irodori-TTSの配置場所を確認できます。未導入の環境ではセットアップを実行すると vendor/Irodori-TTS に取得します。";
 	  const voxcpmStatusText = state.voxcpmStatusMessage || "VoxCPMの専用Python環境を確認できます。未導入の環境ではセットアップを実行すると vendor/VoxCPM に作成します。";
+	  const misottsStatusText = state.misottsStatusMessage || "MisoTTSの配置場所とuv環境を確認できます。未導入の環境ではセットアップを実行すると vendor/MisoTTS に取得します。";
 	  const voiceboxStatusText = state.voiceboxProfileStatus === "loaded"
 	    ? `${state.voiceboxProfiles.length} 件のVoiceboxプロファイルを読み込みました。`
 	    : state.voiceboxProfileStatus === "loading"
@@ -13562,6 +13788,20 @@ function renderSettings() {
           <button class="ghost" data-action="setup-voxcpm" ${state.voxcpmStatus === "loading" ? "disabled" : ""}>VoxCPMを取得</button>
         </div>
         <div class="full meta">VoxCPMはこのアプリ内の専用venvに入ります。モデル本体は初回生成時に vendor/VoxCPM/hf-cache へ保存されます。</div>
+      </div>
+    </section>
+	    <section class="panel settings-panel">
+      <div class="panel-header"><h2>MisoTTS連携</h2></div>
+      <div class="panel-body form-grid">
+        <label class="full">MisoTTSフォルダ
+          <input id="setting-misotts-app-dir" placeholder="vendor/MisoTTS" value="${escapeHtml(state.db.settings.misottsAppDir || "vendor/MisoTTS")}">
+        </label>
+        <div class="full meta">${escapeHtml(misottsStatusText)}</div>
+        <div class="full toolbar">
+          <button class="ghost" data-action="check-misotts" ${state.misottsStatus === "loading" ? "disabled" : ""}>連携確認</button>
+          <button class="ghost" data-action="setup-misotts" ${state.misottsStatus === "loading" ? "disabled" : ""}>MisoTTSを取得</button>
+        </div>
+        <div class="full meta">MisoTTSはGitHubから vendor/MisoTTS に取得し、uv sync --python 3.10 で専用環境を作成します。モデル本体は初回生成時に vendor/MisoTTS/hf-cache へ保存されます。現在は英語専用で、CUDA GPU推奨の大きな8Bモデルです。</div>
       </div>
     </section>
 	    <section class="panel settings-panel">
@@ -14542,6 +14782,56 @@ async function pollModelLibraryDownload(jobId) {
   }
 }
 
+function modelLibraryCurrentUsageWarning(target = {}) {
+  const names = new Set(modelLibraryLookupNames(target));
+  if (!names.size) return "";
+  const settings = state.db?.settings?.comfy || {};
+  const usages = [];
+  const checkpoint = String(settings.checkpoint || "").trim().toLowerCase();
+  if (checkpoint && names.has(checkpoint)) usages.push("現在のCheckpoint");
+  const activeLora = normalizedComfyLoras(settings.loras)
+    .find((lora) => names.has(String(lora.name || "").trim().toLowerCase()));
+  if (activeLora) usages.push("現在のLoRA設定");
+  if (!usages.length) return "";
+  return `\n\n注意: ${usages.join("、")}に入っています。削除後は画像生成前に別のモデルを選んでください。`;
+}
+
+async function uninstallModelLibraryItem(key) {
+  const item = findModelLibraryItem(key);
+  if (!item) return toast("モデルが見つかりません。");
+  if (!activeModelLibraryProvider()) return toast("保存先プラットフォームを選択してください。");
+  const target = modelLibraryLocalTargetForItem(item);
+  if (!target) return toast("削除対象のローカルファイルが見つかりません。ローカル再読込を試してください。");
+  const fileName = target.fileName || target.name || target.relativePath || "model";
+  const ok = window.confirm(
+    `「${fileName}」をゴミ箱へ移動します。`
+    + "\n生成履歴や設定値は削除しません。"
+    + modelLibraryCurrentUsageWarning(target)
+  );
+  if (!ok) return;
+
+  setModelLibraryUninstallButtonsBusy(key, true);
+  try {
+    await postJson("/api/model-library/uninstall", {
+      provider: activeModelLibraryProvider(),
+      type: target.type || item.type,
+      relativePath: target.relativePath || target.fileName || target.name,
+      fileName: target.fileName || target.name
+    });
+    await loadModelLibraryLocal({ silent: true });
+    const items = modelLibraryDisplayItems();
+    if (!items.some((candidate) => candidate.key === state.modelLibrarySelectedKey)) {
+      state.modelLibrarySelectedKey = items[0]?.key || "";
+    }
+    toast("モデルファイルをゴミ箱へ移動しました。");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    setModelLibraryUninstallButtonsBusy(key, false);
+    if (state.view === "model-library") render();
+  }
+}
+
 async function applyModelLibraryItem(key) {
   const item = findModelLibraryItem(key);
   if (!item) return toast("モデルが見つかりません。");
@@ -14696,6 +14986,9 @@ function bindModelLibrary() {
   });
   document.querySelectorAll("[data-action='download-model-library-item']").forEach((button) => {
     button.addEventListener("click", () => downloadModelLibraryItem(button.dataset.key));
+  });
+  document.querySelectorAll("[data-action='uninstall-model-library-item']").forEach((button) => {
+    button.addEventListener("click", () => uninstallModelLibraryItem(button.dataset.key));
   });
   document.querySelectorAll("[data-action='copy-model-trigger']").forEach((button) => {
     button.addEventListener("click", () => copyText(button.dataset.trigger || ""));
@@ -14881,6 +15174,7 @@ function bindAudioAgent() {
       elevenLabs: controls.elevenLabs,
       voicebox: controls.voicebox,
       voxcpm: controls.voxcpm,
+      misotts: controls.misotts,
       ...controls.irodori,
       actingPrompt: controls.actingPrompt,
       caption: controls.caption
@@ -14904,6 +15198,7 @@ function bindAudioAgent() {
     state.db.settings.voiceboxLanguage = controls.voicebox.language;
     state.db.settings.voiceboxModelSize = controls.voicebox.modelSize;
     state.db.settings.voxcpmDefaults = controls.voxcpm;
+    state.db.settings.misottsDefaults = controls.misotts;
     state.db.settings.irodoriDefaults = controls.irodori;
   };
   [
@@ -14938,6 +15233,16 @@ function bindAudioAgent() {
     "#audio-voxcpm-denoise",
     "#audio-voxcpm-no-optimize",
     "#audio-voxcpm-prompt-text",
+    "#audio-misotts-mode",
+    "#audio-misotts-speaker",
+    "#audio-misotts-prompt-speaker",
+    "#audio-misotts-model-source",
+    "#audio-misotts-device",
+    "#audio-misotts-dtype",
+    "#audio-misotts-max-length",
+    "#audio-misotts-temperature",
+    "#audio-misotts-topk",
+    "#audio-misotts-prompt-text",
     "#audio-irodori-mode",
     "#audio-irodori-caption",
     "#audio-irodori-steps",
@@ -14979,6 +15284,10 @@ function bindAudioAgent() {
     persistAudioControls();
     uploadVoxcpmReferenceFile(event.target.files?.[0]);
   });
+  document.querySelector("#audio-misotts-reference-file")?.addEventListener("change", (event) => {
+    persistAudioControls();
+    uploadMisoTtsReferenceFile(event.target.files?.[0]);
+  });
   document.querySelector("[data-action='load-elevenlabs-voices']")?.addEventListener("click", async () => {
     persistAudioControls();
     await loadElevenLabsVoices();
@@ -14997,6 +15306,10 @@ function bindAudioAgent() {
   });
   document.querySelector("[data-action='clear-voxcpm-reference']")?.addEventListener("click", () => {
     state.audioVoxcpmReference = null;
+    render();
+  });
+  document.querySelector("[data-action='clear-misotts-reference']")?.addEventListener("click", () => {
+    state.audioMisoTtsReference = null;
     render();
   });
   document.querySelector("#audio-work")?.addEventListener("change", (event) => {
@@ -15666,6 +15979,51 @@ async function setupVoxcpm() {
   render();
 }
 
+async function checkMisoTtsConnection() {
+  const appDir = document.querySelector("#setting-misotts-app-dir")?.value.trim() || state.db.settings.misottsAppDir || "vendor/MisoTTS";
+  state.db.settings.misottsAppDir = appDir;
+  state.misottsStatus = "loading";
+  state.misottsStatusMessage = "MisoTTSの配置とuv環境を確認しています。";
+  render();
+  try {
+    const result = await postJson("/api/misotts/status", { appDir });
+    if (result.found) {
+      state.misottsStatus = "ready";
+      state.misottsStatusMessage = `連携できます。MisoTTS: ${result.appDir} / Python: ${result.pythonPath} / miso-tts ${result.packageVersion || ""}`;
+      await saveDb();
+      toast("MisoTTSに連携できます。");
+    } else {
+      state.misottsStatus = "missing";
+      state.misottsStatusMessage = `MisoTTSが見つかりません。候補: ${(result.candidates || []).join(" / ")}`;
+      toast("MisoTTSが見つかりません。");
+    }
+  } catch (error) {
+    state.misottsStatus = "missing";
+    state.misottsStatusMessage = error.message;
+    toast(error.message);
+  }
+  render();
+}
+
+async function setupMisoTts() {
+  state.misottsStatus = "loading";
+  state.misottsStatusMessage = "MisoTTSを取得し、uv sync --python 3.10 を実行しています。初回はしばらくかかります。";
+  render();
+  try {
+    await postJson("/api/misotts/setup", {});
+    state.db.settings.misottsAppDir = "vendor/MisoTTS";
+    state.misottsStatus = "ready";
+    state.misottsStatusMessage = "MisoTTSを vendor/MisoTTS に準備しました。モデル本体は初回生成時に取得されます。";
+    await saveDb();
+    toast("MisoTTSのセットアップが完了しました。");
+  } catch (error) {
+    state.misottsStatus = "missing";
+    state.misottsStatusMessage = error.message;
+    toast(error.message);
+  }
+  render();
+}
+
 function saveElevenLabsSettingsFromDom() {
   const keyInput = document.querySelector("#setting-elevenlabs-api-key");
   if (keyInput) localStorage.setItem("elevenlabs_api_key", keyInput.value.trim());
@@ -15885,6 +16243,7 @@ function bindSettings() {
     state.db.settings.audioVoice = normalizeOpenRouterTtsVoice(state.db.settings.audioVoice, state.db.settings.audioModel);
     state.db.settings.audioResponseFormat = normalizeOpenRouterTtsResponseFormat(state.db.settings.audioResponseFormat, state.db.settings.audioModel);
     state.db.settings.voxcpmAppDir = document.querySelector("#setting-voxcpm-app-dir")?.value.trim() || "vendor/VoxCPM";
+    state.db.settings.misottsAppDir = document.querySelector("#setting-misotts-app-dir")?.value.trim() || "vendor/MisoTTS";
     state.db.settings.irodoriAppDir = document.querySelector("#setting-irodori-app-dir")?.value.trim() || "vendor/Irodori-TTS";
     state.db.settings.seedanceBaseUrl = document.querySelector("#setting-seedance-base-url")?.value.trim() || "https://ark.ap-southeast.bytepluses.com/api/v3";
     state.db.settings.seedanceModel = document.querySelector("#setting-seedance-model")?.value.trim() || "dreamina-seedance-2-0-260128";
@@ -15908,6 +16267,7 @@ function bindSettings() {
     state.db.settings.audioVoice = normalizeOpenRouterTtsVoice(state.db.settings.audioVoice, state.db.settings.audioModel);
     state.db.settings.audioResponseFormat = normalizeOpenRouterTtsResponseFormat(state.db.settings.audioResponseFormat, state.db.settings.audioModel);
     state.db.settings.voxcpmAppDir = document.querySelector("#setting-voxcpm-app-dir")?.value.trim() || "vendor/VoxCPM";
+    state.db.settings.misottsAppDir = document.querySelector("#setting-misotts-app-dir")?.value.trim() || "vendor/MisoTTS";
     state.db.settings.irodoriAppDir = document.querySelector("#setting-irodori-app-dir")?.value.trim() || "vendor/Irodori-TTS";
     try {
       await callOpenRouter({
@@ -15934,6 +16294,7 @@ function bindSettings() {
 	    await loadVoiceboxProfiles();
 	  });
 	  document.querySelector("[data-action='check-voxcpm']")?.addEventListener("click", checkVoxcpmConnection);
+	  document.querySelector("[data-action='check-misotts']")?.addEventListener("click", checkMisoTtsConnection);
 	  document.querySelector("[data-action='check-irodori']")?.addEventListener("click", checkIrodoriConnection);
   document.querySelector("[data-action='check-comfy']")?.addEventListener("click", checkComfyConnection);
   document.querySelectorAll("[data-action='load-comfy-models']").forEach((button) => {
@@ -15957,6 +16318,7 @@ function bindSettings() {
     render();
   });
   document.querySelector("[data-action='setup-voxcpm']")?.addEventListener("click", setupVoxcpm);
+  document.querySelector("[data-action='setup-misotts']")?.addEventListener("click", setupMisoTts);
   document.querySelector("[data-action='setup-irodori']")?.addEventListener("click", setupIrodori);
   document.querySelector("[data-action='reload-openrouter-models']")?.addEventListener("click", () => loadOpenRouterModels({ force: true }));
 }
