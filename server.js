@@ -177,6 +177,7 @@ const emptyDb = {
       checkpoint: "",
       seed: "",
       loras: [],
+      denoise: 1,
       referenceSlots: []
     },
     comfyPresets: [],
@@ -5376,6 +5377,19 @@ function normalizedComfyReferenceSlots(value = []) {
     .filter((item) => item.nodeId || item.url);
 }
 
+function normalizedComfyInitImage(value) {
+  if (!value || typeof value !== "object") return null;
+  const url = String(value.url || "").trim();
+  const comfyFileName = String(value.comfyFileName || "").trim();
+  if (!url && !comfyFileName) return null;
+  return {
+    key: String(value.key || "").trim(),
+    name: String(value.name || "").trim() || "img2img元画像",
+    url,
+    comfyFileName
+  };
+}
+
 function isComfyLink(value) {
   return Array.isArray(value) && value.length >= 2 && (typeof value[0] === "string" || typeof value[0] === "number");
 }
@@ -5462,6 +5476,98 @@ function injectComfyLoras(workflow, options = {}) {
   replaceComfyInputLinks(workflow, modelSource, currentModel, ["model"], excluded);
   replaceComfyInputLinks(workflow, clipSource, currentClip, ["clip"], excluded);
   return insertedIds;
+}
+
+function injectComfyInitImage(workflow, options = {}) {
+  const init = normalizedComfyInitImage(options.initImage);
+  if (!init) return null;
+  const samplerNodeId = String(options.samplerNodeId || options.seedNodeId || "").trim();
+  const sampler = workflow[samplerNodeId];
+  if (!sampler || typeof sampler !== "object") {
+    throw new Error("img2imgの差し替え先Sampler Node IDがworkflow内にありません。");
+  }
+  sampler.inputs = sampler.inputs && typeof sampler.inputs === "object" ? sampler.inputs : {};
+  const latentKey = ["latent_image", "latent", "samples"].find((key) => isComfyLink(sampler.inputs[key]));
+  if (!latentKey) {
+    throw new Error("Sampler Nodeにlatent_image入力が見つからないため、img2imgを適用できません。");
+  }
+
+  let vaeLink = null;
+  for (const [nodeId, node] of Object.entries(workflow || {})) {
+    const classType = String(node?.class_type || "");
+    if ((classType === "VAEDecode" || classType === "VAEDecodeTiled") && isComfyLink(node?.inputs?.vae)) {
+      vaeLink = [...node.inputs.vae];
+      break;
+    }
+  }
+  if (!vaeLink) {
+    for (const [nodeId, node] of Object.entries(workflow || {})) {
+      if (String(node?.class_type || "") === "VAELoader") {
+        vaeLink = [nodeId, 0];
+        break;
+      }
+    }
+  }
+  if (!vaeLink) {
+    const checkpointNodeId = String(options.checkpointNodeId || "").trim();
+    const checkpointNode = workflow[checkpointNodeId];
+    if (checkpointNode && String(checkpointNode.class_type || "") !== "UNETLoader") {
+      vaeLink = [checkpointNodeId, 2];
+    }
+  }
+  if (!vaeLink) {
+    throw new Error("img2img用のVAE接続が見つかりません。workflowにVAELoaderまたはVAEDecodeを配置してください。");
+  }
+
+  const width = boundedNumber(options.width, 1024, 64, 4096, true);
+  const height = boundedNumber(options.height, 1024, 64, 4096, true);
+  const batch = boundedNumber(options.batchSize, 1, 1, 8, true);
+  const loadNodeId = nextComfyNodeId(workflow);
+  workflow[loadNodeId] = {
+    class_type: "LoadImage",
+    _meta: { title: "img2img元画像" },
+    inputs: {
+      image: init.comfyFileName || "__init_image__.png",
+      upload: "image"
+    }
+  };
+  const scaleNodeId = nextComfyNodeId(workflow);
+  workflow[scaleNodeId] = {
+    class_type: "ImageScale",
+    _meta: { title: "img2imgサイズ調整" },
+    inputs: {
+      image: [loadNodeId, 0],
+      upscale_method: "lanczos",
+      width,
+      height,
+      crop: "disabled"
+    }
+  };
+  const encodeNodeId = nextComfyNodeId(workflow);
+  workflow[encodeNodeId] = {
+    class_type: "VAEEncode",
+    _meta: { title: "img2img VAE Encode" },
+    inputs: {
+      pixels: [scaleNodeId, 0],
+      vae: vaeLink
+    }
+  };
+
+  let latentLink = [encodeNodeId, 0];
+  if (batch >= 2) {
+    const repeatNodeId = nextComfyNodeId(workflow);
+    workflow[repeatNodeId] = {
+      class_type: "RepeatLatentBatch",
+      _meta: { title: "img2img Batch Repeat" },
+      inputs: {
+        samples: latentLink,
+        amount: batch
+      }
+    };
+    latentLink = [repeatNodeId, 0];
+  }
+  sampler.inputs[latentKey] = latentLink;
+  return { loadNodeId, encodeNodeId };
 }
 
 function patchComfyReferenceImages(workflow, references = [], { requireUrl = false } = {}) {
@@ -5655,6 +5761,8 @@ function validateComfyWorkflowRequest(body = {}, modelInfo = {}) {
       edgeCount: countComfyWorkflowEdges(prompt),
       loraCount: loras.length,
       referenceCount: references.filter((item) => item.url).length,
+      initImage: normalizedComfyInitImage(body.initImage)?.name || "",
+      denoise: boundedNumber(body.denoise, 1, 0, 1),
       insertedLoraNodeIds,
       checkpoint: checkpointName || "workflow既定",
       patchedWorkflow: patched ? scrubComfyWorkflow(patched) : null
@@ -5683,6 +5791,12 @@ function patchComfyWorkflow(workflow, options = {}) {
   patchComfyNodeInput(prompt, options.checkpointNodeId, ["ckpt_name", "unet_name"], String(options.checkpoint || "").trim());
   injectComfyLoras(prompt, options);
   patchComfyReferenceImages(prompt, options.references, { requireUrl: true });
+  const initImage = normalizedComfyInitImage(options.initImage);
+  const samplerNode = prompt[String(options.samplerNodeId || "").trim()];
+  if (initImage || (samplerNode?.inputs && Object.prototype.hasOwnProperty.call(samplerNode.inputs, "denoise"))) {
+    patchComfyNodeInput(prompt, options.samplerNodeId, ["denoise"], boundedNumber(options.denoise, 1, 0, 1));
+  }
+  injectComfyInitImage(prompt, options);
   return prompt;
 }
 
@@ -6196,6 +6310,8 @@ async function handleForgeCreate(req, res) {
   const seed = Number(seedText);
   const isForgeNeo = label === "Forge Neo";
   const isDrawThings = isDrawThingsProviderLabel(label);
+  const initImage = normalizedComfyInitImage(body.initImage);
+  const isImg2Img = Boolean(initImage?.url);
   const requestPayload = {
     prompt: isDrawThings ? String(prompt || "").trim() : forgePromptWithLoras(prompt, body.loras),
     negative_prompt: String(negativePrompt || ""),
@@ -6220,6 +6336,27 @@ async function handleForgeCreate(req, res) {
   } else if (checkpoint) {
     requestPayload.override_settings = { sd_model_checkpoint: String(checkpoint).trim() };
   }
+  if (isImg2Img) {
+    let filePath = "";
+    try {
+      filePath = localMediaPathFromUrl(initImage.url);
+    } catch {
+      return sendJson(res, 400, { error: `img2img元画像ファイルが見つかりません: ${initImage.name || initImage.url}` });
+    }
+    const ext = path.extname(filePath).toLowerCase();
+    if (![".png", ".jpg", ".jpeg", ".webp", ".gif"].includes(ext)) {
+      return sendJson(res, 400, { error: `img2imgに使える画像形式ではありません: ${initImage.name || initImage.url}` });
+    }
+    let data;
+    try {
+      data = await fs.readFile(filePath);
+    } catch {
+      return sendJson(res, 400, { error: `img2img元画像ファイルが見つかりません: ${initImage.name || initImage.url}` });
+    }
+    requestPayload.init_images = [`data:${mimeForExtension(ext)};base64,${data.toString("base64")}`];
+    requestPayload.denoising_strength = boundedNumber(body.denoise, 0.75, 0, 1);
+    if (isDrawThings) requestPayload.strength = requestPayload.denoising_strength;
+  }
   if (isForgeNeo) {
     try {
       const overrideSettings = {
@@ -6243,8 +6380,11 @@ async function handleForgeCreate(req, res) {
     }
   }
   if (!requestPayload.scheduler) delete requestPayload.scheduler;
+  const responseRequest = requestPayload.init_images
+    ? { ...requestPayload, init_images: [`${requestPayload.init_images.length} base64 image(s) omitted`] }
+    : requestPayload;
   try {
-    const response = await fetch(forgeEndpoint(baseUrl, "/sdapi/v1/txt2img"), {
+    const response = await fetch(forgeEndpoint(baseUrl, isImg2Img ? "/sdapi/v1/img2img" : "/sdapi/v1/txt2img"), {
       method: "POST",
       headers: forgeHeaders(apiKey, {
         accept: "application/json",
@@ -6258,7 +6398,7 @@ async function handleForgeCreate(req, res) {
       return sendJson(res, response.status, {
         error: readableProviderError(payload) || `${label} が ${response.status} を返しました。`,
         providerPayload: scrubForgePayload(payload),
-        request: requestPayload
+        request: responseRequest
       });
     }
     const sourceImages = Array.isArray(payload.images) ? payload.images : [];
@@ -6266,7 +6406,7 @@ async function handleForgeCreate(req, res) {
       return sendJson(res, 502, {
         error: `${label}の生成結果に画像がありませんでした。`,
         providerPayload: scrubForgePayload(payload),
-        request: requestPayload
+        request: responseRequest
       });
     }
     const generationId = crypto.randomUUID();
@@ -6287,7 +6427,7 @@ async function handleForgeCreate(req, res) {
       progress: 100,
       images,
       providerPayload: scrubForgePayload(payload),
-      request: requestPayload
+      request: responseRequest
     });
   } catch (error) {
     sendJson(res, 502, { error: `${label} への生成投入に失敗しました: ${error.message}` });
@@ -6387,9 +6527,14 @@ async function handleComfyCreate(req, res) {
       });
     }
     const uploadedReferences = await uploadComfyReferenceImages(baseUrl, apiKey, body.references);
+    let uploadedInitImage = normalizedComfyInitImage(body.initImage);
+    if (uploadedInitImage?.url) {
+      uploadedInitImage = await uploadComfyReferenceImage(baseUrl, apiKey, { ...uploadedInitImage, inputName: "image" }, 99);
+    }
     const workflow = patchComfyWorkflow(body.workflowJson || body.workflow, {
       ...body,
-      references: uploadedReferences
+      references: uploadedReferences,
+      initImage: uploadedInitImage
     });
     const clientId = crypto.randomUUID();
     const requestPayload = {

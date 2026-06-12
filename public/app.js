@@ -938,6 +938,7 @@ const comfyDefaultSettings = {
   checkpoint: "",
   seed: "",
   loras: [],
+  denoise: 1,
   referenceSlots: []
 };
 
@@ -2585,6 +2586,7 @@ function normalizedComfySettings(value = {}) {
     samplerName: String(source.samplerName || "euler").trim() || "euler",
     scheduler: String(source.scheduler || "normal").trim() || "normal",
     batchSize: boundedSettingNumber(source.batchSize, 1, 1, 8, true),
+    denoise: boundedSettingNumber(source.denoise, 1, 0, 1),
     checkpoint: String(source.checkpoint || "").trim(),
     seed: String(source.seed ?? "").trim(),
     loras: normalizedComfyLoras(source.loras),
@@ -8918,6 +8920,9 @@ function imageControlsFromDom() {
   const gpuMode = imageControlValue("image-gpu-mode", state.imageGpuMode || settings.gpuMode) === "cloud" ? "cloud" : "local";
   const loraFallback = state.imagePromptDraft?.loras || settings.loras;
   const referenceSlots = comfyReferenceSlotsFromDom("image", state.imagePromptDraft?.referenceSlots || settings.referenceSlots, true);
+  const initImageKey = imageControlValue("image-init-image-key", state.imagePromptDraft?.initImageKey || "");
+  const initImageRef = initImageKey ? allImageReferences().find((item) => item.key === initImageKey) : null;
+  const denoiseRaw = imageControlValue("image-denoise", state.imagePromptDraft?.denoise ?? settings.denoise);
   const compareEnabled = document.querySelector("#image-compare-enabled")?.checked ?? Boolean(state.imagePromptDraft?.compareEnabled ?? state.imageCompareEnabled);
   return {
     workId: imageControlValue("image-work", state.imageWorkId || state.selectedWorkId || ""),
@@ -8936,6 +8941,9 @@ function imageControlsFromDom() {
     batchSize: Number(imageControlValue("image-batch-size", state.imagePromptDraft?.batchSize || settings.batchSize)) || settings.batchSize,
     seed: imageControlValue("image-seed", state.imagePromptDraft?.seed ?? settings.seed),
     checkpoint: imageControlValue("image-checkpoint", state.imagePromptDraft?.checkpoint || settings.checkpoint),
+    denoise: boundedSettingNumber(denoiseRaw === "" ? settings.denoise : denoiseRaw, 1, 0, 1),
+    initImageKey: initImageRef ? initImageKey : "",
+    initImage: initImageRef ? { key: initImageRef.key, name: initImageRef.name || initImageRef.subject || "img2img元画像", url: initImageRef.url } : null,
     loras: lorasFromDom("image", loraFallback),
     forgeNeoModules: forgeNeoModulesFromDom("image", state.imagePromptDraft?.forgeNeoModules || settings.forgeNeoModules),
     forgeNeoDtype: normalizedForgeNeoDtype(imageControlValue("image-forge-neo-dtype", state.imagePromptDraft?.forgeNeoDtype || settings.forgeNeoDtype)),
@@ -8988,6 +8996,8 @@ function rememberImageControls(controls, { clearValidation = true } = {}) {
     batchSize: controls.batchSize,
     seed: controls.seed,
     checkpoint: controls.checkpoint,
+    denoise: controls.denoise,
+    initImageKey: controls.initImageKey,
     loras: controls.loras,
     forgeNeoModules: controls.forgeNeoModules,
     forgeNeoDtype: controls.forgeNeoDtype,
@@ -9014,6 +9024,7 @@ function rememberImageControls(controls, { clearValidation = true } = {}) {
     batchSize: controls.batchSize,
     seed: controls.seed,
     checkpoint: controls.checkpoint,
+    denoise: controls.denoise,
     loras: controls.loras,
     forgeNeoModules: controls.forgeNeoModules,
     forgeNeoDtype: controls.forgeNeoDtype,
@@ -9043,6 +9054,7 @@ function currentComfySettingsForPreset() {
       samplerName: controls.samplerName,
       scheduler: controls.scheduler,
       batchSize: controls.batchSize,
+      denoise: controls.denoise,
       seed: controls.seed,
       checkpoint: controls.checkpoint,
       loras: controls.loras,
@@ -9087,6 +9099,7 @@ function applyComfyPreset(presetId) {
       samplerName: next.samplerName,
       scheduler: next.scheduler,
       batchSize: next.batchSize,
+      denoise: next.denoise,
       seed: next.seed,
       checkpoint: next.checkpoint,
       loras: next.loras,
@@ -9786,6 +9799,8 @@ function renderImageAgent() {
   const { items: jobs, pageInfo: historyPageInfo } = getPagedGenerationHistoryItems("image", allJobs);
   const compareGroups = imageCompareGroupsForWork(state.imageWorkId).slice(0, 4);
   const activeJobs = activeImageJobs();
+  const initImageReferences = imageReferenceOptionsForCurrentWork([controls.initImageKey].filter(Boolean));
+  const selectedInitImage = initImageReferences.find((item) => item.key === controls.initImageKey);
   return `
     <div class="video-layout image-layout">
       <section class="panel">
@@ -9845,6 +9860,28 @@ function renderImageAgent() {
           <label>Batch<input id="image-batch-size" type="number" min="1" max="8" value="${escapeHtml(controls.batchSize || settings.batchSize)}"></label>
           <label>Seed<input id="image-seed" type="number" placeholder="空欄でランダム" value="${escapeHtml(controls.seed ?? settings.seed)}"></label>
           <label class="full">モデル（Checkpoint）<input id="image-checkpoint" list="comfy-checkpoint-options" placeholder="${isForgeImageProvider(provider) ? `${imageProviderLabel(provider)}側の現在モデルを使う場合は空欄` : "workflow側の既定値を使う場合は空欄"}" value="${escapeHtml(controls.checkpoint || settings.checkpoint)}"></label>
+          <div class="full comfy-reference-panel">
+            <div class="toolbar slim-toolbar">
+              <div>
+                <div class="field-label">img2img（画像から生成）</div>
+                <div class="meta">元画像を選ぶとimg2imgで生成します。Denoiseが小さいほど元画像を保持（推奨0.4〜0.8、1.0はほぼ新規生成）。未選択ならtxt2imgです。</div>
+              </div>
+              <div>
+                <input id="image-init-file-input" type="file" accept="image/*" hidden>
+                <button class="ghost" data-action="choose-image-init-file">画像追加</button>
+              </div>
+            </div>
+            <div class="form-grid compact-grid">
+              <label>元画像
+                <select id="image-init-image-key">
+                  <option value="">指定なし（txt2img）</option>
+                  ${initImageReferences.map((item) => `<option value="${escapeHtml(item.key)}" ${controls.initImageKey === item.key ? "selected" : ""}>${escapeHtml(item.name || item.subject || "参照画像")}</option>`).join("")}
+                </select>
+              </label>
+              <label>Denoise<input id="image-denoise" type="number" min="0" max="1" step="0.05" value="${escapeHtml(controls.denoise ?? settings.denoise)}"></label>
+            </div>
+            ${selectedInitImage ? `<div class="reference-slot-preview"><img src="${escapeHtml(selectedInitImage.url)}" alt=""><span>${escapeHtml(selectedInitImage.subject || selectedInitImage.name || "")}</span></div>` : ""}
+          </div>
           ${provider === "forge-neo" ? `
             <div class="full comfy-reference-panel">
               <div class="field-label">Forge Neo詳細</div>
@@ -9892,7 +9929,7 @@ function renderImageAgent() {
               </div>
               ${renderComfyReferenceSlotRows("image", controls.referenceSlots || settings.referenceSlots, { includeReference: true })}
             </div>
-          ` : `<div class="full meta">${provider === "drawthings" ? "Draw Thingsの初期対応はtxt2imgです。生成に使うモデルはDraw Things側で事前にダウンロードまたはインポートし、Cloud Compute / Server Offloadを使う場合もDraw Things側でモデルと実行先を選んでください。参照画像Nodeを使う生成はComfyUIを選択してください。" : `${escapeHtml(imageProviderLabel(provider))}の初期対応はtxt2imgです。参照画像Nodeを使う生成はComfyUIを選択してください。`}</div>`}
+          ` : `<div class="full meta">${provider === "drawthings" ? "Draw Thingsでは上の元画像指定がある場合はimg2img、未指定ならtxt2imgで送ります。生成に使うモデルはDraw Things側で事前にダウンロードまたはインポートし、Cloud Compute / Server Offloadを使う場合もDraw Things側でモデルと実行先を選んでください。参照画像Nodeを使う生成はComfyUIを選択してください。" : `${escapeHtml(imageProviderLabel(provider))}では上の元画像指定がある場合はimg2img、未指定ならtxt2imgで送ります。参照画像Nodeを使う生成はComfyUIを選択してください。`}</div>`}
           ${renderComfyModelDatalists(provider)}
           ${renderComfyModelStatus(provider)}
           ${provider === "comfy" ? renderComfyValidationResult() : ""}
@@ -9997,13 +10034,14 @@ function renderImageJob(job) {
   const status = job.status;
   const loraText = activeComfyLoras(job.settings?.loras).map((item) => item.name).join(", ");
   const referenceText = (job.settings?.references || []).map((item) => item.name || item.key).filter(Boolean).join(", ");
+  const initImageText = job.settings?.initImage?.name || "";
   const compareText = job.compareGroupId ? `${imageCompareModeLabel(job.compareMode)}比較 ${job.compareIndex !== null ? `${job.compareIndex + 1}/${job.compareTotal || "?"}` : ""}${job.compareLabel ? ` / ${job.compareLabel}` : ""}` : "";
   return `
     <article class="image-job ${status} ${isGenerationHistorySelected("image", job.id) ? "history-selected" : ""}">
       ${renderGenerationHistoryCheckbox("image", job)}
       <div>
         <div class="char-name">${escapeHtml(job.title || "生成画像")}</div>
-        <div class="meta">${compareText ? `${escapeHtml(compareText)} / ` : ""}${escapeHtml(work?.name || "全作品")} / ${char ? `${escapeHtml(char.name)} / ` : ""}${escapeHtml(imageProviderLabel(job.provider))}${job.provider === "comfy" ? ` / ${escapeHtml(imageGpuLabel(job.gpuMode))}` : ""} / ${escapeHtml(imageStatusLabel(status))}${progress !== null ? ` ${escapeHtml(`${progress}%`)}` : ""}${loraText ? ` / LoRA: ${escapeHtml(loraText)}` : ""}${referenceText ? ` / 参照: ${escapeHtml(referenceText)}` : ""} / ${job.updatedAt ? escapeHtml(new Date(job.updatedAt).toLocaleString("ja-JP")) : ""}</div>
+        <div class="meta">${compareText ? `${escapeHtml(compareText)} / ` : ""}${escapeHtml(work?.name || "全作品")} / ${char ? `${escapeHtml(char.name)} / ` : ""}${escapeHtml(imageProviderLabel(job.provider))}${job.provider === "comfy" ? ` / ${escapeHtml(imageGpuLabel(job.gpuMode))}` : ""} / ${escapeHtml(imageStatusLabel(status))}${progress !== null ? ` ${escapeHtml(`${progress}%`)}` : ""}${loraText ? ` / LoRA: ${escapeHtml(loraText)}` : ""}${referenceText ? ` / 参照: ${escapeHtml(referenceText)}` : ""}${initImageText ? ` / img2img: ${escapeHtml(initImageText)}（Denoise ${escapeHtml(String(job.settings?.denoise ?? ""))}）` : ""} / ${job.updatedAt ? escapeHtml(new Date(job.updatedAt).toLocaleString("ja-JP")) : ""}</div>
       </div>
       ${activeImageJobStatuses.includes(status) ? `
         <div class="progress-track ${progress === null ? "indeterminate" : ""}">
@@ -10719,7 +10757,7 @@ function buildImageAgentText(inputText, controls) {
 ${inputText}
 
 現在の設定:
-  provider=${imageProviderLabel(controls.provider)}, gpu=${controls.gpuMode}, width=${controls.width}, height=${controls.height}, steps=${controls.steps}, cfg=${controls.cfg}, sampler=${controls.samplerName}, scheduler=${controls.scheduler}, batch=${controls.batchSize}, checkpoint=${controls.checkpoint || (isForgeImageProvider(controls.provider) ? `${imageProviderLabel(controls.provider)}現在値` : "workflow既定")}, lora=${loraText}, reference=${referenceText}${forgeNeoText}
+  provider=${imageProviderLabel(controls.provider)}, gpu=${controls.gpuMode}, width=${controls.width}, height=${controls.height}, steps=${controls.steps}, cfg=${controls.cfg}, sampler=${controls.samplerName}, scheduler=${controls.scheduler}, batch=${controls.batchSize}, denoise=${controls.denoise}, initImage=${controls.initImage?.name || "なし"}, checkpoint=${controls.checkpoint || (isForgeImageProvider(controls.provider) ? `${imageProviderLabel(controls.provider)}現在値` : "workflow既定")}, lora=${loraText}, reference=${referenceText}${forgeNeoText}
 
 作品情報 / 世界観:
 ${buildPromptLabWorldContext(work)}
@@ -11050,6 +11088,7 @@ function comfySettingsSnapshotFromControls(controls) {
     samplerName: controls.samplerName,
     scheduler: controls.scheduler,
     batchSize: controls.batchSize,
+    denoise: controls.denoise,
     seed: controls.seed,
     checkpoint: controls.checkpoint,
     loras: controls.loras,
@@ -11060,6 +11099,7 @@ function comfySettingsSnapshotFromControls(controls) {
     forgeNeoRefinerSwitchAt: controls.forgeNeoRefinerSwitchAt,
     forgeNeoOverrideSettingsJson: controls.forgeNeoOverrideSettingsJson,
     forgeNeoPayloadJson: controls.forgeNeoPayloadJson,
+    initImage: controls.initImage,
     references: controls.references,
     referenceSlots: comfyReferenceSlotSettings(controls.referenceSlots),
     baseUrl: controls.baseUrl
@@ -11080,6 +11120,7 @@ function persistImageGenerationState(controls, prompt = controls.prompt.trim()) 
     samplerName: controls.samplerName,
     scheduler: controls.scheduler,
     batchSize: controls.batchSize,
+    denoise: controls.denoise,
     seed: controls.seed,
     checkpoint: controls.checkpoint,
     loras: controls.loras,
@@ -11114,6 +11155,8 @@ function persistImageGenerationState(controls, prompt = controls.prompt.trim()) 
     batchSize: controls.batchSize,
     seed: controls.seed,
     checkpoint: controls.checkpoint,
+    denoise: controls.denoise,
+    initImageKey: controls.initImageKey,
     loras: controls.loras,
     forgeNeoModules: controls.forgeNeoModules,
     forgeNeoDtype: controls.forgeNeoDtype,
@@ -11341,8 +11384,11 @@ async function adoptImageJob(jobId) {
     samplerName: settings.samplerName || current.samplerName,
     scheduler: settings.scheduler || current.scheduler,
     batchSize: settings.batchSize ?? current.batchSize,
+    denoise: settings.denoise ?? current.denoise,
     seed: settings.seed ?? "",
     checkpoint: settings.checkpoint || "",
+    initImageKey: settings.initImage?.key || "",
+    initImage: settings.initImage || null,
     loras: normalizedComfyLoras(settings.loras || []),
     referenceSlots,
     references: activeComfyReferenceSlots(referenceSlots),
@@ -13604,6 +13650,9 @@ function renderComfySettings() {
         <label>既定Batch
           <input id="setting-comfy-batch-size" type="number" min="1" max="8" value="${escapeHtml(settings.batchSize)}">
         </label>
+        <label>Denoise
+          <input id="setting-comfy-denoise" type="number" min="0" max="1" step="0.05" value="${escapeHtml(settings.denoise)}">
+        </label>
         <label>既定Seed
           <input id="setting-comfy-seed" type="number" placeholder="空欄でランダム" value="${escapeHtml(settings.seed)}">
         </label>
@@ -15014,6 +15063,8 @@ function bindImageAgent() {
     "#image-batch-size",
     "#image-seed",
     "#image-checkpoint",
+    "#image-init-image-key",
+    "#image-denoise",
     "#image-forge-neo-dtype",
     "#image-forge-neo-distilled-cfg",
     "#image-forge-neo-refiner-checkpoint",
@@ -15045,6 +15096,7 @@ function bindImageAgent() {
   document.querySelectorAll("[id^='image-reference-']").forEach((input) => {
     input.addEventListener("input", persistImageControls);
   });
+  document.querySelector("#image-denoise")?.addEventListener("input", persistImageControls);
   document.querySelectorAll("[id^='image-lora-']").forEach((input) => {
     input.addEventListener("input", persistImageControls);
   });
@@ -15132,6 +15184,19 @@ function bindImageAgent() {
   });
   document.querySelector("#image-reference-file-input")?.addEventListener("change", async (event) => {
     await uploadImageReferenceFiles(event.target.files);
+  });
+  document.querySelector("[data-action='choose-image-init-file']")?.addEventListener("click", () => {
+    document.querySelector("#image-init-file-input")?.click();
+  });
+  document.querySelector("#image-init-file-input")?.addEventListener("change", async (event) => {
+    rememberImageControls(imageControlsFromDom(), { clearValidation: false });
+    const before = new Set(allImageReferences().map((item) => item.key));
+    await uploadImageReferenceFiles(event.target.files);
+    const added = allImageReferences().find((item) => !before.has(item.key));
+    if (added) {
+      state.imagePromptDraft = { ...(state.imagePromptDraft || {}), initImageKey: added.key };
+      render();
+    }
   });
   document.querySelector("[data-action='apply-comfy-preset']")?.addEventListener("click", applySelectedComfyPreset);
   document.querySelector("[data-action='save-comfy-preset']")?.addEventListener("click", openComfyPresetModal);
@@ -16102,6 +16167,7 @@ function comfySettingsFromDom() {
     samplerName: document.querySelector("#setting-comfy-sampler")?.value.trim() || current.samplerName,
     scheduler: document.querySelector("#setting-comfy-scheduler")?.value.trim() || current.scheduler,
     batchSize: document.querySelector("#setting-comfy-batch-size")?.value ?? current.batchSize,
+    denoise: document.querySelector("#setting-comfy-denoise")?.value ?? current.denoise,
     seed: document.querySelector("#setting-comfy-seed")?.value.trim() ?? current.seed,
     checkpoint: document.querySelector("#setting-comfy-checkpoint")?.value.trim() ?? current.checkpoint,
     loras: lorasFromDom("setting", current.loras),
