@@ -550,6 +550,33 @@ button:disabled {
   text-overflow: ellipsis;
 }
 
+.card-actions.card-actions-icons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-start;
+}
+
+.asset-card .card-actions-icons button,
+.asset-card .card-actions-icons a {
+  width: 32px;
+  min-width: 32px;
+  max-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: visible;
+}
+
+.card-actions-icons svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
 .asset-card button,
 .asset-card a,
 .asset-card select {

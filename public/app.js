@@ -37,6 +37,8 @@ const state = {
     { role: "assistant", content: "画像生成エージェントです。作りたい絵の構図、雰囲気、衣装、背景、避けたい要素を教えてください。" }
   ],
   imagePromptDraft: null,
+  imagePlan: null,
+  imagePlanRun: null,
   imageChatDraft: "",
   imageIsThinking: false,
   imageIsGenerating: false,
@@ -3729,14 +3731,28 @@ function renderAudioFinderButton(url) {
   return url && canRevealFiles() ? `<button type="button" class="ghost inline-finder-button" data-action="reveal-audio" data-url="${escapeHtml(url)}">Finder</button>` : "";
 }
 
-function renderDownloadButton(url, label = "DL") {
+const GALLERY_ACTION_ICONS = {
+  download: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v10"/><path d="m7 11 5 5 5-5"/><path d="M5 20h14"/></svg>`,
+  reveal: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>`,
+  details: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/></svg>`,
+  trash: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>`,
+};
+
+function renderDownloadButton(url, label = "DL", options = {}) {
   if (!url) return "";
   const filename = fileNameFromUrl(url, "download");
+  if (options.iconOnly) {
+    return `<a class="ghost icon-button inline-download-button" href="${escapeHtml(url)}" download="${escapeHtml(filename)}" title="ダウンロード" aria-label="ダウンロード">${GALLERY_ACTION_ICONS.download}</a>`;
+  }
   return `<a class="ghost inline-download-button" href="${escapeHtml(url)}" download="${escapeHtml(filename)}">${escapeHtml(label)}</a>`;
 }
 
-function renderAssetFinderButton(asset) {
-  return asset?.url && canRevealFiles() ? `<button class="ghost" data-action="reveal-asset" data-id="${escapeHtml(asset.id)}">Finder</button>` : "";
+function renderAssetFinderButton(asset, options = {}) {
+  if (!(asset?.url && canRevealFiles())) return "";
+  if (options.iconOnly) {
+    return `<button class="ghost icon-button" data-action="reveal-asset" data-id="${escapeHtml(asset.id)}" title="フォルダで表示" aria-label="フォルダで表示">${GALLERY_ACTION_ICONS.reveal}</button>`;
+  }
+  return `<button class="ghost" data-action="reveal-asset" data-id="${escapeHtml(asset.id)}">Finder</button>`;
 }
 
 function isUploadUrlReferenced(url, excludingAssetId = null) {
@@ -4927,11 +4943,11 @@ function renderGalleryAsset(asset) {
           ${dimensions ? `<div class="meta">${escapeHtml(dimensions)}</div>` : ""}
         </div>
         ${renderImageClassificationStatus(asset)}
-        <div class="card-actions">
-          ${renderDownloadButton(asset.url)}
-          ${renderAssetFinderButton(asset)}
-          <button class="ghost" data-action="view-asset" data-id="${asset.id}">詳細</button>
-          ${canUseDestructiveActions() ? `<button class="ghost danger-outline" data-action="delete-asset-completely" data-id="${asset.id}">完全削除</button>` : ""}
+        <div class="card-actions card-actions-icons">
+          ${renderDownloadButton(asset.url, "DL", { iconOnly: true })}
+          ${renderAssetFinderButton(asset, { iconOnly: true })}
+          <button class="ghost icon-button" data-action="view-asset" data-id="${asset.id}" title="詳細" aria-label="詳細">${GALLERY_ACTION_ICONS.details}</button>
+          ${canUseDestructiveActions() ? `<button class="ghost icon-button danger-outline" data-action="delete-asset-completely" data-id="${asset.id}" title="完全削除" aria-label="完全削除">${GALLERY_ACTION_ICONS.trash}</button>` : ""}
         </div>
       </div>
     </article>
@@ -9799,6 +9815,9 @@ function renderImageAgent() {
   const { items: jobs, pageInfo: historyPageInfo } = getPagedGenerationHistoryItems("image", allJobs);
   const compareGroups = imageCompareGroupsForWork(state.imageWorkId).slice(0, 4);
   const activeJobs = activeImageJobs();
+  const imagePlanRun = state.imagePlanRun;
+  const imagePlanActive = Boolean(imagePlanRun?.active);
+  const imagePlanProgress = imagePlanRun ? Math.round(((imagePlanRun.current || 0) / Math.max(1, imagePlanRun.total || 1)) * 100) : 0;
   const initImageReferences = imageReferenceOptionsForCurrentWork([controls.initImageKey].filter(Boolean));
   const selectedInitImage = initImageReferences.find((item) => item.key === controls.initImageKey);
   return `
@@ -9944,7 +9963,10 @@ function renderImageAgent() {
         <section class="panel video-chat-panel">
           <div class="panel-header">
             <h2>エージェント</h2>
-            <button class="ghost" data-action="image-make-draft" ${state.imageIsThinking ? "disabled" : ""}>画像案</button>
+            <div class="group">
+              <button class="ghost" data-action="image-make-draft" ${state.imageIsThinking || imagePlanActive ? "disabled" : ""}>画像案</button>
+              <button class="ghost" data-action="image-make-plan" ${state.imageIsThinking || imagePlanActive || state.imageIsGenerating ? "disabled" : ""}>連続生成プランを作成</button>
+            </div>
           </div>
           <div class="panel-body">
             <div class="chat-log">
@@ -9967,7 +9989,7 @@ function renderImageAgent() {
               <button class="ghost" data-action="open-animadex">AnimaDex</button>
               <button class="ghost" data-action="image-copy-prompt">コピー</button>
               ${(state.imageIsGenerating || state.imagePollingJobId || activeJobs.length) ? `<button class="ghost danger" data-action="discard-image-waiting">待機を破棄</button>` : ""}
-              <button class="accent" data-action="image-start-generation" ${state.imageIsGenerating ? "disabled" : ""}>${controls.compareEnabled ? "比較生成開始" : "生成開始"}</button>
+              <button class="accent" data-action="image-start-generation" ${state.imageIsGenerating || imagePlanActive ? "disabled" : ""}>${controls.compareEnabled ? "比較生成開始" : "生成開始"}</button>
             </div>
           </div>
           <div class="panel-body">
@@ -9975,6 +9997,18 @@ function renderImageAgent() {
             <label class="full negative-prompt-field">Negative
               <textarea id="image-negative-prompt" placeholder="low quality, blurry, bad anatomy...">${escapeHtml(controls.negativePrompt || "")}</textarea>
             </label>
+            ${imagePlanActive ? `
+              <div class="seedance-animation image-generating">
+                <div class="generation-status">
+                  <strong>プラン実行中: ${escapeHtml(imagePlanRun.current || 0)}/${escapeHtml(imagePlanRun.total || 0)}${imagePlanRun.stopRequested ? "（停止待ち）" : ""}</strong>
+                  <div class="progress-track ${imagePlanProgress <= 0 ? "indeterminate" : ""}">
+                    <span style="width:${imagePlanProgress <= 0 ? 38 : imagePlanProgress}%"></span>
+                  </div>
+                  ${imagePlanRun.error ? `<div class="meta">${escapeHtml(imagePlanRun.error)}</div>` : ""}
+                  <button class="ghost danger" data-action="stop-image-plan" ${imagePlanRun.stopRequested ? "disabled" : ""}>停止</button>
+                </div>
+              </div>
+            ` : ""}
             ${state.imageIsGenerating || state.imagePollingJobId ? renderComfyAnimation() : ""}
           </div>
         </section>
@@ -10728,6 +10762,13 @@ function buildImageAgentSystemPrompt() {
   }
 }
 
+必要に応じて、draft の代わりに次の任意契約を返せます。
+- ユーザーが「複数枚」「バリエーション」「連続生成」「一括」「シリーズ」などを望む場合は、draft ではなく plan を返してください。plan と draft は同時に返さないでください。1枚だけなら従来どおり draft を返してください。
+- plan は実行順の画像生成ステップ配列です。各ステップは { "title": "短いタイトル", "prompt": "英語のポジティブプロンプト", "negativePrompt": "英語のネガティブプロンプト", "width": 512から2048の整数, "height": 512から2048の整数, "steps": 1から150の整数, "cfg": 0から30の数値, "seed": "", "stepNote": "日本語一言" } にしてください。
+- plan は画像メディアのみです。動画・音声・他メディアへの連鎖は禁止です。
+- plan は2から8ステップに収め、各 prompt は構図、ポーズ、ライティング、服装、背景などを具体的に変えてください。
+- 未確定情報があれば ready=false と questions を入れつつ、実行可能な暫定 plan も返してください。
+
 画像生成プロンプトの優先ルール:
 - キャラの固定要素、作品情報、世界観設定を優先し、未設定の固有名詞や設定を捏造しない。
 - PromptはSubject -> Appearance -> Clothing -> Pose -> Environment -> Lighting -> Style -> Qualityの順にまとめる。
@@ -10802,11 +10843,43 @@ function mergeImageDraft(result, fallbackControls) {
   };
 }
 
-async function handleImageAgentMessage(forceDraft = false) {
+function normalizeImagePlanSteps(rawSteps) {
+  if (!Array.isArray(rawSteps)) return [];
+  const planNumber = (value, min, max, integer = false) => {
+    if (value === undefined || value === null || value === "") return null;
+    const number = Number(value);
+    if (!Number.isFinite(number) || number < min) return null;
+    return boundedSettingNumber(number, min, min, max, integer);
+  };
+  return rawSteps
+    .map((step, index) => {
+      const source = step || {};
+      const prompt = String(source.prompt || source.positivePrompt || source.positive_prompt || "").trim();
+      if (!prompt) return null;
+      return {
+        title: String(source.title || source.name || `生成ステップ ${index + 1}`).trim() || `生成ステップ ${index + 1}`,
+        prompt,
+        negativePrompt: String(source.negativePrompt || source.negative_prompt || "").trim(),
+        width: planNumber(source.width, 512, 2048, true),
+        height: planNumber(source.height, 512, 2048, true),
+        steps: planNumber(source.steps, 1, 150, true),
+        cfg: planNumber(source.cfg ?? source.cfgScale ?? source.cfg_scale, 0, 30),
+        seed: source.seed === undefined || source.seed === null ? "" : String(source.seed).trim(),
+        stepNote: String(source.stepNote || source.note || source.description || "").trim()
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+async function handleImageAgentMessage(forceDraft = false, forcePlan = false) {
   const chatInput = document.querySelector("#image-chat-input");
   const input = chatInput?.value.trim();
-  const message = input || (forceDraft ? "ここまでの会話と選択中の作品・キャラ設定から、画像生成用のプロンプト案を作ってください。" : "");
+  const message = input || (forcePlan
+    ? "ここまでの会話と選択中の作品・キャラ設定から、複数枚の連続生成プランを作ってください。"
+    : forceDraft ? "ここまでの会話と選択中の作品・キャラ設定から、画像生成用のプロンプト案を作ってください。" : "");
   if (!message) return toast("メッセージを入力してください。");
+  const requestMessage = forcePlan ? `${message}\n必ず plan（複数ステップ）形式で返してください。` : message;
   const controls = imageControlsFromDom();
   state.imageWorkId = controls.workId || null;
   state.imageCharacterId = controls.characterId || "";
@@ -10821,19 +10894,26 @@ async function handleImageAgentMessage(forceDraft = false) {
     const content = await callOpenRouter({
       purpose: "image",
       temperature: 0.45,
-      maxTokens: 2600,
+      maxTokens: forcePlan ? 4000 : 2600,
       responseFormat: { type: "json_object" },
       messages: [
         { role: "system", content: buildImageAgentSystemPrompt() },
-        { role: "user", content: buildImageAgentText(message, controls) }
+        { role: "user", content: buildImageAgentText(requestMessage, controls) }
       ]
     });
     const result = parseAiJson(content);
     state.imageChatMessages.push({ role: "assistant", content: result.message || result.answer || "画像案を更新しました。" });
-    const draft = mergeImageDraft(result, controls);
-    if (draft) state.imagePromptDraft = { ...(state.imagePromptDraft || {}), ...draft };
+    const planSteps = normalizeImagePlanSteps(result.plan || result.steps);
+    let draft = null;
+    if (planSteps.length) {
+      state.imagePlan = { steps: planSteps, createdAt: new Date().toISOString() };
+    } else {
+      draft = mergeImageDraft(result, controls);
+      if (draft) state.imagePromptDraft = { ...(state.imagePromptDraft || {}), ...draft };
+    }
     state.imageIsThinking = false;
     render({ preserveLiveTextDrafts: !draft });
+    if (planSteps.length) openImagePlanModal();
   } catch (error) {
     state.imageIsThinking = false;
     state.imageChatMessages.push({ role: "assistant", content: `エラー: ${error.message}${debugChatText(error)}` });
@@ -11360,6 +11440,246 @@ async function startComfyComparisonGeneration(controls) {
     .filter((job) => job.providerTaskId && activeImageJobStatuses.includes(job.status))
     .forEach((job) => pollComfyJob(job.id));
   toast(submitted ? `${submitted} 件の比較生成タスクを開始しました。` : "比較生成タスクを開始できませんでした。");
+}
+
+function openImagePlanModal() {
+  const steps = state.imagePlan?.steps || [];
+  if (!steps.length) {
+    state.imagePlan = null;
+    render({ preserveLiveTextDrafts: true });
+    return toast("有効な連続生成プランがありません。");
+  }
+  const controls = imageControlsFromDom();
+  const provider = imageProviderFromValue(controls.provider);
+  const stepRows = steps.map((step, index) => {
+    const width = step.width || controls.width;
+    const height = step.height || controls.height;
+    const stepCount = step.steps || controls.steps;
+    const cfg = step.cfg || controls.cfg;
+    const seed = step.seed || controls.seed || "ランダム";
+    return `
+      <li>
+        <strong>${escapeHtml(step.title || `生成ステップ ${index + 1}`)}</strong>
+        ${step.stepNote ? `<div class="meta">${escapeHtml(step.stepNote)}</div>` : ""}
+        <div>${escapeHtml(compactPromptText(step.prompt, 220))}</div>
+        <div class="meta">size=${escapeHtml(width)}x${escapeHtml(height)} / steps=${escapeHtml(stepCount)} / cfg=${escapeHtml(cfg)} / seed=${escapeHtml(seed)}</div>
+      </li>
+    `;
+  }).join("");
+  openModal(
+    "連続生成プランの承認",
+    `
+      <p class="meta">${escapeHtml(imageProviderLabel(provider))} で ${steps.length} 枚を上から順に自動生成します。各ステップ完了後に次へ進みます。</p>
+      <ol class="stack-list">${stepRows}</ol>
+    `,
+    `<button class="ghost" data-action="close-modal">キャンセル</button><button class="accent" data-action="approve-image-plan">承認して連続生成</button>`,
+    (modal, close) => {
+      const clearPlan = () => {
+        state.imagePlan = null;
+        render({ preserveLiveTextDrafts: true });
+      };
+      modal.querySelectorAll("[data-action='close-modal']").forEach((button) => {
+        button.addEventListener("click", clearPlan);
+      });
+      modal.querySelector("[data-action='approve-image-plan']")?.addEventListener("click", () => {
+        const approvedSteps = state.imagePlan?.steps || [];
+        close();
+        startImagePlanGeneration(approvedSteps);
+      });
+    }
+  );
+}
+
+function imageControlsFromPlanStep(step, base) {
+  const next = {
+    ...base,
+    compareEnabled: false,
+    title: step.title || base.title,
+    prompt: step.prompt || base.prompt,
+    negativePrompt: step.negativePrompt || base.negativePrompt
+  };
+  if (step.width) next.width = step.width;
+  if (step.height) next.height = step.height;
+  if (step.steps) next.steps = step.steps;
+  if (step.cfg !== null && step.cfg !== undefined) next.cfg = step.cfg;
+  if (step.seed) next.seed = step.seed;
+  return next;
+}
+
+function imagePlanStepToDraft(controls) {
+  return {
+    title: controls.title,
+    prompt: controls.prompt,
+    negativePrompt: controls.negativePrompt,
+    provider: imageProviderFromValue(controls.provider),
+    width: controls.width,
+    height: controls.height,
+    steps: controls.steps,
+    cfg: controls.cfg,
+    samplerName: controls.samplerName,
+    scheduler: controls.scheduler,
+    batchSize: controls.batchSize,
+    seed: controls.seed,
+    checkpoint: controls.checkpoint,
+    denoise: controls.denoise,
+    initImageKey: controls.initImageKey,
+    loras: controls.loras,
+    forgeNeoModules: controls.forgeNeoModules,
+    forgeNeoDtype: controls.forgeNeoDtype,
+    forgeNeoDistilledCfg: controls.forgeNeoDistilledCfg,
+    forgeNeoRefinerCheckpoint: controls.forgeNeoRefinerCheckpoint,
+    forgeNeoRefinerSwitchAt: controls.forgeNeoRefinerSwitchAt,
+    forgeNeoOverrideSettingsJson: controls.forgeNeoOverrideSettingsJson,
+    forgeNeoPayloadJson: controls.forgeNeoPayloadJson,
+    referenceSlots: controls.referenceSlots,
+    compareEnabled: false,
+    compareCount: state.imageCompareCount,
+    compareMode: state.imageCompareMode,
+    agentNote: "連続生成プランの最後に成功したステップを反映しました。"
+  };
+}
+
+function awaitImageJobTerminal(jobId, { timeoutMs = 20 * 60 * 1000 } = {}) {
+  const startedAt = Date.now();
+  pollComfyJob(jobId);
+  return new Promise((resolve) => {
+    const tick = async () => {
+      const job = byId(state.db.imageJobs || [], jobId);
+      if (!job) return resolve({ status: "failed", error: "画像生成ジョブが見つかりません。" });
+      if (state.imagePlanRun?.stopRequested && activeImageJobStatuses.includes(job.status)) {
+        job.cancelledProviderTaskId = job.providerTaskId;
+        job.providerTaskId = "";
+        job.status = "cancelled";
+        job.error = "連続生成プランの停止要求によりキャンセルしました。外部アプリ側の生成自体は停止できない場合があります。";
+        job.updatedAt = new Date().toISOString();
+        syncImageGenerationFlag();
+        await saveDb();
+        render({ preserveLiveTextDrafts: true });
+        return resolve({ status: "cancelled", error: job.error });
+      }
+      if (["succeeded", "failed", "cancelled"].includes(job.status)) {
+        return resolve({ status: job.status, error: job.error || "" });
+      }
+      if (Date.now() - startedAt > timeoutMs) {
+        job.cancelledProviderTaskId = job.providerTaskId;
+        job.providerTaskId = "";
+        job.status = "failed";
+        job.error = "連続生成プランの待機がタイムアウトしました。";
+        job.updatedAt = new Date().toISOString();
+        syncImageGenerationFlag();
+        await saveDb();
+        render({ preserveLiveTextDrafts: true });
+        return resolve({ status: "failed", error: job.error });
+      }
+      window.setTimeout(tick, 1500);
+    };
+    window.setTimeout(tick, 1500);
+  });
+}
+
+async function startImagePlanGeneration(steps) {
+  const planSteps = normalizeImagePlanSteps(steps);
+  if (state.imagePlanRun?.active || state.imageIsGenerating || state.imagePollingJobId) {
+    return toast("画像生成中のため、連続生成プランを開始できません。");
+  }
+  if (!planSteps.length) {
+    state.imagePlan = null;
+    render({ preserveLiveTextDrafts: true });
+    return toast("有効な連続生成プランがありません。");
+  }
+  const base = imageControlsFromDom();
+  const provider = imageProviderFromValue(base.provider);
+  if (!base.baseUrl) return toast(`${imageProviderLabel(provider)}のURLを設定してください。`);
+  if (provider === "comfy" && !base.workflowJson) return toast("設定画面で ComfyUI workflow JSON を保存してください。");
+  state.imagePlan = null;
+  state.imagePlanRun = { active: true, total: planSteps.length, current: 0, stopRequested: false, results: [], error: "" };
+  rememberImageControls(base);
+  render({ preserveLiveTextDrafts: true });
+  let lastDraft = null;
+  try {
+    for (let index = 0; index < planSteps.length; index += 1) {
+      if (state.imagePlanRun?.stopRequested) break;
+      state.imagePlanRun.current = index + 1;
+      render({ preserveLiveTextDrafts: true });
+      const step = planSteps[index];
+      const controls = imageControlsFromPlanStep(step, base);
+      const prompt = controls.prompt.trim();
+      if (!prompt) {
+        state.imagePlanRun.results.push({ index, status: "skipped", title: step.title || "" });
+        continue;
+      }
+      const createdAt = new Date(Date.now() + index).toISOString();
+      const job = buildImageJobFromControls({ ...controls, prompt }, {
+        title: controls.title,
+        prompt,
+        createdAt
+      });
+      job.planRun = true;
+      job.planIndex = index + 1;
+      job.planTotal = planSteps.length;
+      state.db.imageJobs.unshift(job);
+      resetGenerationHistoryPage("image");
+      state.imageIsGenerating = true;
+      await saveDb();
+      render({ preserveLiveTextDrafts: true });
+      toastApiSubmitted(`${imageProviderLabel(provider)}に連続生成 ${index + 1}/${planSteps.length} を送信しました。`);
+      const ok = await submitComfyImageJob(job, { ...controls, prompt });
+      if (!ok) {
+        const error = job.error || "画像生成タスクを開始できませんでした。";
+        state.imagePlanRun.error = error;
+        state.imagePlanRun.results.push({ index, status: "failed", title: controls.title, error });
+        break;
+      }
+      if (job.providerTaskId) {
+        const terminal = await awaitImageJobTerminal(job.id);
+        if (terminal.status !== "succeeded") {
+          const error = terminal.error || `画像生成タスクが ${imageStatusLabel(terminal.status)} で終了しました。`;
+          state.imagePlanRun.error = error;
+          state.imagePlanRun.results.push({ index, status: terminal.status, title: controls.title, error });
+          break;
+        }
+      } else if (!job.providerTaskId && ["failed", "cancelled"].includes(job.status)) {
+        const error = job.error || `画像生成タスクが ${imageStatusLabel(job.status)} で終了しました。`;
+        state.imagePlanRun.error = error;
+        state.imagePlanRun.results.push({ index, status: job.status, title: controls.title, error });
+        break;
+      } else if (activeImageJobStatuses.includes(job.status)) {
+        job.status = "succeeded";
+        job.progress = 100;
+        job.progressMessage = `${imageProviderLabel(provider)}で生成が完了しました。`;
+        job.updatedAt = new Date().toISOString();
+      }
+      state.imagePlanRun.results.push({ index, status: "succeeded", title: controls.title, jobId: job.id });
+      lastDraft = imagePlanStepToDraft(controls);
+    }
+  } catch (error) {
+    if (state.imagePlanRun) state.imagePlanRun.error = error.message;
+  } finally {
+    const run = state.imagePlanRun;
+    if (run) run.active = false;
+    syncImageGenerationFlag();
+    if (lastDraft) state.imagePromptDraft = { ...(state.imagePromptDraft || {}), ...lastDraft };
+    await saveDb();
+    render({ preserveLiveTextDrafts: true });
+    const done = (run?.results || []).filter((item) => item.status === "succeeded").length;
+    const total = run?.total || planSteps.length;
+    if (run?.stopRequested) {
+      toast(`連続生成を停止しました（${done}/${total}）。`);
+    } else if (run?.error) {
+      toast(`連続生成を中断しました（${done}/${total}）。${run.error}`);
+    } else {
+      toast(`連続生成が完了しました（${done}/${total}）。`);
+    }
+    state.imagePlanRun = null;
+    render({ preserveLiveTextDrafts: true });
+  }
+}
+
+function stopImagePlanGeneration() {
+  if (!state.imagePlanRun?.active) return toast("実行中の連続生成プランはありません。");
+  state.imagePlanRun.stopRequested = true;
+  render({ preserveLiveTextDrafts: true });
+  toast("現在のステップ完了後に停止します。");
 }
 
 async function adoptImageJob(jobId) {
@@ -15157,6 +15477,7 @@ function bindImageAgent() {
   });
   document.querySelector("[data-action='image-send-message']")?.addEventListener("click", () => handleImageAgentMessage(false));
   document.querySelector("[data-action='image-make-draft']")?.addEventListener("click", () => handleImageAgentMessage(true));
+  document.querySelector("[data-action='image-make-plan']")?.addEventListener("click", () => handleImageAgentMessage(false, true));
   document.querySelector("[data-action='open-animadex']")?.addEventListener("click", () => {
     rememberImageControls(imageControlsFromDom());
     openAnimaDexPromptModal();
@@ -15202,6 +15523,7 @@ function bindImageAgent() {
   document.querySelector("[data-action='save-comfy-preset']")?.addEventListener("click", openComfyPresetModal);
   document.querySelector("[data-action='update-comfy-preset']")?.addEventListener("click", updateSelectedComfyPreset);
   document.querySelector("[data-action='delete-comfy-preset']")?.addEventListener("click", deleteSelectedComfyPreset);
+  document.querySelector("[data-action='stop-image-plan']")?.addEventListener("click", stopImagePlanGeneration);
   document.querySelector("[data-action='image-start-generation']")?.addEventListener("click", startComfyGeneration);
   document.querySelectorAll("[data-action='refresh-image-job']").forEach((button) => {
     button.addEventListener("click", () => pollComfyJob(button.dataset.id));
