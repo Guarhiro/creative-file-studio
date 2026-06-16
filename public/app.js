@@ -56,12 +56,10 @@ const state = {
   imageEditWorkId: null,
   imageEditCharacterId: "",
   imageEditSourceKey: "",
-  imageEditProvider: "local",
-  imageEditBackgroundMode: "auto",
+  imageEditProvider: "manual",
+  imageEditTransparentPreview: "checker",
   imageEditTolerance: 42,
   imageEditFeather: 18,
-  imageEditChromaColor: "#ffffff",
-  imageEditClickPoints: [],
   imageEditRembgModel: "isnet-general-use",
   imageEditRembgAlphaMatting: false,
   imageEditRembgPostProcess: true,
@@ -420,8 +418,8 @@ const screenHelpContent = {
           { term: "保存時のキャラ", description: "処理後の画像を画像一覧へ保存する時に紐づけるキャラです。指定なしでも保存できます。" },
           { term: "対象画像", description: "処理に使う元画像です。保存済み画像または追加画像から選びます。" },
           { term: "処理", description: "背景除去、手動編集、ローカルAI、クラウドAPIなどの方式を切り替えます。" },
-          { term: "簡易ローカル", description: "ブラウザ内で外周につながる余白色を推定して透過します。軽い確認向きです。" },
-          { term: "手動フリーモード", description: "境界指定、ペン除去、復元ペンで透過PNGを手動調整します。" },
+          { term: "透明背景", description: "プレビュー内の透明部分の見え方です。網目、黒、白から選べます。出力PNGの透明は変わりません。" },
+          { term: "手動フリーモード", description: "ペン除去、復元ペン、クリック認識、四角/楕円/ペン/境界指定の切り取りを手動調整します。" },
           { term: "ローカルAI rembg", description: "rembgを使う高精度な背景除去です。初回セットアップが必要です。" },
           { term: "ローカルAI backgroundremover", description: "静止画に加えて動画/GIF背景除去にも使うローカル処理です。" },
           { term: "クラウド remove.bg", description: "remove.bg APIキーを使ってクラウドで背景除去します。" },
@@ -429,12 +427,11 @@ const screenHelpContent = {
           { term: "rembgモデル", description: "rembgで使う切り抜きモデルです。汎用、アニメ向け、人物向けなどから選びます。" },
           { term: "backgroundremoverモデル", description: "backgroundremoverで使うモデルです。U2-Netは汎用、U2-Net Pは軽量、U2-Net Humanは人物向けです。" },
           { term: "マスク後処理", description: "rembgで作ったマスクの穴やノイズを整える補助処理です。" },
-          { term: "外周から消す色", description: "簡易ローカル処理で外周からつながる余白を透明化する色です。自動、白、黒、指定色から選びます。" },
-          { term: "クリック領域", description: "元画像をクリックした地点から近い色の連結範囲を自動認識して透過します。" },
-          { term: "指定した余白色", description: "外周からつながる余白を指定色で抜く時の色です。余白が単色に近い画像で使います。" },
-          { term: "許容値", description: "余白色やクリック領域として扱う色の幅です。0-160で、高いほど広く抜けます。" },
+          { term: "許容値", description: "手動ツールのクリック認識で近い色として扱う幅です。0-160で、高いほど広く抜けます。" },
           { term: "境界ぼかし", description: "切り抜き境界をなじませる量です。0-80で、上げるほど境界がやわらかくなります。" },
-          { term: "手動ツール", description: "ペン除去、復元ペン、クリック認識、境界指定を切り替えます。" },
+          { term: "手動ツール", description: "ペン除去、復元ペン、クリック認識、切り取り範囲の形を切り替えます。" },
+          { term: "内側を残す", description: "選択範囲だけを残し、それ以外を透明化します。選択範囲は貼り付け用にも保持します。" },
+          { term: "内側を抜く", description: "選択範囲を透明化し、それ以外を残します。抜き取った範囲は貼り付け用にも保持します。" },
           { term: "ペンサイズ", description: "手動フリーモードで使うブラシの太さです。" },
           { term: "Alpha matting", description: "髪や半透明部分などの境界を補正する処理です。" },
           { term: "エッジ調整", description: "backgroundremoverのAlpha matting時に、境界をどれだけ内側へ削るかの値です。1-25で指定します。" },
@@ -675,7 +672,6 @@ const audioProviders = [
 ];
 
 const imageEditProviders = [
-  ["local", "簡易ローカル"],
   ["aspect", "アスペクト比変換"],
   ["manual", "手動フリーモード"],
   ["rembg", "ローカルAI rembg"],
@@ -706,24 +702,28 @@ const rembgModelOptions = [
   ["silueta", "Silueta（軽量）"]
 ];
 
-const imageEditOuterColorModes = [
-  ["auto", "余白色を推定"],
-  ["white", "白い余白"],
-  ["black", "黒い余白"],
-  ["chroma", "指定した余白色"]
-];
-
-const imageEditBackgroundModes = [
-  ...imageEditOuterColorModes,
-  ["click", "クリック領域"]
+const imageEditTransparentPreviewModes = [
+  ["checker", "網目"],
+  ["black", "黒"],
+  ["white", "白"]
 ];
 
 const manualImageEditTools = [
-  ["erase", "ペンで除去"],
+  ["erase", "除去: ペン"],
+  ["click", "除去: クリック認識"],
   ["restore", "復元ペン"],
-  ["click", "クリック認識"],
-  ["boundary", "境界指定"]
+  ["cut-rect", "切り取り: 四角"],
+  ["cut-ellipse", "切り取り: 楕円"],
+  ["cut-pen", "切り取り: ペン"],
+  ["cut-boundary", "切り取り: 境界指定"]
 ];
+
+const manualImageEditCutToolShapes = {
+  "cut-rect": "rect",
+  "cut-ellipse": "ellipse",
+  "cut-pen": "pen",
+  "cut-boundary": "boundary"
+};
 
 const imageEditAspectRatioOptions = [
   ["1:1", "1:1 正方形"],
@@ -4955,7 +4955,7 @@ function renderGalleryAsset(asset) {
 }
 
 function normalizedImageEditProvider(value) {
-  return imageEditProviders.some(([provider]) => provider === value) ? value : "local";
+  return imageEditProviders.some(([provider]) => provider === value) ? value : "manual";
 }
 
 function normalizedRembgModel(value) {
@@ -4973,12 +4973,21 @@ function normalizedBackgroundRemoverVideoMode(value) {
   return backgroundRemoverVideoModeOptions.some(([mode]) => mode === text) ? text : "transparent-gif";
 }
 
-function normalizedImageEditBackgroundMode(value) {
-  return imageEditBackgroundModes.some(([mode]) => mode === value) ? value : "auto";
+function normalizedImageEditTransparentPreview(value) {
+  return imageEditTransparentPreviewModes.some(([mode]) => mode === value) ? value : "checker";
 }
 
 function normalizedManualImageEditTool(value) {
-  return manualImageEditTools.some(([tool]) => tool === value) ? value : "erase";
+  const text = value === "boundary" ? "cut-boundary" : value;
+  return manualImageEditTools.some(([tool]) => tool === text) ? text : "erase";
+}
+
+function manualImageEditCutShape(value) {
+  return manualImageEditCutToolShapes[normalizedManualImageEditTool(value)] || "";
+}
+
+function isManualImageEditCutTool(value) {
+  return Boolean(manualImageEditCutShape(value));
 }
 
 function normalizedImageEditAspectRatio(value) {
@@ -5692,106 +5701,24 @@ function renderImageEditProviderButtons(selectedProvider) {
     .join("");
 }
 
-function imageEditBackgroundSwatchStyle(value) {
-  const mode = normalizedImageEditBackgroundMode(value);
-  if (mode === "white") return "background:#ffffff;";
-  if (mode === "black") return "background:#111111;";
-  if (mode === "chroma") return `background:${escapeHtml(state.imageEditChromaColor || "#ffffff")};`;
-  if (mode === "click") return "background:radial-gradient(circle at 52% 48%, #1f8a84 0 22%, transparent 23%), conic-gradient(from 45deg, #ffffff 0 25%, #d8d2c8 0 50%, #ffffff 0 75%, #d8d2c8 0);";
-  return "background:linear-gradient(135deg, #f7f2e7 0 48%, #5f7f86 48% 52%, #2d2a25 52% 100%);";
-}
-
-function renderImageEditBackgroundModeButtons(selectedMode) {
-  const selected = normalizedImageEditBackgroundMode(selectedMode);
-  return imageEditOuterColorModes
+function renderImageEditTransparentPreviewButtons(selectedMode) {
+  const selected = normalizedImageEditTransparentPreview(selectedMode);
+  return imageEditTransparentPreviewModes
     .map(([value, label]) => `
       <button
         type="button"
-        class="ghost image-edit-background-button ${value === selected ? "active-toggle" : ""}"
-        data-action="set-image-edit-background-mode"
+        class="ghost image-edit-transparent-button ${value === selected ? "active-toggle" : ""}"
+        data-action="set-image-edit-transparent-preview"
         data-mode="${escapeHtml(value)}"
         aria-pressed="${value === selected ? "true" : "false"}"
-      >
-        <span class="image-edit-background-swatch" style="${imageEditBackgroundSwatchStyle(value)}"></span>
-        <span>${escapeHtml(label)}</span>
-      </button>
+      >${escapeHtml(label)}</button>
     `)
     .join("");
 }
 
-function renderImageEditClickRecognitionButton(selectedMode) {
-  const selected = normalizedImageEditBackgroundMode(selectedMode);
-  const value = "click";
-  return `
-    <button
-      type="button"
-      class="ghost image-edit-background-button image-edit-region-button ${value === selected ? "active-toggle" : ""}"
-      data-action="set-image-edit-background-mode"
-      data-mode="${value}"
-      aria-pressed="${value === selected ? "true" : "false"}"
-    >
-      <span class="image-edit-background-swatch" style="${imageEditBackgroundSwatchStyle(value)}"></span>
-      <span>クリックした領域を消す</span>
-    </button>
-  `;
-}
-
-function imageEditSourceStamp(source) {
-  return [source?.key, source?.name, source?.createdAt, source?.url].filter(Boolean).join("|");
-}
-
-function normalizedImageEditClickPoint(value) {
-  if (!value) return null;
-  const x = Number(value.x);
-  const y = Number(value.y);
-  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
-  return {
-    x: Math.max(0, Math.min(1, x)),
-    y: Math.max(0, Math.min(1, y)),
-    sourceKey: String(value.sourceKey || ""),
-    sourceStamp: String(value.sourceStamp || "")
-  };
-}
-
-function normalizedImageEditClickPoints(value) {
-  const rawPoints = Array.isArray(value) ? value : (value ? [value] : []);
-  return rawPoints
-    .map((point) => normalizedImageEditClickPoint(point))
-    .filter(Boolean);
-}
-
-function imageEditClickPointsForSource(source = selectedImageEditSource()) {
-  const points = normalizedImageEditClickPoints(state.imageEditClickPoints || state.imageEditClickPoint);
-  if (!source) return [];
-  return points.filter((point) => {
-    if (point.sourceKey !== source.key) return false;
-    if (point.sourceStamp && point.sourceStamp !== imageEditSourceStamp(source)) return false;
-    return true;
-  });
-}
-
-function clearImageEditClickPoints() {
-  state.imageEditClickPoints = [];
-}
-
-function renderImageEditClickMarkers(points) {
-  return normalizedImageEditClickPoints(points)
-    .map((point, index) => `<span class="image-edit-click-marker" style="left:${escapeHtml(String(point.x * 100))}%; top:${escapeHtml(String(point.y * 100))}%;">${escapeHtml(String(index + 1))}</span>`)
-    .join("");
-}
-
-function renderImageEditSourcePreview(source, provider, mode) {
+function renderImageEditSourcePreview(source) {
   if (!source) return `<div class="empty compact">画像を選択してください。</div>`;
   const src = escapeHtml(source.url);
-  if (provider === "local" && normalizedImageEditBackgroundMode(mode) === "click") {
-    const points = imageEditClickPointsForSource(source);
-    return `
-      <button type="button" class="image-edit-click-stage" data-action="set-image-edit-click-point">
-        <img id="image-edit-click-source" class="transparent-preview" src="${src}" alt="">
-        ${renderImageEditClickMarkers(points)}
-      </button>
-    `;
-  }
   return `<img class="transparent-preview" src="${src}" alt="">`;
 }
 
@@ -5940,19 +5867,21 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
   const selectedSource = selectedImageEditSource();
   let provider = forcedProvider ? normalizedImageEditProvider(forcedProvider) : normalizedImageEditProvider(state.imageEditProvider);
   if (!forcedProvider && provider === "aspect") {
-    provider = "local";
+    provider = "manual";
     state.imageEditProvider = provider;
   }
-  const mode = normalizedImageEditBackgroundMode(state.imageEditBackgroundMode);
   const result = state.imageEditResult;
   const aspectResult = provider === "aspect" && result?.provider === "aspect" ? result : null;
   const isRembgBusy = state.rembgStatus === "loading" || state.rembgStatus === "installing";
   const isBackgroundRemoverBusy = state.backgroundRemoverStatus === "loading" || state.backgroundRemoverStatus === "installing";
-  const clickPointCount = imageEditClickPointsForSource(selectedSource).length;
-  const needsClickPoint = provider === "local" && mode === "click" && clickPointCount === 0;
   const runButtonLabel = imageEditRunButtonLabel(provider);
+  const manualTool = normalizedManualImageEditTool(state.imageEditManualTool);
+  const manualCutTool = isManualImageEditCutTool(manualTool);
+  const manualClipboardReady = manualImageEditorClipboardReady();
+  const manualPasteDraftReady = Boolean(manualImageEditor.pasteDraft);
+  const transparentPreview = normalizedImageEditTransparentPreview(state.imageEditTransparentPreview);
   return `
-    <div class="image-edit-stack">
+    <div class="image-edit-stack image-edit-transparent-${escapeHtml(transparentPreview)}">
     <div class="video-layout image-edit-layout">
       <section class="panel">
         <div class="panel-header"><h2>編集元</h2></div>
@@ -5982,6 +5911,12 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
               </div>
             </div>
           `}
+          <div class="full image-edit-transparent-panel">
+            <div class="meta">透明背景</div>
+            <div class="image-edit-transparent-buttons">
+              ${renderImageEditTransparentPreviewButtons(transparentPreview)}
+            </div>
+          </div>
           ${provider === "aspect" ? `
             <label>変換後の比率
               <select id="image-edit-aspect-ratio">${renderImageEditAspectRatioOptions(state.imageEditAspectRatio)}</select>
@@ -6037,13 +5972,13 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
           ` : provider === "manual" ? `
             <label>手動ツール
               <select id="image-edit-manual-tool">
-                ${manualImageEditTools.map(([value, label]) => `<option value="${value}" ${state.imageEditManualTool === value ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
+                ${manualImageEditTools.map(([value, label]) => `<option value="${value}" ${manualTool === value ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
               </select>
             </label>
             <label>ペンサイズ
               <input id="image-edit-manual-brush-size" type="range" min="4" max="220" value="${escapeHtml(state.imageEditManualBrushSize)}">
             </label>
-            ${normalizedManualImageEditTool(state.imageEditManualTool) === "click" ? `
+            ${manualTool === "click" ? `
               <label>許容値
                 <input id="image-edit-tolerance" type="range" min="0" max="160" value="${escapeHtml(state.imageEditTolerance)}">
               </label>
@@ -6052,15 +5987,22 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
               </label>
               <div class="full meta">キャンバスをクリックすると、その地点からつながる範囲を透過します。ペン編集や復元ペンへ切り替えても反映済みの結果は残ります。</div>
             ` : ""}
-            <div class="full toolbar">
-              <button class="ghost" data-action="manual-image-edit-undo" ${selectedSource ? "" : "disabled"}>戻す</button>
-              <button class="ghost" data-action="manual-image-edit-reset" ${selectedSource ? "" : "disabled"}>リセット</button>
-              <button class="ghost" data-action="manual-image-edit-clear-boundary" ${selectedSource ? "" : "disabled"}>境界を消去</button>
-            </div>
-            <div class="full toolbar">
-              <button class="ghost" data-action="manual-image-edit-keep-inside" ${selectedSource ? "" : "disabled"}>境界の外側を除去</button>
-              <button class="ghost" data-action="manual-image-edit-remove-inside" ${selectedSource ? "" : "disabled"}>境界の内側を除去</button>
-            </div>
+            ${manualCutTool ? `
+              <div class="full image-edit-manual-cut-panel">
+                <div class="image-edit-manual-cut-title">範囲カット&ペースト</div>
+                <div class="toolbar">
+                  <button class="ghost" data-action="manual-image-edit-clear-selection" ${selectedSource ? "" : "disabled"}>選択を消去</button>
+                  <button class="ghost" data-action="manual-image-edit-keep-inside" ${selectedSource ? "" : "disabled"}>内側を残す</button>
+                  <button class="ghost" data-action="manual-image-edit-remove-inside" ${selectedSource ? "" : "disabled"}>内側を抜く</button>
+                </div>
+                <div class="toolbar">
+                  <button class="ghost" data-action="manual-image-edit-paste" ${selectedSource && manualClipboardReady ? "" : "disabled"}>貼り付け</button>
+                  <button class="ghost" data-action="manual-image-edit-commit-paste" ${selectedSource && manualPasteDraftReady ? "" : "disabled"}>貼り付けを確定</button>
+                  <button class="ghost" data-action="manual-image-edit-cancel-paste" ${selectedSource && manualPasteDraftReady ? "" : "disabled"}>貼り付けを取り消し</button>
+                </div>
+                <div class="meta image-edit-manual-clipboard-meta">${manualClipboardReady ? escapeHtml(manualImageEditorClipboardSummary()) : "切り取り保持: なし"}</div>
+              </div>
+            ` : ""}
           ` : provider === "removebg" ? `
             ${canUseSettings() ? `
             <label>remove.bg APIキー
@@ -6100,40 +6042,9 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
               ${canUseSettings() ? `<button class="ghost" data-action="setup-backgroundremover" ${isBackgroundRemoverBusy ? "disabled" : ""}>backgroundremoverをセットアップ</button>` : ""}
             </div>
             <div class="full meta">${escapeHtml(backgroundRemoverStatusText())}</div>
-          ` : `
-            <div class="full image-edit-background-panel">
-              <div class="meta">外周から消す色</div>
-              <select id="image-edit-background-mode" hidden aria-hidden="true" tabindex="-1">
-                ${imageEditBackgroundModes.map(([value, label]) => `<option value="${value}" ${mode === value ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
-              </select>
-              <div class="image-edit-background-buttons">
-                ${renderImageEditBackgroundModeButtons(mode)}
-              </div>
-            </div>
-            <div class="full image-edit-background-panel">
-              <div class="meta">クリック領域</div>
-              <div class="image-edit-background-buttons image-edit-region-buttons">
-                ${renderImageEditClickRecognitionButton(mode)}
-              </div>
-            </div>
-            <label>余白の指定色
-              <input id="image-edit-chroma-color" type="color" value="${escapeHtml(state.imageEditChromaColor || "#ffffff")}">
-            </label>
-            <label>許容値
-              <input id="image-edit-tolerance" type="range" min="0" max="160" value="${escapeHtml(state.imageEditTolerance)}">
-            </label>
-            <label>境界ぼかし
-              <input id="image-edit-feather" type="range" min="0" max="80" value="${escapeHtml(state.imageEditFeather)}">
-            </label>
-            ${mode === "click" ? `
-              <div class="full toolbar">
-                <button class="ghost" data-action="undo-image-edit-click-point" ${clickPointCount ? "" : "disabled"}>戻す</button>
-              </div>
-              <div class="full meta">クリック指定: ${escapeHtml(String(clickPointCount))} 点</div>
-            ` : ""}
-          `}
+          ` : ""}
           <div class="full toolbar">
-            <button class="accent" data-action="run-image-edit" ${state.imageEditIsRunning || !selectedSource || needsClickPoint ? "disabled" : ""}>${runButtonLabel}</button>
+            <button class="accent" data-action="run-image-edit" ${state.imageEditIsRunning || !selectedSource ? "disabled" : ""}>${runButtonLabel}</button>
             <button class="ghost" data-action="save-image-edit-result" ${result ? "" : "disabled"}>画像一覧へ保存</button>
           </div>
         </div>
@@ -6144,8 +6055,14 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
           <div class="image-edit-preview-grid">
             <article class="image-edit-preview-card">
               <div class="meta">元画像</div>
-              ${renderImageEditSourcePreview(selectedSource, provider, mode)}
+              ${renderImageEditSourcePreview(selectedSource)}
               ${selectedSource ? `<div class="meta">${escapeHtml(selectedSource.name || "")}${selectedSource.dimensions ? ` / ${escapeHtml(selectedSource.dimensions)}` : ""}</div>` : ""}
+              ${provider === "manual" ? `
+                <div class="toolbar image-edit-manual-source-actions">
+                  <button class="ghost" data-action="manual-image-edit-undo" ${selectedSource ? "" : "disabled"}>戻す</button>
+                  <button class="ghost" data-action="manual-image-edit-reset" ${selectedSource ? "" : "disabled"}>リセット</button>
+                </div>
+              ` : ""}
             </article>
             <article class="image-edit-preview-card">
               <div class="meta">処理後</div>
@@ -6332,11 +6249,9 @@ function imageEditControlsFromDom() {
     characterId: document.querySelector("#image-edit-character")?.value || "",
     sourceKey: document.querySelector("#image-edit-source")?.value || "",
     provider: normalizedImageEditProvider(document.querySelector("#image-edit-provider")?.value || state.imageEditProvider),
-    backgroundMode: normalizedImageEditBackgroundMode(document.querySelector("#image-edit-background-mode")?.value || state.imageEditBackgroundMode),
+    transparentPreview: normalizedImageEditTransparentPreview(state.imageEditTransparentPreview),
     tolerance: imageEditToleranceValue(document.querySelector("#image-edit-tolerance")?.value || state.imageEditTolerance),
     feather: imageEditFeatherValue(document.querySelector("#image-edit-feather")?.value || state.imageEditFeather),
-    chromaColor: document.querySelector("#image-edit-chroma-color")?.value || state.imageEditChromaColor || "#ffffff",
-    clickPoints: imageEditClickPointsForSource(selectedImageEditSource()),
     rembgModel: normalizedRembgModel(document.querySelector("#image-edit-rembg-model")?.value || state.imageEditRembgModel),
     rembgAlphaMatting: document.querySelector("#image-edit-rembg-alpha-matting")?.checked ?? state.imageEditRembgAlphaMatting,
     rembgPostProcess: document.querySelector("#image-edit-rembg-post-process")?.checked ?? state.imageEditRembgPostProcess,
@@ -6361,11 +6276,9 @@ function rememberImageEditControls(controls = imageEditControlsFromDom()) {
   state.imageEditCharacterId = controls.characterId || "";
   state.imageEditSourceKey = controls.sourceKey || state.imageEditSourceKey || "";
   state.imageEditProvider = normalizedImageEditProvider(controls.provider);
-  state.imageEditBackgroundMode = normalizedImageEditBackgroundMode(controls.backgroundMode);
+  state.imageEditTransparentPreview = normalizedImageEditTransparentPreview(controls.transparentPreview);
   state.imageEditTolerance = imageEditToleranceValue(controls.tolerance);
   state.imageEditFeather = imageEditFeatherValue(controls.feather);
-  state.imageEditChromaColor = controls.chromaColor || "#ffffff";
-  state.imageEditClickPoints = normalizedImageEditClickPoints(controls.clickPoints || controls.clickPoint);
   state.imageEditRembgModel = normalizedRembgModel(controls.rembgModel);
   state.imageEditRembgAlphaMatting = Boolean(controls.rembgAlphaMatting);
   state.imageEditRembgPostProcess = Boolean(controls.rembgPostProcess);
@@ -6424,17 +6337,6 @@ function rememberVideoGifControls(controls = videoGifControlsFromDom()) {
   state.videoGifDuration = videoGifDurationValue(controls.duration);
 }
 
-function parseHexColor(value) {
-  const match = String(value || "").trim().match(/^#?([0-9a-f]{6})$/i);
-  if (!match) return [255, 255, 255];
-  const hex = match[1];
-  return [
-    Number.parseInt(hex.slice(0, 2), 16),
-    Number.parseInt(hex.slice(2, 4), 16),
-    Number.parseInt(hex.slice(4, 6), 16)
-  ];
-}
-
 function imageFromDataUrl(dataUrl) {
   return new Promise((resolve, reject) => {
     const image = new Image();
@@ -6459,6 +6361,11 @@ const manualImageEditor = {
   currentImageData: null,
   undoStack: [],
   lassoPoints: [],
+  selectionStart: null,
+  selectionEnd: null,
+  selectionShape: "",
+  clipboard: null,
+  pasteDraft: null,
   hoverPoint: null,
   isDrawing: false,
   pointerId: null,
@@ -6514,6 +6421,7 @@ async function ensureManualImageEditor() {
     manualImageEditorAttach(canvas, overlay);
     manualImageEditorRedraw();
     bindManualImageEditorCanvas();
+    manualImageEditorUpdatePasteButtons();
     return true;
   }
   const loadToken = manualImageEditor.loadToken + 1;
@@ -6532,7 +6440,8 @@ async function ensureManualImageEditor() {
   manualImageEditor.height = height;
   manualImageEditor.originalImage = image;
   manualImageEditor.undoStack = [];
-  manualImageEditor.lassoPoints = [];
+  manualImageEditorResetSelection();
+  manualImageEditor.pasteDraft = null;
   manualImageEditor.hoverPoint = null;
   manualImageEditor.isDrawing = false;
   manualImageEditor.pointerId = null;
@@ -6545,6 +6454,7 @@ async function ensureManualImageEditor() {
   manualImageEditor.currentImageData = context.getImageData(0, 0, width, height);
   bindManualImageEditorCanvas();
   manualImageEditorDrawOverlay();
+  manualImageEditorUpdatePasteButtons();
   return true;
 }
 
@@ -6564,34 +6474,288 @@ function manualImageEditorDistance(a, b) {
   return Math.sqrt(dx * dx + dy * dy);
 }
 
+function manualImageEditorResetSelection() {
+  manualImageEditor.lassoPoints = [];
+  manualImageEditor.selectionStart = null;
+  manualImageEditor.selectionEnd = null;
+  manualImageEditor.selectionShape = "";
+}
+
+function manualImageEditorClipboardReady() {
+  return Boolean(manualImageEditor.clipboard?.dataUrl);
+}
+
+function manualImageEditorClipboardSummary() {
+  if (!manualImageEditorClipboardReady()) return "切り取り保持: なし";
+  const width = manualImageEditor.clipboard.width || 0;
+  const height = manualImageEditor.clipboard.height || 0;
+  const size = width && height ? `${width}x${height}` : "サイズ未取得";
+  return `切り取り保持: ${size}`;
+}
+
+function manualImageEditorNormalizeRect(start, end) {
+  if (!start || !end) return null;
+  const x = Math.max(0, Math.min(start.x, end.x));
+  const y = Math.max(0, Math.min(start.y, end.y));
+  const right = Math.min(manualImageEditor.width, Math.max(start.x, end.x));
+  const bottom = Math.min(manualImageEditor.height, Math.max(start.y, end.y));
+  const width = right - x;
+  const height = bottom - y;
+  if (width < 2 || height < 2) return null;
+  return { x, y, width, height };
+}
+
+function manualImageEditorSelectionShape() {
+  return manualImageEditor.selectionShape || manualImageEditCutShape(state.imageEditManualTool);
+}
+
+function manualImageEditorSelectionBounds(shape = manualImageEditorSelectionShape()) {
+  const normalizedShape = shape || "";
+  if (normalizedShape === "rect" || normalizedShape === "ellipse") {
+    const rect = manualImageEditorNormalizeRect(manualImageEditor.selectionStart, manualImageEditor.selectionEnd);
+    if (!rect) return null;
+    return {
+      x: Math.floor(rect.x),
+      y: Math.floor(rect.y),
+      width: Math.ceil(rect.width),
+      height: Math.ceil(rect.height)
+    };
+  }
+  const points = manualImageEditor.lassoPoints || [];
+  if (normalizedShape === "boundary" && points.length < 3) return null;
+  if (normalizedShape === "pen" && !points.length) return null;
+  if (normalizedShape !== "boundary" && normalizedShape !== "pen") return null;
+  const radius = normalizedShape === "pen" ? imageEditManualBrushSizeValue(state.imageEditManualBrushSize) / 2 : 0;
+  const minX = Math.max(0, Math.floor(Math.min(...points.map((point) => point.x)) - radius));
+  const minY = Math.max(0, Math.floor(Math.min(...points.map((point) => point.y)) - radius));
+  const maxX = Math.min(manualImageEditor.width, Math.ceil(Math.max(...points.map((point) => point.x)) + radius));
+  const maxY = Math.min(manualImageEditor.height, Math.ceil(Math.max(...points.map((point) => point.y)) + radius));
+  const width = maxX - minX;
+  const height = maxY - minY;
+  if (width < 1 || height < 1) return null;
+  return { x: minX, y: minY, width, height };
+}
+
+function manualImageEditorDrawSelectionMask(context, shape = manualImageEditorSelectionShape()) {
+  if (!context) return false;
+  const normalizedShape = shape || "";
+  context.save();
+  context.fillStyle = "rgba(0, 0, 0, 1)";
+  context.strokeStyle = "rgba(0, 0, 0, 1)";
+  if (normalizedShape === "rect") {
+    const rect = manualImageEditorNormalizeRect(manualImageEditor.selectionStart, manualImageEditor.selectionEnd);
+    if (!rect) {
+      context.restore();
+      return false;
+    }
+    context.fillRect(rect.x, rect.y, rect.width, rect.height);
+  } else if (normalizedShape === "ellipse") {
+    const rect = manualImageEditorNormalizeRect(manualImageEditor.selectionStart, manualImageEditor.selectionEnd);
+    if (!rect) {
+      context.restore();
+      return false;
+    }
+    context.beginPath();
+    context.ellipse(rect.x + rect.width / 2, rect.y + rect.height / 2, rect.width / 2, rect.height / 2, 0, 0, Math.PI * 2);
+    context.fill();
+  } else if (normalizedShape === "pen") {
+    const points = manualImageEditor.lassoPoints || [];
+    if (!points.length) {
+      context.restore();
+      return false;
+    }
+    const brushSize = imageEditManualBrushSizeValue(state.imageEditManualBrushSize);
+    context.lineWidth = brushSize;
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    context.beginPath();
+    context.moveTo(points[0].x, points[0].y);
+    points.slice(1).forEach((point) => context.lineTo(point.x, point.y));
+    if (points.length === 1) {
+      context.arc(points[0].x, points[0].y, brushSize / 2, 0, Math.PI * 2);
+      context.fill();
+    } else {
+      context.stroke();
+    }
+  } else if (normalizedShape === "boundary") {
+    const points = manualImageEditor.lassoPoints || [];
+    if (points.length < 3) {
+      context.restore();
+      return false;
+    }
+    context.beginPath();
+    context.moveTo(points[0].x, points[0].y);
+    points.slice(1).forEach((point) => context.lineTo(point.x, point.y));
+    context.closePath();
+    context.fill();
+  } else {
+    context.restore();
+    return false;
+  }
+  context.restore();
+  return true;
+}
+
+function manualImageEditorBuildSelectionMask() {
+  if (!manualImageEditorReady()) return null;
+  const shape = manualImageEditorSelectionShape();
+  const bounds = manualImageEditorSelectionBounds(shape);
+  if (!shape || !bounds) return null;
+  const maskCanvas = document.createElement("canvas");
+  maskCanvas.width = manualImageEditor.width;
+  maskCanvas.height = manualImageEditor.height;
+  const context = maskCanvas.getContext("2d");
+  if (!manualImageEditorDrawSelectionMask(context, shape)) return null;
+  return { canvas: maskCanvas, bounds, shape };
+}
+
+function manualImageEditorSelectionClipboardCanvas(maskInfo) {
+  const bounds = maskInfo?.bounds;
+  if (!bounds?.width || !bounds?.height) return null;
+  const canvas = document.createElement("canvas");
+  canvas.width = bounds.width;
+  canvas.height = bounds.height;
+  const context = canvas.getContext("2d");
+  context.drawImage(
+    manualImageEditor.canvas,
+    bounds.x,
+    bounds.y,
+    bounds.width,
+    bounds.height,
+    0,
+    0,
+    bounds.width,
+    bounds.height
+  );
+  context.save();
+  context.globalCompositeOperation = "destination-in";
+  context.drawImage(
+    maskInfo.canvas,
+    bounds.x,
+    bounds.y,
+    bounds.width,
+    bounds.height,
+    0,
+    0,
+    bounds.width,
+    bounds.height
+  );
+  context.restore();
+  return canvas;
+}
+
+function manualImageEditorStoreClipboard(canvas) {
+  if (!canvas?.width || !canvas?.height) return false;
+  manualImageEditor.clipboard = {
+    dataUrl: canvas.toDataURL("image/png"),
+    width: canvas.width,
+    height: canvas.height,
+    sourceName: manualImageEditor.sourceName || "image.png",
+    createdAt: new Date().toISOString()
+  };
+  return true;
+}
+
+function manualImageEditorClampPasteDraft() {
+  const draft = manualImageEditor.pasteDraft;
+  if (!draft) return;
+  const minX = 1 - draft.width;
+  const minY = 1 - draft.height;
+  const maxX = Math.max(0, manualImageEditor.width - 1);
+  const maxY = Math.max(0, manualImageEditor.height - 1);
+  draft.x = Math.max(minX, Math.min(maxX, draft.x));
+  draft.y = Math.max(minY, Math.min(maxY, draft.y));
+}
+
+function manualImageEditorPasteHitTest(point) {
+  const draft = manualImageEditor.pasteDraft;
+  if (!draft || !point) return false;
+  return point.x >= draft.x && point.x <= draft.x + draft.width && point.y >= draft.y && point.y <= draft.y + draft.height;
+}
+
+function manualImageEditorUpdatePasteButtons() {
+  const hasClipboard = manualImageEditorClipboardReady();
+  const hasDraft = Boolean(manualImageEditor.pasteDraft);
+  const canEdit = manualImageEditorReady();
+  const pasteButton = document.querySelector("[data-action='manual-image-edit-paste']");
+  const commitButton = document.querySelector("[data-action='manual-image-edit-commit-paste']");
+  const cancelButton = document.querySelector("[data-action='manual-image-edit-cancel-paste']");
+  if (pasteButton) pasteButton.disabled = !canEdit || !hasClipboard;
+  if (commitButton) commitButton.disabled = !canEdit || !hasDraft;
+  if (cancelButton) cancelButton.disabled = !canEdit || !hasDraft;
+  const meta = document.querySelector(".image-edit-manual-clipboard-meta");
+  if (meta) meta.textContent = manualImageEditorClipboardSummary();
+}
+
 function manualImageEditorDrawOverlay() {
   const context = manualImageEditor.overlayContext;
   if (!context || !manualImageEditor.overlay) return;
   const width = manualImageEditor.overlay.width;
   const height = manualImageEditor.overlay.height;
   context.clearRect(0, 0, width, height);
-  const points = manualImageEditor.lassoPoints;
-  if (points.length) {
+  const shape = manualImageEditorSelectionShape();
+  const rect = manualImageEditorNormalizeRect(manualImageEditor.selectionStart, manualImageEditor.selectionEnd);
+  const points = manualImageEditor.lassoPoints || [];
+  if ((shape === "rect" || shape === "ellipse") && rect) {
     context.save();
     context.lineWidth = Math.max(2, Math.min(width, height) / 220);
     context.strokeStyle = "rgba(31, 138, 132, 0.95)";
     context.fillStyle = "rgba(31, 138, 132, 0.12)";
     context.setLineDash([10, 8]);
+    if (shape === "ellipse") {
+      context.beginPath();
+      context.ellipse(rect.x + rect.width / 2, rect.y + rect.height / 2, rect.width / 2, rect.height / 2, 0, 0, Math.PI * 2);
+      context.fill();
+      context.stroke();
+    } else {
+      context.fillRect(rect.x, rect.y, rect.width, rect.height);
+      context.strokeRect(rect.x, rect.y, rect.width, rect.height);
+    }
+    context.restore();
+  } else if ((shape === "pen" || shape === "boundary") && points.length) {
+    context.save();
+    context.lineWidth = shape === "pen" ? imageEditManualBrushSizeValue(state.imageEditManualBrushSize) : Math.max(2, Math.min(width, height) / 220);
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    context.strokeStyle = "rgba(31, 138, 132, 0.95)";
+    context.fillStyle = "rgba(31, 138, 132, 0.12)";
+    if (shape === "boundary") context.setLineDash([10, 8]);
     context.beginPath();
     context.moveTo(points[0].x, points[0].y);
     points.slice(1).forEach((point) => context.lineTo(point.x, point.y));
-    if (!manualImageEditor.isDrawing && points.length > 2) context.closePath();
-    context.stroke();
-    if (!manualImageEditor.isDrawing && points.length > 2) context.fill();
+    if (shape === "pen") {
+      if (points.length === 1) {
+        context.arc(points[0].x, points[0].y, context.lineWidth / 2, 0, Math.PI * 2);
+        context.fill();
+      } else {
+        context.stroke();
+      }
+    } else {
+      if (!manualImageEditor.isDrawing && points.length > 2) context.closePath();
+      context.stroke();
+      if (!manualImageEditor.isDrawing && points.length > 2) context.fill();
+    }
     context.restore();
   }
   const tool = normalizedManualImageEditTool(state.imageEditManualTool);
-  if (manualImageEditor.hoverPoint && tool !== "boundary") {
+  if (manualImageEditor.pasteDraft?.image) {
+    const draft = manualImageEditor.pasteDraft;
+    context.save();
+    context.drawImage(draft.image, draft.x, draft.y, draft.width, draft.height);
+    context.lineWidth = Math.max(2, Math.min(width, height) / 220);
+    context.strokeStyle = "rgba(183, 128, 23, 0.96)";
+    context.fillStyle = "rgba(183, 128, 23, 0.12)";
+    context.setLineDash([10, 8]);
+    context.fillRect(draft.x, draft.y, draft.width, draft.height);
+    context.strokeRect(draft.x, draft.y, draft.width, draft.height);
+    context.restore();
+  }
+  if (manualImageEditor.hoverPoint && (tool === "erase" || tool === "restore" || tool === "cut-pen")) {
     const radius = imageEditManualBrushSizeValue(state.imageEditManualBrushSize) / 2;
     context.save();
     context.lineWidth = Math.max(2, radius / 10);
-    context.strokeStyle = tool === "restore" ? "rgba(103, 122, 47, 0.95)" : "rgba(210, 82, 82, 0.95)";
-    context.fillStyle = tool === "restore" ? "rgba(103, 122, 47, 0.12)" : "rgba(210, 82, 82, 0.12)";
+    context.strokeStyle = tool === "restore" ? "rgba(103, 122, 47, 0.95)" : tool === "cut-pen" ? "rgba(31, 138, 132, 0.95)" : "rgba(210, 82, 82, 0.95)";
+    context.fillStyle = tool === "restore" ? "rgba(103, 122, 47, 0.12)" : tool === "cut-pen" ? "rgba(31, 138, 132, 0.12)" : "rgba(210, 82, 82, 0.12)";
     context.beginPath();
     context.arc(manualImageEditor.hoverPoint.x, manualImageEditor.hoverPoint.y, radius, 0, Math.PI * 2);
     context.fill();
@@ -6716,16 +6880,20 @@ function manualImageEditorApplyClickRecognition(point) {
     clickPoints: []
   }, [seed]);
   manualImageEditor.context.putImageData(imageData, 0, 0);
-  manualImageEditor.lassoPoints = [];
+  manualImageEditorResetSelection();
   manualImageEditorCommitEdit();
   manualImageEditorDrawOverlay();
 }
 
 function manualImageEditorUndo() {
+  if (manualImageEditor.pasteDraft) {
+    manualImageEditorCancelPaste({ silent: true });
+    return;
+  }
   if (!manualImageEditorReady() || !manualImageEditor.undoStack.length) return toast("戻せる手動編集がありません。");
   const previous = manualImageEditor.undoStack.pop();
   manualImageEditor.context.putImageData(previous, 0, 0);
-  manualImageEditor.lassoPoints = [];
+  manualImageEditorResetSelection();
   manualImageEditorCommitEdit();
   manualImageEditorDrawOverlay();
 }
@@ -6735,34 +6903,84 @@ function manualImageEditorReset() {
   manualImageEditorPushUndo();
   manualImageEditor.context.clearRect(0, 0, manualImageEditor.width, manualImageEditor.height);
   manualImageEditor.context.drawImage(manualImageEditor.originalImage, 0, 0, manualImageEditor.width, manualImageEditor.height);
-  manualImageEditor.lassoPoints = [];
+  manualImageEditorResetSelection();
+  manualImageEditor.pasteDraft = null;
   manualImageEditorCommitEdit();
   manualImageEditorDrawOverlay();
+  manualImageEditorUpdatePasteButtons();
 }
 
-function manualImageEditorClearBoundary() {
-  manualImageEditor.lassoPoints = [];
+function manualImageEditorClearSelection() {
+  manualImageEditorResetSelection();
   manualImageEditorDrawOverlay();
 }
 
-function manualImageEditorApplyBoundary(mode) {
+function manualImageEditorApplySelection(mode) {
   if (!manualImageEditorReady()) return;
-  const points = manualImageEditor.lassoPoints;
-  if (points.length < 3) return toast("境界指定がありません。");
+  const maskInfo = manualImageEditorBuildSelectionMask();
+  if (!maskInfo) return toast("切り取り範囲がありません。");
+  const clipboardCanvas = manualImageEditorSelectionClipboardCanvas(maskInfo);
+  if (!manualImageEditorStoreClipboard(clipboardCanvas)) return toast("切り取り範囲を保持できませんでした。");
   manualImageEditorPushUndo();
   const context = manualImageEditor.context;
   context.save();
-  context.beginPath();
-  context.moveTo(points[0].x, points[0].y);
-  points.slice(1).forEach((point) => context.lineTo(point.x, point.y));
-  context.closePath();
   context.globalCompositeOperation = mode === "keep-inside" ? "destination-in" : "destination-out";
-  context.fillStyle = "rgba(0, 0, 0, 1)";
-  context.fill();
+  context.drawImage(maskInfo.canvas, 0, 0);
   context.restore();
-  manualImageEditor.lassoPoints = [];
+  manualImageEditorResetSelection();
   manualImageEditorCommitEdit();
   manualImageEditorDrawOverlay();
+  manualImageEditorUpdatePasteButtons();
+  toast(mode === "keep-inside" ? "選択範囲の内側を残しました。" : "選択範囲の内側を抜き取りました。");
+}
+
+async function manualImageEditorStartPaste() {
+  if (!manualImageEditorReady()) return;
+  if (!manualImageEditorClipboardReady()) return toast("貼り付ける切り取り範囲がありません。");
+  const image = await imageFromDataUrl(manualImageEditor.clipboard.dataUrl);
+  const width = image.naturalWidth || image.width || manualImageEditor.clipboard.width || 1;
+  const height = image.naturalHeight || image.height || manualImageEditor.clipboard.height || 1;
+  manualImageEditor.pasteDraft = {
+    image,
+    width,
+    height,
+    x: Math.round((manualImageEditor.width - width) / 2),
+    y: Math.round((manualImageEditor.height - height) / 2),
+    isDragging: false,
+    dragOffsetX: 0,
+    dragOffsetY: 0
+  };
+  manualImageEditorClampPasteDraft();
+  manualImageEditorDrawOverlay();
+  manualImageEditorUpdatePasteButtons();
+}
+
+function manualImageEditorCommitPaste({ pushUndo = true, silent = false } = {}) {
+  const draft = manualImageEditor.pasteDraft;
+  if (!manualImageEditorReady() || !draft?.image) {
+    if (!silent) toast("確定する貼り付けがありません。");
+    return false;
+  }
+  if (pushUndo) manualImageEditorPushUndo();
+  manualImageEditor.context.drawImage(draft.image, draft.x, draft.y, draft.width, draft.height);
+  manualImageEditor.pasteDraft = null;
+  manualImageEditorCommitEdit();
+  manualImageEditorDrawOverlay();
+  manualImageEditorUpdatePasteButtons();
+  if (!silent) toast("貼り付けを確定しました。");
+  return true;
+}
+
+function manualImageEditorCancelPaste({ silent = false } = {}) {
+  if (!manualImageEditor.pasteDraft) {
+    if (!silent) toast("取消する貼り付けがありません。");
+    return false;
+  }
+  manualImageEditor.pasteDraft = null;
+  manualImageEditorDrawOverlay();
+  manualImageEditorUpdatePasteButtons();
+  if (!silent) toast("貼り付けを取り消しました。");
+  return true;
 }
 
 function manualImageEditorPointerDown(event) {
@@ -6770,6 +6988,16 @@ function manualImageEditorPointerDown(event) {
   const point = manualImageEditorPoint(event);
   if (!point) return;
   event.preventDefault();
+  if (manualImageEditorPasteHitTest(point)) {
+    const draft = manualImageEditor.pasteDraft;
+    manualImageEditor.pointerId = event.pointerId;
+    draft.isDragging = true;
+    draft.dragOffsetX = point.x - draft.x;
+    draft.dragOffsetY = point.y - draft.y;
+    manualImageEditor.overlay?.setPointerCapture?.(event.pointerId);
+    manualImageEditorDrawOverlay();
+    return;
+  }
   const tool = normalizedManualImageEditTool(state.imageEditManualTool);
   if (tool === "click") {
     manualImageEditor.hoverPoint = point;
@@ -6780,9 +7008,20 @@ function manualImageEditorPointerDown(event) {
   manualImageEditor.isDrawing = true;
   manualImageEditor.hoverPoint = point;
   manualImageEditor.overlay?.setPointerCapture?.(event.pointerId);
-  if (tool === "boundary") {
-    manualImageEditor.lassoPoints = [point];
+  if (isManualImageEditCutTool(tool)) {
+    const shape = manualImageEditCutShape(tool);
+    manualImageEditor.selectionShape = shape;
+    if (shape === "rect" || shape === "ellipse") {
+      manualImageEditor.selectionStart = point;
+      manualImageEditor.selectionEnd = point;
+      manualImageEditor.lassoPoints = [];
+    } else {
+      manualImageEditor.selectionStart = null;
+      manualImageEditor.selectionEnd = null;
+      manualImageEditor.lassoPoints = [point];
+    }
   } else {
+    manualImageEditorResetSelection();
     manualImageEditorPushUndo();
     manualImageEditor.lastPoint = point;
     manualImageEditorApplyBrush(point, point);
@@ -6795,12 +7034,25 @@ function manualImageEditorPointerMove(event) {
   const point = manualImageEditorPoint(event);
   if (!point) return;
   manualImageEditor.hoverPoint = point;
+  if (manualImageEditor.pasteDraft?.isDragging && manualImageEditor.pointerId === event.pointerId) {
+    event.preventDefault();
+    manualImageEditor.pasteDraft.x = point.x - manualImageEditor.pasteDraft.dragOffsetX;
+    manualImageEditor.pasteDraft.y = point.y - manualImageEditor.pasteDraft.dragOffsetY;
+    manualImageEditorClampPasteDraft();
+    manualImageEditorDrawOverlay();
+    return;
+  }
   if (manualImageEditor.isDrawing && manualImageEditor.pointerId === event.pointerId) {
     event.preventDefault();
     const tool = normalizedManualImageEditTool(state.imageEditManualTool);
-    if (tool === "boundary") {
-      const previous = manualImageEditor.lassoPoints.at(-1);
-      if (!previous || manualImageEditorDistance(previous, point) >= 3) manualImageEditor.lassoPoints.push(point);
+    if (isManualImageEditCutTool(tool)) {
+      const shape = manualImageEditor.selectionShape || manualImageEditCutShape(tool);
+      if (shape === "rect" || shape === "ellipse") {
+        manualImageEditor.selectionEnd = point;
+      } else {
+        const previous = manualImageEditor.lassoPoints.at(-1);
+        if (!previous || manualImageEditorDistance(previous, point) >= (shape === "pen" ? 2 : 3)) manualImageEditor.lassoPoints.push(point);
+      }
     } else if (manualImageEditor.lastPoint) {
       manualImageEditorApplyBrush(manualImageEditor.lastPoint, point);
       manualImageEditor.lastPoint = point;
@@ -6810,13 +7062,25 @@ function manualImageEditorPointerMove(event) {
 }
 
 function manualImageEditorPointerUp(event) {
+  if (manualImageEditor.pasteDraft?.isDragging && manualImageEditor.pointerId === event.pointerId) {
+    manualImageEditor.pasteDraft.isDragging = false;
+    manualImageEditor.pointerId = null;
+    manualImageEditor.overlay?.releasePointerCapture?.(event.pointerId);
+    manualImageEditorDrawOverlay();
+    return;
+  }
   if (!manualImageEditor.isDrawing || manualImageEditor.pointerId !== event.pointerId) return;
   const point = manualImageEditorPoint(event);
   const tool = normalizedManualImageEditTool(state.imageEditManualTool);
-  if (tool === "boundary" && point) {
-    const previous = manualImageEditor.lassoPoints.at(-1);
-    if (!previous || manualImageEditorDistance(previous, point) >= 3) manualImageEditor.lassoPoints.push(point);
-  } else if (tool !== "boundary") {
+  if (isManualImageEditCutTool(tool) && point) {
+    const shape = manualImageEditor.selectionShape || manualImageEditCutShape(tool);
+    if (shape === "rect" || shape === "ellipse") {
+      manualImageEditor.selectionEnd = point;
+    } else {
+      const previous = manualImageEditor.lassoPoints.at(-1);
+      if (!previous || manualImageEditorDistance(previous, point) >= 3) manualImageEditor.lassoPoints.push(point);
+    }
+  } else if (!isManualImageEditCutTool(tool)) {
     manualImageEditorCommitEdit();
   }
   manualImageEditor.isDrawing = false;
@@ -6843,6 +7107,7 @@ function bindManualImageEditorCanvas() {
 async function createManualImageEditResult(source) {
   const ready = await ensureManualImageEditor();
   if (!ready || !manualImageEditorReady()) throw new Error("手動編集キャンバスを準備できませんでした。");
+  if (manualImageEditor.pasteDraft) manualImageEditorCommitPaste({ silent: true });
   manualImageEditorCaptureCurrent();
   const dataUrl = manualImageEditor.canvas.toDataURL("image/png");
   const info = await getImageInfo(dataUrl);
@@ -6859,64 +7124,6 @@ async function createManualImageEditResult(source) {
     createdAt: new Date().toISOString()
   };
   toast("手動編集を透過PNGに反映しました。");
-}
-
-function averageImageColor(data, width, height, startX, startY, sampleSize) {
-  let r = 0;
-  let g = 0;
-  let b = 0;
-  let count = 0;
-  const endX = Math.min(width, startX + sampleSize);
-  const endY = Math.min(height, startY + sampleSize);
-  for (let y = Math.max(0, startY); y < endY; y += 1) {
-    for (let x = Math.max(0, startX); x < endX; x += 1) {
-      const offset = (y * width + x) * 4;
-      if (data[offset + 3] < 8) continue;
-      r += data[offset];
-      g += data[offset + 1];
-      b += data[offset + 2];
-      count += 1;
-    }
-  }
-  return count ? [Math.round(r / count), Math.round(g / count), Math.round(b / count)] : [255, 255, 255];
-}
-
-function imageEditBackgroundModeLabel(value) {
-  const mode = normalizedImageEditBackgroundMode(value);
-  return imageEditBackgroundModes.find(([option]) => option === mode)?.[1] || "余白色を推定";
-}
-
-function imageEditLocalProviderLabel(controls) {
-  return `簡易ローカル / ${imageEditBackgroundModeLabel(controls.backgroundMode)}`;
-}
-
-function imageEditClickSeedPixels(controls, width, height) {
-  return normalizedImageEditClickPoints(controls.clickPoints || controls.clickPoint)
-    .map((point) => ({
-      x: Math.max(0, Math.min(width - 1, Math.round(point.x * (width - 1)))),
-      y: Math.max(0, Math.min(height - 1, Math.round(point.y * (height - 1))))
-    }));
-}
-
-function imageEditBackgroundColors(data, width, height, controls) {
-  const mode = normalizedImageEditBackgroundMode(controls.backgroundMode);
-  if (mode === "white") return [[255, 255, 255]];
-  if (mode === "black") return [[0, 0, 0]];
-  if (mode === "chroma") return [parseHexColor(controls.chromaColor)];
-  if (mode === "click") {
-    const seeds = imageEditClickSeedPixels(controls, width, height);
-    return seeds.map((seed) => {
-      const offset = (seed.y * width + seed.x) * 4;
-      return [data[offset], data[offset + 1], data[offset + 2]];
-    });
-  }
-  const sampleSize = Math.max(3, Math.min(18, Math.floor(Math.min(width, height) / 16)));
-  return [
-    averageImageColor(data, width, height, 0, 0, sampleSize),
-    averageImageColor(data, width, height, width - sampleSize, 0, sampleSize),
-    averageImageColor(data, width, height, 0, height - sampleSize, sampleSize),
-    averageImageColor(data, width, height, width - sampleSize, height - sampleSize, sampleSize)
-  ];
 }
 
 function colorDistanceSquared(data, offset, color) {
@@ -6940,21 +7147,14 @@ function nearestColorIndex(data, offset, colors, allowedIndexes = null) {
   return { index: bestIndex, distance: best };
 }
 
-function minColorDistanceSquared(data, offset, colors) {
-  return nearestColorIndex(data, offset, colors).distance;
-}
-
 function applyImageEditConnectedTransparency(imageData, controls, seedPixels = null) {
   const { data, width, height } = imageData;
-  const mode = normalizedImageEditBackgroundMode(controls.backgroundMode);
-  const clickSeeds = seedPixels || (mode === "click" ? imageEditClickSeedPixels(controls, width, height) : []);
-  if (mode === "click" && !clickSeeds.length) throw new Error("元画像をクリックしてください。");
-  const colors = clickSeeds.length
-    ? clickSeeds.map((seed) => {
-      const offset = (seed.y * width + seed.x) * 4;
-      return [data[offset], data[offset + 1], data[offset + 2]];
-    })
-    : imageEditBackgroundColors(data, width, height, controls);
+  const clickSeeds = Array.isArray(seedPixels) ? seedPixels : [];
+  if (!clickSeeds.length) throw new Error("元画像をクリックしてください。");
+  const colors = clickSeeds.map((seed) => {
+    const offset = (seed.y * width + seed.x) * 4;
+    return [data[offset], data[offset + 1], data[offset + 2]];
+  });
   const tolerance = imageEditToleranceValue(controls.tolerance);
   const feather = imageEditFeatherValue(controls.feather);
   const maxDistance = tolerance + feather;
@@ -6976,23 +7176,12 @@ function applyImageEditConnectedTransparency(imageData, controls, seedPixels = n
       queue.push({ index, colorIndex: nearest.index });
     }
   };
-  if (clickSeeds.length) {
-    clickSeeds.forEach((seed, index) => pushIfBackground(seed.x, seed.y, [index]));
-  } else {
-    for (let x = 0; x < width; x += 1) {
-      pushIfBackground(x, 0);
-      pushIfBackground(x, height - 1);
-    }
-    for (let y = 1; y < height - 1; y += 1) {
-      pushIfBackground(0, y);
-      pushIfBackground(width - 1, y);
-    }
-  }
+  clickSeeds.forEach((seed, index) => pushIfBackground(seed.x, seed.y, [index]));
   for (let cursor = 0; cursor < queue.length; cursor += 1) {
     const { index, colorIndex } = queue[cursor];
     const x = index % width;
     const y = Math.floor(index / width);
-    const allowed = clickSeeds.length ? [colorIndex] : null;
+    const allowed = [colorIndex];
     pushIfBackground(x + 1, y, allowed);
     pushIfBackground(x - 1, y, allowed);
     pushIfBackground(x, y + 1, allowed);
@@ -7014,24 +7203,6 @@ function applyImageEditConnectedTransparency(imageData, controls, seedPixels = n
       data[offset + 3] = Math.round(data[offset + 3] * ratio);
     }
   }
-}
-
-async function removeBackgroundLocally(dataUrl, controls) {
-  const image = await imageFromDataUrl(dataUrl);
-  const canvas = document.createElement("canvas");
-  canvas.width = image.naturalWidth || image.width;
-  canvas.height = image.naturalHeight || image.height;
-  const context = canvas.getContext("2d", { willReadFrequently: true });
-  context.drawImage(image, 0, 0, canvas.width, canvas.height);
-  const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-  const { width, height } = imageData;
-  applyImageEditConnectedTransparency(imageData, controls);
-  context.putImageData(imageData, 0, 0);
-  return {
-    dataUrl: canvas.toDataURL("image/png"),
-    width,
-    height
-  };
 }
 
 async function sourceDataUrlForImageEdit(source) {
@@ -7154,60 +7325,9 @@ function currentImageEditProviderFromDom() {
   return normalizedImageEditProvider(document.querySelector("#image-edit-provider")?.value || state.imageEditProvider);
 }
 
-function setImageEditBackgroundMode(mode, { rerender = true } = {}) {
-  const nextMode = normalizedImageEditBackgroundMode(mode);
-  const input = document.querySelector("#image-edit-background-mode");
-  if (input) input.value = nextMode;
-  const controls = imageEditControlsFromDom();
-  controls.backgroundMode = nextMode;
-  rememberImageEditControls(controls);
-  if (rerender) state.imageEditResult = null;
-  document.querySelectorAll("[data-action='set-image-edit-background-mode']").forEach((button) => {
-    const isActive = button.dataset.mode === nextMode;
-    button.classList.toggle("active-toggle", isActive);
-    button.setAttribute("aria-pressed", isActive ? "true" : "false");
-    if (button.dataset.mode === "chroma") {
-      button.querySelector(".image-edit-background-swatch")?.style.setProperty("background", state.imageEditChromaColor || "#ffffff");
-    }
-  });
-  if (rerender) render();
-}
-
-async function setImageEditClickPointFromEvent(event) {
-  const source = selectedImageEditSource();
-  const image = document.querySelector("#image-edit-click-source");
-  const rect = image?.getBoundingClientRect();
-  if (!source || !rect?.width || !rect?.height) return;
-  event.preventDefault();
-  const nextPoint = {
-    x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
-    y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
-    sourceKey: source.key,
-    sourceStamp: imageEditSourceStamp(source)
-  };
-  state.imageEditClickPoints = [...imageEditClickPointsForSource(source), nextPoint];
-  const input = document.querySelector("#image-edit-background-mode");
-  if (input) input.value = "click";
-  state.imageEditBackgroundMode = "click";
-  state.imageEditResult = null;
-  try {
-    await runImageEdit();
-  } catch (error) {
-    toast(error.message);
-  }
-}
-
-async function undoImageEditClickPoint() {
-  const source = selectedImageEditSource();
-  const points = imageEditClickPointsForSource(source);
-  if (!points.length) return toast("戻せるクリック認識がありません。");
-  state.imageEditClickPoints = points.slice(0, -1);
-  state.imageEditResult = null;
-  if (state.imageEditClickPoints.length) {
-    await runImageEdit();
-  } else {
-    render();
-  }
+function setImageEditTransparentPreview(mode) {
+  state.imageEditTransparentPreview = normalizedImageEditTransparentPreview(mode);
+  render();
 }
 
 function setImageEditAspectSaveEnabled(enabled) {
@@ -7294,7 +7414,7 @@ async function runImageEdit() {
   try {
     const dataUrl = await sourceDataUrlForImageEdit(source);
     let output;
-    let providerLabel = imageEditLocalProviderLabel(controls);
+    let providerLabel = "";
     if (controls.provider === "removebg") {
       if (!controls.removeBgKey) throw new Error("remove.bg API キーを入力してください。");
       localStorage.setItem("removebg_api_key", controls.removeBgKey);
@@ -7329,7 +7449,7 @@ async function runImageEdit() {
       output = await convertImageAspectRatio(dataUrl, controls);
       providerLabel = imageEditAspectProviderLabel(controls);
     } else {
-      output = await removeBackgroundLocally(dataUrl, controls);
+      throw new Error("選択した画像編集処理は利用できません。");
     }
     const info = await getImageInfo(output.dataUrl);
     state.imageEditResult = controls.provider === "aspect" ? buildImageEditAspectResult(source, controls, output) : {
@@ -7755,7 +7875,8 @@ function bindImageEditor({ forcedProvider = "" } = {}) {
       state.imageEditCharacterId = "";
     }
     state.imageEditSourceKey = state.imageEditInputFile ? "upload" : "";
-    clearImageEditClickPoints();
+    manualImageEditorResetSelection();
+    manualImageEditor.pasteDraft = null;
     state.imageEditResult = null;
     render();
   });
@@ -7767,12 +7888,14 @@ function bindImageEditor({ forcedProvider = "" } = {}) {
       state.selectedWorkId = char.workId;
     }
     state.imageEditResult = null;
-    clearImageEditClickPoints();
+    manualImageEditorResetSelection();
+    manualImageEditor.pasteDraft = null;
     render();
   });
   document.querySelector("#image-edit-source")?.addEventListener("change", (event) => {
     state.imageEditSourceKey = event.target.value;
-    clearImageEditClickPoints();
+    manualImageEditorResetSelection();
+    manualImageEditor.pasteDraft = null;
     state.imageEditResult = null;
     render();
   });
@@ -7798,17 +7921,15 @@ function bindImageEditor({ forcedProvider = "" } = {}) {
       if (input) input.value = nextProvider;
       state.imageEditProvider = nextProvider;
       state.imageEditResult = null;
+      manualImageEditorResetSelection();
+      manualImageEditor.pasteDraft = null;
       handleProviderChange();
     });
   });
-  document.querySelectorAll("[data-action='set-image-edit-background-mode']").forEach((button) => {
+  document.querySelectorAll("[data-action='set-image-edit-transparent-preview']").forEach((button) => {
     button.addEventListener("click", () => {
-      setImageEditBackgroundMode(button.dataset.mode);
+      setImageEditTransparentPreview(button.dataset.mode);
     });
-  });
-  document.querySelector("[data-action='set-image-edit-click-point']")?.addEventListener("click", setImageEditClickPointFromEvent);
-  document.querySelector("[data-action='undo-image-edit-click-point']")?.addEventListener("click", () => {
-    undoImageEditClickPoint().catch((error) => toast(error.message));
   });
   ["#image-edit-rembg-model", "#image-edit-rembg-alpha-matting", "#image-edit-rembg-post-process"].forEach((selector) => {
     document.querySelector(selector)?.addEventListener("change", persist);
@@ -7820,22 +7941,9 @@ function bindImageEditor({ forcedProvider = "" } = {}) {
       if (selector === "#image-edit-backgroundremover-alpha-matting") render();
     });
   });
-  ["#image-edit-background-mode", "#image-edit-tolerance", "#image-edit-feather", "#image-edit-chroma-color"].forEach((selector) => {
-    document.querySelector(selector)?.addEventListener("input", () => {
-      if (selector === "#image-edit-chroma-color") {
-        setImageEditBackgroundMode("chroma", { rerender: false });
-        return;
-      }
-      persist();
-    });
-    document.querySelector(selector)?.addEventListener("change", () => {
-      if (selector === "#image-edit-chroma-color") {
-        setImageEditBackgroundMode("chroma", { rerender: false });
-        return;
-      }
-      persist();
-      if (selector === "#image-edit-background-mode") render();
-    });
+  ["#image-edit-tolerance", "#image-edit-feather"].forEach((selector) => {
+    document.querySelector(selector)?.addEventListener("input", persist);
+    document.querySelector(selector)?.addEventListener("change", persist);
   });
   const scheduleAspectPreview = () => {
     persist();
@@ -7892,7 +8000,7 @@ function bindImageEditor({ forcedProvider = "" } = {}) {
   if (currentImageEditProviderFromDom() === "aspect") scheduleImageEditAspectPreview({ immediate: true });
   document.querySelector("#image-edit-manual-tool")?.addEventListener("change", () => {
     persist();
-    manualImageEditor.lassoPoints = [];
+    manualImageEditorResetSelection();
     render();
   });
   document.querySelector("#image-edit-manual-brush-size")?.addEventListener("input", () => {
@@ -7907,14 +8015,29 @@ function bindImageEditor({ forcedProvider = "" } = {}) {
     await ensureManualImageEditor();
     manualImageEditorReset();
   });
-  document.querySelector("[data-action='manual-image-edit-clear-boundary']")?.addEventListener("click", () => manualImageEditorClearBoundary());
+  document.querySelector("[data-action='manual-image-edit-clear-selection']")?.addEventListener("click", () => manualImageEditorClearSelection());
   document.querySelector("[data-action='manual-image-edit-keep-inside']")?.addEventListener("click", async () => {
     await ensureManualImageEditor();
-    manualImageEditorApplyBoundary("keep-inside");
+    manualImageEditorApplySelection("keep-inside");
   });
   document.querySelector("[data-action='manual-image-edit-remove-inside']")?.addEventListener("click", async () => {
     await ensureManualImageEditor();
-    manualImageEditorApplyBoundary("remove-inside");
+    manualImageEditorApplySelection("remove-inside");
+  });
+  document.querySelector("[data-action='manual-image-edit-paste']")?.addEventListener("click", async () => {
+    await ensureManualImageEditor();
+    try {
+      await manualImageEditorStartPaste();
+    } catch (error) {
+      toast(error.message);
+    }
+  });
+  document.querySelector("[data-action='manual-image-edit-commit-paste']")?.addEventListener("click", async () => {
+    await ensureManualImageEditor();
+    manualImageEditorCommitPaste();
+  });
+  document.querySelector("[data-action='manual-image-edit-cancel-paste']")?.addEventListener("click", () => {
+    manualImageEditorCancelPaste();
   });
   document.querySelector("#image-edit-removebg-key")?.addEventListener("change", () => {
     const key = document.querySelector("#image-edit-removebg-key")?.value.trim() || "";
@@ -7935,14 +8058,16 @@ function bindImageEditor({ forcedProvider = "" } = {}) {
       createdAt: new Date().toISOString()
     };
     state.imageEditSourceKey = "upload";
-    clearImageEditClickPoints();
+    manualImageEditorResetSelection();
+    manualImageEditor.pasteDraft = null;
     state.imageEditResult = null;
     render();
   });
   document.querySelector("[data-action='clear-image-edit-file']")?.addEventListener("click", () => {
     state.imageEditInputFile = null;
     if (state.imageEditSourceKey === "upload") state.imageEditSourceKey = "";
-    clearImageEditClickPoints();
+    manualImageEditorResetSelection();
+    manualImageEditor.pasteDraft = null;
     state.imageEditResult = null;
     render();
   });
