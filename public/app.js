@@ -1,6 +1,23 @@
 const app = document.querySelector("#app");
 const modalTemplate = document.querySelector("#modal-template");
 
+const sidebarHiddenStorageKey = "creative_file_studio_sidebar_hidden";
+const imageEditControlsHiddenStorageKey = "creative_file_studio_image_edit_controls_hidden";
+
+function readStoredFlag(key) {
+  try {
+    return localStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeStoredFlag(key, value) {
+  try {
+    localStorage.setItem(key, value ? "1" : "0");
+  } catch {}
+}
+
 const state = {
   db: null,
   session: {
@@ -11,6 +28,7 @@ const state = {
     networkUrls: []
   },
   view: "studio",
+  sidebarHidden: readStoredFlag(sidebarHiddenStorageKey),
   selectedWorkId: null,
   galleryWorkId: null,
   galleryCharacterId: "",
@@ -78,6 +96,7 @@ const state = {
   imageEditInputFile: null,
   imageEditResult: null,
   imageEditIsRunning: false,
+  imageEditControlsHidden: readStoredFlag(imageEditControlsHiddenStorageKey),
   rembgStatus: "idle",
   rembgInfo: null,
   rembgError: "",
@@ -3738,6 +3757,13 @@ const GALLERY_ACTION_ICONS = {
   trash: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>`,
 };
 
+const APP_ACTION_ICONS = {
+  menu: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/></svg>`,
+  sidebarClose: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/><path d="m16 10-3 2 3 2"/></svg>`,
+  image: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 15-4-4L8 19"/></svg>`,
+  sliders: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h6"/><path d="M14 7h6"/><circle cx="12" cy="7" r="2"/><path d="M4 17h10"/><path d="M18 17h2"/><circle cx="16" cy="17" r="2"/></svg>`
+};
+
 function renderDownloadButton(url, label = "DL", options = {}) {
   if (!url) return "";
   const filename = fileNameFromUrl(url, "download");
@@ -4114,9 +4140,18 @@ function render(options = {}) {
   if (options.preserveLiveTextDrafts !== false) preserveLiveTextDrafts();
   ensureAllowedView();
   const [title, sub] = currentTitle();
+  const sidebarToggleLabel = state.sidebarHidden ? "メニューを表示" : "メニューを非表示";
+  const imageEditToggleLabel = state.imageEditControlsHidden ? "処理表示" : "画像のみ";
+  const imageEditToggleTitle = state.imageEditControlsHidden ? "画像処理メニューを表示" : "画像処理メニューを隠して画像だけ表示";
+  const imageEditToggleButton = isImageEditorView() ? `
+    <button class="ghost topbar-control-toggle" data-action="toggle-image-edit-controls" aria-pressed="${state.imageEditControlsHidden ? "true" : "false"}" aria-label="${imageEditToggleTitle}" title="${imageEditToggleTitle}">
+      ${state.imageEditControlsHidden ? APP_ACTION_ICONS.sliders : APP_ACTION_ICONS.image}
+      <span>${imageEditToggleLabel}</span>
+    </button>
+  ` : "";
   app.innerHTML = `
-    <div class="app-shell">
-      <aside class="sidebar">
+    <div class="app-shell ${state.sidebarHidden ? "sidebar-hidden" : ""}">
+      <aside class="sidebar" ${state.sidebarHidden ? "hidden" : ""}>
         <div class="brand">
           <strong>Creative<br>File Studio</strong>
           <span>local creator archive</span>
@@ -4135,6 +4170,10 @@ function render(options = {}) {
             <p>${sub}</p>
           </div>
           <div class="topbar-actions">
+            ${imageEditToggleButton}
+            <button class="ghost icon-button sidebar-toggle-button" data-action="toggle-sidebar" aria-pressed="${state.sidebarHidden ? "true" : "false"}" aria-label="${sidebarToggleLabel}" title="${sidebarToggleLabel}">
+              ${state.sidebarHidden ? APP_ACTION_ICONS.menu : APP_ACTION_ICONS.sidebarClose}
+            </button>
             <button class="ghost icon-button help-button" data-action="open-help" aria-label="${escapeHtml(title)}のヘルプを表示" title="ヘルプ">?</button>
           </div>
         </header>
@@ -5880,10 +5919,11 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
   const manualClipboardReady = manualImageEditorClipboardReady();
   const manualPasteDraftReady = Boolean(manualImageEditor.pasteDraft);
   const transparentPreview = normalizedImageEditTransparentPreview(state.imageEditTransparentPreview);
+  const controlsHidden = Boolean(state.imageEditControlsHidden);
   return `
-    <div class="image-edit-stack image-edit-transparent-${escapeHtml(transparentPreview)}">
-    <div class="video-layout image-edit-layout">
-      <section class="panel">
+    <div class="image-edit-stack image-edit-transparent-${escapeHtml(transparentPreview)} ${controlsHidden ? "image-edit-controls-hidden" : ""}">
+    <div class="video-layout image-edit-layout ${controlsHidden ? "controls-hidden" : ""}">
+      <section class="panel image-edit-controls-panel">
         <div class="panel-header"><h2>編集元</h2></div>
         <div class="panel-body form-grid">
           <label>作品
@@ -6049,7 +6089,7 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
           </div>
         </div>
       </section>
-      <section class="panel">
+      <section class="panel image-edit-preview-panel">
         <div class="panel-header"><h2>プレビュー</h2></div>
         <div class="panel-body">
           <div class="image-edit-preview-grid">
@@ -6083,7 +6123,7 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
         </div>
       </section>
     </div>
-    ${includeVideoPanel ? renderBackgroundRemoverVideoPanel(work) : ""}
+    ${includeVideoPanel && !controlsHidden ? renderBackgroundRemoverVideoPanel(work) : ""}
     </div>
   `;
 }
@@ -14350,6 +14390,17 @@ function bindCommon() {
       state.view = canUseView(nextView) ? nextView : "studio";
       render();
     });
+  });
+  document.querySelector("[data-action='toggle-sidebar']")?.addEventListener("click", () => {
+    state.sidebarHidden = !state.sidebarHidden;
+    writeStoredFlag(sidebarHiddenStorageKey, state.sidebarHidden);
+    render();
+  });
+  document.querySelector("[data-action='toggle-image-edit-controls']")?.addEventListener("click", () => {
+    if (isImageEditorView()) rememberImageEditControls();
+    state.imageEditControlsHidden = !state.imageEditControlsHidden;
+    writeStoredFlag(imageEditControlsHiddenStorageKey, state.imageEditControlsHidden);
+    render();
   });
   document.querySelector("[data-action='open-help']")?.addEventListener("click", openCurrentHelpModal);
   document.querySelectorAll("[data-action='reveal-audio']").forEach((button) => {

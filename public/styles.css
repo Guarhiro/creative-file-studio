@@ -100,6 +100,10 @@ button:disabled {
   grid-template-columns: 240px minmax(0, 1fr);
 }
 
+.app-shell.sidebar-hidden {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .sidebar {
   background: #292825;
   color: #fff;
@@ -223,6 +227,25 @@ button:disabled {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+}
+
+.topbar-control-toggle,
+.sidebar-toggle-button,
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.topbar-control-toggle {
+  gap: 6px;
+  min-width: 0;
+  padding: 0 11px;
+}
+
+.topbar-control-toggle svg,
+.sidebar-toggle-button svg {
+  flex: 0 0 auto;
 }
 
 .help-button {
@@ -2264,6 +2287,22 @@ textarea {
 
 .image-edit-layout .panel-body {
   align-content: start;
+}
+
+.image-edit-layout.controls-hidden {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.image-edit-layout.controls-hidden .image-edit-controls-panel {
+  display: none;
+}
+
+.image-edit-layout.controls-hidden .image-edit-preview-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.image-edit-layout.controls-hidden .transparent-preview {
+  max-height: calc(100vh - 240px);
 }
 
 .image-edit-layout .toolbar {
