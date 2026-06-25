@@ -5061,6 +5061,14 @@ function imageEditAspectScaleValue(value) {
   return boundedSettingNumber(value, 100, 10, 400, true);
 }
 
+function imageEditManualTransformScaleValue(value) {
+  return boundedSettingNumber(value, 100, 10, 400, true);
+}
+
+function imageEditManualTransformRotationValue(value) {
+  return boundedSettingNumber(value, 0, -180, 180, true);
+}
+
 function backgroundRemoverErodeSizeValue(value) {
   return boundedSettingNumber(value, 10, 1, 25, true);
 }
@@ -5918,6 +5926,7 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
   const manualCutTool = isManualImageEditCutTool(manualTool);
   const manualClipboardReady = manualImageEditorClipboardReady();
   const manualPasteDraftReady = Boolean(manualImageEditor.pasteDraft);
+  const manualSelectionReady = manualImageEditorSelectionReady();
   const transparentPreview = normalizedImageEditTransparentPreview(state.imageEditTransparentPreview);
   const controlsHidden = Boolean(state.imageEditControlsHidden);
   return `
@@ -6032,6 +6041,7 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
                 <div class="image-edit-manual-cut-title">範囲カット&ペースト</div>
                 <div class="toolbar">
                   <button class="ghost" data-action="manual-image-edit-clear-selection" ${selectedSource ? "" : "disabled"}>選択を消去</button>
+                  <button class="ghost" data-action="manual-image-edit-transform-selection" ${selectedSource && manualSelectionReady && !manualPasteDraftReady ? "" : "disabled"}>範囲を変形</button>
                   <button class="ghost" data-action="manual-image-edit-keep-inside" ${selectedSource ? "" : "disabled"}>内側を残す</button>
                   <button class="ghost" data-action="manual-image-edit-remove-inside" ${selectedSource ? "" : "disabled"}>内側を抜く</button>
                 </div>
@@ -6039,6 +6049,18 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
                   <button class="ghost" data-action="manual-image-edit-paste" ${selectedSource && manualClipboardReady ? "" : "disabled"}>貼り付け</button>
                   <button class="ghost" data-action="manual-image-edit-commit-paste" ${selectedSource && manualPasteDraftReady ? "" : "disabled"}>貼り付けを確定</button>
                   <button class="ghost" data-action="manual-image-edit-cancel-paste" ${selectedSource && manualPasteDraftReady ? "" : "disabled"}>貼り付けを取り消し</button>
+                </div>
+                <div class="image-edit-manual-transform-controls" ${manualPasteDraftReady ? "" : "hidden"}>
+                  <label>範囲の回転
+                    <input id="image-edit-manual-paste-rotation" type="range" min="-180" max="180" value="${escapeHtml(manualImageEditor.pasteDraft?.rotation ?? 0)}">
+                    <span class="meta"><span id="image-edit-manual-paste-rotation-value">${escapeHtml(manualImageEditor.pasteDraft?.rotation ?? 0)}</span>°</span>
+                  </label>
+                  <label>範囲の拡大・縮小
+                    <input id="image-edit-manual-paste-scale" type="range" min="10" max="400" value="${escapeHtml(manualImageEditor.pasteDraft?.scale ?? 100)}">
+                    <span class="meta"><span id="image-edit-manual-paste-scale-value">${escapeHtml(manualImageEditor.pasteDraft?.scale ?? 100)}</span>%</span>
+                  </label>
+                  <button class="ghost" data-action="manual-image-edit-reset-transform">回転・拡大をリセット</button>
+                  <div class="meta">選択または貼り付け範囲はドラッグで移動し、ここで回転・拡大・縮小してから確定できます。</div>
                 </div>
                 <div class="meta image-edit-manual-clipboard-meta">${manualClipboardReady ? escapeHtml(manualImageEditorClipboardSummary()) : "切り取り保持: なし"}</div>
               </div>
@@ -6576,6 +6598,10 @@ function manualImageEditorSelectionBounds(shape = manualImageEditorSelectionShap
   return { x: minX, y: minY, width, height };
 }
 
+function manualImageEditorSelectionReady() {
+  return Boolean(manualImageEditorSelectionBounds());
+}
+
 function manualImageEditorDrawSelectionMask(context, shape = manualImageEditorSelectionShape()) {
   if (!context) return false;
   const normalizedShape = shape || "";
@@ -6699,30 +6725,79 @@ function manualImageEditorStoreClipboard(canvas) {
 function manualImageEditorClampPasteDraft() {
   const draft = manualImageEditor.pasteDraft;
   if (!draft) return;
-  const minX = 1 - draft.width;
-  const minY = 1 - draft.height;
+  const bounds = manualImageEditorPasteBounds(draft);
+  const minX = 1 - bounds.width;
+  const minY = 1 - bounds.height;
   const maxX = Math.max(0, manualImageEditor.width - 1);
   const maxY = Math.max(0, manualImageEditor.height - 1);
   draft.x = Math.max(minX, Math.min(maxX, draft.x));
   draft.y = Math.max(minY, Math.min(maxY, draft.y));
 }
 
+function manualImageEditorPasteTransform(draft = manualImageEditor.pasteDraft) {
+  const scale = imageEditManualTransformScaleValue(draft?.scale ?? 100) / 100;
+  const rotation = imageEditManualTransformRotationValue(draft?.rotation ?? 0);
+  const displayWidth = Math.max(1, (draft?.width || 1) * scale);
+  const displayHeight = Math.max(1, (draft?.height || 1) * scale);
+  return {
+    scale,
+    rotation,
+    radians: rotation * Math.PI / 180,
+    width: displayWidth,
+    height: displayHeight,
+    centerX: (draft?.x || 0) + displayWidth / 2,
+    centerY: (draft?.y || 0) + displayHeight / 2
+  };
+}
+
+function manualImageEditorPasteBounds(draft = manualImageEditor.pasteDraft) {
+  const transform = manualImageEditorPasteTransform(draft);
+  const cos = Math.abs(Math.cos(transform.radians));
+  const sin = Math.abs(Math.sin(transform.radians));
+  return {
+    width: transform.width * cos + transform.height * sin,
+    height: transform.width * sin + transform.height * cos
+  };
+}
+
+function manualImageEditorDrawPasteDraft(context, draft) {
+  if (!context || !draft?.image) return;
+  const transform = manualImageEditorPasteTransform(draft);
+  context.save();
+  context.translate(transform.centerX, transform.centerY);
+  context.rotate(transform.radians);
+  context.drawImage(draft.image, -transform.width / 2, -transform.height / 2, transform.width, transform.height);
+  context.restore();
+}
+
 function manualImageEditorPasteHitTest(point) {
   const draft = manualImageEditor.pasteDraft;
   if (!draft || !point) return false;
-  return point.x >= draft.x && point.x <= draft.x + draft.width && point.y >= draft.y && point.y <= draft.y + draft.height;
+  const transform = manualImageEditorPasteTransform(draft);
+  const cos = Math.cos(-transform.radians);
+  const sin = Math.sin(-transform.radians);
+  const dx = point.x - transform.centerX;
+  const dy = point.y - transform.centerY;
+  const localX = dx * cos - dy * sin;
+  const localY = dx * sin + dy * cos;
+  return Math.abs(localX) <= transform.width / 2 && Math.abs(localY) <= transform.height / 2;
 }
 
 function manualImageEditorUpdatePasteButtons() {
   const hasClipboard = manualImageEditorClipboardReady();
   const hasDraft = Boolean(manualImageEditor.pasteDraft);
+  const hasSelection = manualImageEditorSelectionReady();
   const canEdit = manualImageEditorReady();
   const pasteButton = document.querySelector("[data-action='manual-image-edit-paste']");
   const commitButton = document.querySelector("[data-action='manual-image-edit-commit-paste']");
   const cancelButton = document.querySelector("[data-action='manual-image-edit-cancel-paste']");
+  const transformButton = document.querySelector("[data-action='manual-image-edit-transform-selection']");
+  const transformControls = document.querySelector(".image-edit-manual-transform-controls");
   if (pasteButton) pasteButton.disabled = !canEdit || !hasClipboard;
   if (commitButton) commitButton.disabled = !canEdit || !hasDraft;
   if (cancelButton) cancelButton.disabled = !canEdit || !hasDraft;
+  if (transformButton) transformButton.disabled = !canEdit || !hasSelection || hasDraft;
+  if (transformControls) transformControls.hidden = !hasDraft;
   const meta = document.querySelector(".image-edit-manual-clipboard-meta");
   if (meta) meta.textContent = manualImageEditorClipboardSummary();
 }
@@ -6781,13 +6856,16 @@ function manualImageEditorDrawOverlay() {
   if (manualImageEditor.pasteDraft?.image) {
     const draft = manualImageEditor.pasteDraft;
     context.save();
-    context.drawImage(draft.image, draft.x, draft.y, draft.width, draft.height);
+    manualImageEditorDrawPasteDraft(context, draft);
+    const transform = manualImageEditorPasteTransform(draft);
     context.lineWidth = Math.max(2, Math.min(width, height) / 220);
     context.strokeStyle = "rgba(183, 128, 23, 0.96)";
     context.fillStyle = "rgba(183, 128, 23, 0.12)";
     context.setLineDash([10, 8]);
-    context.fillRect(draft.x, draft.y, draft.width, draft.height);
-    context.strokeRect(draft.x, draft.y, draft.width, draft.height);
+    context.translate(transform.centerX, transform.centerY);
+    context.rotate(transform.radians);
+    context.fillRect(-transform.width / 2, -transform.height / 2, transform.width, transform.height);
+    context.strokeRect(-transform.width / 2, -transform.height / 2, transform.width, transform.height);
     context.restore();
   }
   if (manualImageEditor.hoverPoint && (tool === "erase" || tool === "restore" || tool === "cut-pen")) {
@@ -6806,7 +6884,12 @@ function manualImageEditorDrawOverlay() {
 
 function manualImageEditorPushUndo() {
   if (!manualImageEditorReady()) return;
-  manualImageEditor.undoStack.push(manualImageEditor.context.getImageData(0, 0, manualImageEditor.width, manualImageEditor.height));
+  manualImageEditorPushUndoImageData(manualImageEditor.context.getImageData(0, 0, manualImageEditor.width, manualImageEditor.height));
+}
+
+function manualImageEditorPushUndoImageData(imageData) {
+  if (!imageData) return;
+  manualImageEditor.undoStack.push(imageData);
   if (manualImageEditor.undoStack.length > 12) manualImageEditor.undoStack.shift();
 }
 
@@ -6953,6 +7036,7 @@ function manualImageEditorReset() {
 function manualImageEditorClearSelection() {
   manualImageEditorResetSelection();
   manualImageEditorDrawOverlay();
+  manualImageEditorUpdatePasteButtons();
 }
 
 function manualImageEditorApplySelection(mode) {
@@ -6974,6 +7058,45 @@ function manualImageEditorApplySelection(mode) {
   toast(mode === "keep-inside" ? "選択範囲の内側を残しました。" : "選択範囲の内側を抜き取りました。");
 }
 
+async function manualImageEditorStartSelectionTransform() {
+  if (!manualImageEditorReady()) return;
+  if (manualImageEditor.pasteDraft) return toast("先に貼り付け中の範囲を確定または取消してください。");
+  const maskInfo = manualImageEditorBuildSelectionMask();
+  if (!maskInfo) return toast("変形する範囲がありません。");
+  const clipboardCanvas = manualImageEditorSelectionClipboardCanvas(maskInfo);
+  if (!clipboardCanvas) return toast("変形する範囲を準備できませんでした。");
+  const dataUrl = clipboardCanvas.toDataURL("image/png");
+  const image = await imageFromDataUrl(dataUrl);
+  const context = manualImageEditor.context;
+  const restoreImageData = context.getImageData(0, 0, manualImageEditor.width, manualImageEditor.height);
+  manualImageEditorStoreClipboard(clipboardCanvas);
+  context.save();
+  context.globalCompositeOperation = "destination-out";
+  context.drawImage(maskInfo.canvas, 0, 0);
+  context.restore();
+  manualImageEditorCaptureCurrent();
+  manualImageEditorInvalidateResult();
+  manualImageEditorResetSelection();
+  manualImageEditor.pasteDraft = {
+    image,
+    width: image.naturalWidth || image.width || clipboardCanvas.width || 1,
+    height: image.naturalHeight || image.height || clipboardCanvas.height || 1,
+    x: maskInfo.bounds.x,
+    y: maskInfo.bounds.y,
+    scale: 100,
+    rotation: 0,
+    isDragging: false,
+    dragOffsetX: 0,
+    dragOffsetY: 0,
+    restoreImageData,
+    undoImageData: restoreImageData
+  };
+  manualImageEditorClampPasteDraft();
+  manualImageEditorDrawOverlay();
+  manualImageEditorUpdatePasteButtons();
+  toast("選択範囲を変形できます。");
+}
+
 async function manualImageEditorStartPaste() {
   if (!manualImageEditorReady()) return;
   if (!manualImageEditorClipboardReady()) return toast("貼り付ける切り取り範囲がありません。");
@@ -6986,6 +7109,8 @@ async function manualImageEditorStartPaste() {
     height,
     x: Math.round((manualImageEditor.width - width) / 2),
     y: Math.round((manualImageEditor.height - height) / 2),
+    scale: 100,
+    rotation: 0,
     isDragging: false,
     dragOffsetX: 0,
     dragOffsetY: 0
@@ -7001,8 +7126,14 @@ function manualImageEditorCommitPaste({ pushUndo = true, silent = false } = {}) 
     if (!silent) toast("確定する貼り付けがありません。");
     return false;
   }
-  if (pushUndo) manualImageEditorPushUndo();
-  manualImageEditor.context.drawImage(draft.image, draft.x, draft.y, draft.width, draft.height);
+  if (pushUndo) {
+    if (draft.undoImageData) {
+      manualImageEditorPushUndoImageData(draft.undoImageData);
+    } else {
+      manualImageEditorPushUndo();
+    }
+  }
+  manualImageEditorDrawPasteDraft(manualImageEditor.context, draft);
   manualImageEditor.pasteDraft = null;
   manualImageEditorCommitEdit();
   manualImageEditorDrawOverlay();
@@ -7011,10 +7142,32 @@ function manualImageEditorCommitPaste({ pushUndo = true, silent = false } = {}) 
   return true;
 }
 
+function manualImageEditorSetPasteTransform({ scale = null, rotation = null } = {}) {
+  const draft = manualImageEditor.pasteDraft;
+  if (!draft) return;
+  if (scale !== null) draft.scale = imageEditManualTransformScaleValue(scale);
+  if (rotation !== null) draft.rotation = imageEditManualTransformRotationValue(rotation);
+  manualImageEditorClampPasteDraft();
+  const scaleInput = document.querySelector("#image-edit-manual-paste-scale");
+  const scaleValue = document.querySelector("#image-edit-manual-paste-scale-value");
+  const rotationInput = document.querySelector("#image-edit-manual-paste-rotation");
+  const rotationValue = document.querySelector("#image-edit-manual-paste-rotation-value");
+  if (scaleInput) scaleInput.value = String(draft.scale);
+  if (scaleValue) scaleValue.textContent = String(draft.scale);
+  if (rotationInput) rotationInput.value = String(draft.rotation);
+  if (rotationValue) rotationValue.textContent = String(draft.rotation);
+  manualImageEditorDrawOverlay();
+}
+
 function manualImageEditorCancelPaste({ silent = false } = {}) {
-  if (!manualImageEditor.pasteDraft) {
+  const draft = manualImageEditor.pasteDraft;
+  if (!draft) {
     if (!silent) toast("取消する貼り付けがありません。");
     return false;
+  }
+  if (draft.restoreImageData && manualImageEditorReady()) {
+    manualImageEditor.context.putImageData(draft.restoreImageData, 0, 0);
+    manualImageEditorCaptureCurrent();
   }
   manualImageEditor.pasteDraft = null;
   manualImageEditorDrawOverlay();
@@ -7067,6 +7220,7 @@ function manualImageEditorPointerDown(event) {
     manualImageEditorApplyBrush(point, point);
   }
   manualImageEditorDrawOverlay();
+  manualImageEditorUpdatePasteButtons();
 }
 
 function manualImageEditorPointerMove(event) {
@@ -7128,6 +7282,7 @@ function manualImageEditorPointerUp(event) {
   manualImageEditor.lastPoint = null;
   manualImageEditor.overlay?.releasePointerCapture?.(event.pointerId);
   manualImageEditorDrawOverlay();
+  manualImageEditorUpdatePasteButtons();
 }
 
 function bindManualImageEditorCanvas() {
@@ -8056,6 +8211,14 @@ function bindImageEditor({ forcedProvider = "" } = {}) {
     manualImageEditorReset();
   });
   document.querySelector("[data-action='manual-image-edit-clear-selection']")?.addEventListener("click", () => manualImageEditorClearSelection());
+  document.querySelector("[data-action='manual-image-edit-transform-selection']")?.addEventListener("click", async () => {
+    await ensureManualImageEditor();
+    try {
+      await manualImageEditorStartSelectionTransform();
+    } catch (error) {
+      toast(error.message);
+    }
+  });
   document.querySelector("[data-action='manual-image-edit-keep-inside']")?.addEventListener("click", async () => {
     await ensureManualImageEditor();
     manualImageEditorApplySelection("keep-inside");
@@ -8078,6 +8241,15 @@ function bindImageEditor({ forcedProvider = "" } = {}) {
   });
   document.querySelector("[data-action='manual-image-edit-cancel-paste']")?.addEventListener("click", () => {
     manualImageEditorCancelPaste();
+  });
+  document.querySelector("#image-edit-manual-paste-rotation")?.addEventListener("input", (event) => {
+    manualImageEditorSetPasteTransform({ rotation: event.target.value });
+  });
+  document.querySelector("#image-edit-manual-paste-scale")?.addEventListener("input", (event) => {
+    manualImageEditorSetPasteTransform({ scale: event.target.value });
+  });
+  document.querySelector("[data-action='manual-image-edit-reset-transform']")?.addEventListener("click", () => {
+    manualImageEditorSetPasteTransform({ scale: 100, rotation: 0 });
   });
   document.querySelector("#image-edit-removebg-key")?.addEventListener("change", () => {
     const key = document.querySelector("#image-edit-removebg-key")?.value.trim() || "";

@@ -2396,6 +2396,24 @@ textarea {
   min-height: 1.4em;
 }
 
+.image-edit-manual-transform-controls {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px dashed rgba(183, 128, 23, 0.45);
+  border-radius: 10px;
+  background: rgba(183, 128, 23, 0.08);
+}
+
+.image-edit-manual-transform-controls label {
+  display: grid;
+  gap: 6px;
+}
+
+.image-edit-manual-transform-controls button {
+  justify-self: start;
+}
+
 .number-stepper {
   display: grid;
   grid-template-columns: 34px minmax(72px, 92px) auto 34px;
