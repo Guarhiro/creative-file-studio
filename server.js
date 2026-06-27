@@ -139,6 +139,7 @@ const emptyDb = {
       topk: 50,
       promptText: ""
     },
+    higgsfieldCommand: "higgsfield",
     seedanceBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3",
     seedanceModel: "dreamina-seedance-2-0-260128",
     seedanceResolution: "720p",
@@ -354,6 +355,11 @@ const lanAllowedApiRoutes = new Set([
   "GET /api/seedance/guide",
   "POST /api/seedance/create",
   "POST /api/seedance/status",
+  "POST /api/higgsfield/check",
+  "POST /api/higgsfield/credits",
+  "POST /api/higgsfield/elements",
+  "POST /api/higgsfield/create",
+  "POST /api/higgsfield/status",
   "POST /api/comfy/check",
   "POST /api/comfy/models",
   "POST /api/comfy/validate",
@@ -613,6 +619,223 @@ function runProcess(commandParts, { cwd = __dirname, timeoutMs = 120000, env = {
     });
     child.on("error", (error) => finish({ ok: false, code: null, error: error.message }));
     child.on("close", (code) => finish({ ok: code === 0, code, error: code === 0 ? "" : `終了コード ${code}` }));
+  });
+}
+
+function splitCommandLine(value = "") {
+  const input = String(value || "").trim();
+  if (!input) return [];
+  const parts = [];
+  let current = "";
+  let quote = "";
+  let escaped = false;
+  for (const char of input) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = "";
+      else current += char;
+      continue;
+    }
+    if (char === "\"" || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (current) {
+        parts.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+  if (current) parts.push(current);
+  return parts;
+}
+
+function higgsfieldCommandParts(value = "") {
+  const parts = splitCommandLine(value || process.env.HIGGSFIELD_COMMAND || "higgsfield");
+  return parts.length ? parts : ["higgsfield"];
+}
+
+async function runHiggsfieldCli(commandValue, args, options = {}) {
+  const result = await runProcess([
+    ...higgsfieldCommandParts(commandValue),
+    ...args
+  ], {
+    timeoutMs: options.timeoutMs || 120000,
+    env: { NO_COLOR: "1", ...options.env }
+  });
+  return result;
+}
+
+function parseCliJson(stdout = "") {
+  const text = String(stdout || "").trim();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {}
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (!line.startsWith("{") && !line.startsWith("[")) continue;
+    try {
+      return JSON.parse(line);
+    } catch {}
+  }
+  const objectStart = text.lastIndexOf("{");
+  if (objectStart >= 0) {
+    try {
+      return JSON.parse(text.slice(objectStart));
+    } catch {}
+  }
+  return null;
+}
+
+function arrayFromPayload(payload, keys = []) {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== "object") return [];
+  for (const key of keys) {
+    const value = payload[key] ?? payload.data?.[key] ?? payload.result?.[key];
+    if (Array.isArray(value)) return value;
+  }
+  if (Array.isArray(payload.data)) return payload.data;
+  if (Array.isArray(payload.items)) return payload.items;
+  if (Array.isArray(payload.results)) return payload.results;
+  return [];
+}
+
+function normalizeHiggsfieldElementPayload(item = {}) {
+  if (!item || typeof item !== "object") return null;
+  const id = String(
+    item.id
+    || item.voice_id
+    || item.voiceId
+    || item.element_id
+    || item.elementId
+    || item.uuid
+    || item.slug
+    || ""
+  ).trim();
+  if (!id) return null;
+  const type = String(item.type || item.voice_type || item.voiceType || item.kind || item.category || "element").trim() || "element";
+  return {
+    id,
+    name: String(item.name || item.title || item.label || item.display_name || item.displayName || id).trim() || id,
+    type,
+    provider: String(item.provider || item.model || item.engine || "").trim(),
+    description: String(item.description || item.prompt || item.summary || "").trim(),
+    previewUrl: String(item.preview_url || item.previewUrl || item.url || item.audio_url || item.audioUrl || "").trim()
+  };
+}
+
+function higgsfieldElementVoices(payload = {}) {
+  const voices = arrayFromPayload(payload, ["voices", "items", "results", "data"]);
+  const directElements = arrayFromPayload(payload, ["elements"]);
+  const taggedElements = voices
+    .filter((item) => {
+      const type = String(item?.type || item?.voice_type || item?.voiceType || item?.kind || item?.category || "").trim().toLowerCase();
+      return type === "element" || type === "elements";
+    })
+    .map(normalizeHiggsfieldElementPayload)
+    .filter(Boolean);
+  const elements = directElements
+    .map((item) => normalizeHiggsfieldElementPayload({ type: "element", ...item }))
+    .filter(Boolean);
+  const byId = new Map();
+  for (const item of [...taggedElements, ...elements]) byId.set(item.id, item);
+  return Array.from(byId.values());
+}
+
+function normalizeHiggsfieldStatus(value = "") {
+  const status = String(value || "").trim().toLowerCase();
+  if (["complete", "completed", "success", "succeeded", "done", "finished"].includes(status)) return "succeeded";
+  if (["queued", "pending", "created", "starting"].includes(status)) return "pending";
+  if (["running", "processing", "in_progress", "in-progress"].includes(status)) return "running";
+  if (["cancelled", "canceled"].includes(status)) return "cancelled";
+  if (["failed", "error", "expired"].includes(status)) return status;
+  return status || "submitted";
+}
+
+function extractHiggsfieldJobId(payload = {}) {
+  return String(
+    payload?.id
+    || payload?.job_id
+    || payload?.jobId
+    || payload?.generation_id
+    || payload?.generationId
+    || payload?.task_id
+    || payload?.taskId
+    || payload?.data?.id
+    || payload?.data?.job_id
+    || payload?.job?.id
+    || ""
+  ).trim();
+}
+
+function extractHiggsfieldProgress(payload = {}) {
+  return normalizeProgressValue(
+    payload?.progress
+    ?? payload?.percent
+    ?? payload?.percentage
+    ?? payload?.data?.progress
+    ?? payload?.job?.progress
+  );
+}
+
+function isLikelyVideoUrl(value = "") {
+  return /^https?:\/\//i.test(value) && /\.(mp4|mov|webm|m4v)(?:[?#]|$)/i.test(value);
+}
+
+function findMediaUrl(value, seen = new Set(), requireVideo = false) {
+  if (!value || seen.has(value)) return "";
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (/^https?:\/\//i.test(text) && (!requireVideo || isLikelyVideoUrl(text))) return text;
+    return "";
+  }
+  if (typeof value !== "object") return "";
+  seen.add(value);
+  const preferredKeys = [
+    "result_url", "resultUrl", "video_url", "videoUrl", "media_url", "mediaUrl",
+    "download_url", "downloadUrl", "output_url", "outputUrl", "url", "file", "src",
+    "result", "output", "video", "media"
+  ];
+  for (const key of preferredKeys) {
+    const found = findMediaUrl(value[key], seen, requireVideo);
+    if (found) return found;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findMediaUrl(item, seen, requireVideo);
+      if (found) return found;
+    }
+    return "";
+  }
+  for (const child of Object.values(value)) {
+    const found = findMediaUrl(child, seen, requireVideo);
+    if (found) return found;
+  }
+  return "";
+}
+
+function extractHiggsfieldVideoUrl(payload = {}) {
+  return findMediaUrl(payload, new Set(), true) || findMediaUrl(payload);
+}
+
+function higgsfieldCliRequestSummary(args = []) {
+  return args.map((arg, index) => {
+    const previous = args[index - 1] || "";
+    if (["--prompt"].includes(previous)) return "[prompt omitted]";
+    return arg;
   });
 }
 
@@ -6666,6 +6889,214 @@ async function handleSeedanceGuide(req, res) {
   }
 }
 
+function higgsfieldReferenceFile(references = [], mode = "reference") {
+  if (mode === "text") return null;
+  const images = references.filter((item) => item?.kind === "image" && item.url);
+  if (!images.length) return null;
+  return {
+    reference: images[0],
+    filePath: localMediaPathFromUrl(images[0].url)
+  };
+}
+
+function higgsfieldResolutionFlagModels() {
+  return new Set(["seedance_2_0", "seedance1_5", "kling3_0_turbo", "wan2_7", "wan2_6", "marketing_studio_video", "minimax_hailuo"]);
+}
+
+function higgsfieldReferenceFlag(model) {
+  if (["veo3", "veo3_1", "minimax_hailuo", "kling2_6"].includes(model)) return "--image";
+  return "--start-image";
+}
+
+function higgsfieldModelMode(model) {
+  if (model === "video_standard") return "fast";
+  return "";
+}
+
+function higgsfieldCreateArgs(body = {}) {
+  const model = String(body.model || "seedance_2_0").trim() || "seedance_2_0";
+  const prompt = String(body.prompt || "").trim();
+  const args = ["generate", "create", model];
+  if (prompt) args.push("--prompt", prompt);
+  if (body.ratio) args.push("--aspect_ratio", String(body.ratio));
+  if (body.duration) args.push("--duration", String(Math.max(1, Math.round(Number(body.duration) || 5))));
+  if (body.resolution && higgsfieldResolutionFlagModels().has(model)) args.push("--resolution", String(body.resolution));
+  const modelMode = higgsfieldModelMode(model);
+  if (modelMode) args.push("--mode", modelMode);
+  const referenceFile = higgsfieldReferenceFile(body.references || [], body.mode || "reference");
+  if (referenceFile?.filePath) args.push(higgsfieldReferenceFlag(model), referenceFile.filePath);
+  if (model.startsWith("kling")) {
+    args.push("--sound", body.generateAudio === false ? "off" : "on");
+  }
+  args.push("--json");
+  return { args, referenceFile };
+}
+
+async function handleHiggsfieldCheck(req, res) {
+  const body = await readJson(req, 1024 * 1024);
+  const command = String(body.command || "").trim();
+  const version = await runHiggsfieldCli(command, ["version"], { timeoutMs: 20000 });
+  if (!version.ok) {
+    return sendJson(res, 502, {
+      ok: false,
+      installed: false,
+      authenticated: false,
+      error: version.stderr || version.stdout || version.error || "Higgsfield CLIを実行できませんでした。",
+      command: version.command
+    });
+  }
+  const account = await runHiggsfieldCli(command, ["account", "credits", "--json"], { timeoutMs: 30000 });
+  const accountPayload = parseCliJson(account.stdout);
+  sendJson(res, 200, {
+    ok: true,
+    installed: true,
+    authenticated: account.ok,
+    version: version.stdout.trim() || version.stderr.trim(),
+    account: accountPayload || null,
+    accountOutput: account.ok && !accountPayload ? account.stdout.trim() : account.ok ? "" : clipProcessOutput(account.stderr || account.stdout || account.error || "", 4000),
+    command: version.command
+  });
+}
+
+async function handleHiggsfieldCredits(req, res) {
+  const body = await readJson(req, 1024 * 1024);
+  const command = String(body.command || "").trim();
+  const account = await runHiggsfieldCli(command, ["account", "credits", "--json"], { timeoutMs: 30000 });
+  const accountPayload = parseCliJson(account.stdout);
+  if (!account.ok) {
+    return sendJson(res, 502, {
+      ok: false,
+      error: account.stderr || account.stdout || account.error || "Higgsfieldの残クレジット取得に失敗しました。",
+      providerPayload: accountPayload || { stdout: account.stdout, stderr: account.stderr },
+      command: account.command
+    });
+  }
+  sendJson(res, 200, {
+    ok: true,
+    account: accountPayload || null,
+    accountOutput: accountPayload ? "" : account.stdout.trim(),
+    command: account.command
+  });
+}
+
+async function handleHiggsfieldElements(req, res) {
+  const body = await readJson(req, 1024 * 1024);
+  const command = String(body.command || "").trim();
+  const result = await runHiggsfieldCli(command, ["voices", "list", "--json"], { timeoutMs: 45000 });
+  const payload = parseCliJson(result.stdout);
+  if (!result.ok) {
+    return sendJson(res, 502, {
+      ok: false,
+      error: result.stderr || result.stdout || result.error || "Higgsfield Elementsの読み込みに失敗しました。",
+      providerPayload: payload || { stdout: result.stdout, stderr: result.stderr },
+      command: result.command
+    });
+  }
+  const voices = arrayFromPayload(payload, ["voices", "items", "results", "data"]);
+  const elements = higgsfieldElementVoices(payload);
+  sendJson(res, 200, {
+    ok: true,
+    elements,
+    totalVoices: voices.length,
+    providerPayload: payload,
+    command: result.command
+  });
+}
+
+async function handleHiggsfieldCreate(req, res) {
+  const body = await readJson(req, 24 * 1024 * 1024);
+  const command = String(body.command || "").trim();
+  const prompt = String(body.prompt || "").trim();
+  if (!prompt && !(body.references || []).length) {
+    return sendJson(res, 400, { error: "Higgsfieldに送るプロンプトまたは参照画像が必要です。" });
+  }
+  const invalidReference = (body.references || []).find((item) => item?.kind && item.kind !== "image");
+  if (invalidReference) {
+    return sendJson(res, 400, { error: "Higgsfield CLI連携では、この画面からは画像参照のみ送信できます。" });
+  }
+  const imageReferences = (body.references || []).filter((item) => item?.kind === "image");
+  if (imageReferences.length > 1) {
+    return sendJson(res, 400, { error: "Higgsfield CLI連携で送れる参照画像は現在1枚までです。" });
+  }
+
+  try {
+    const { args, referenceFile } = higgsfieldCreateArgs(body);
+    const result = await runHiggsfieldCli(command, args, { timeoutMs: 120000 });
+    const payload = parseCliJson(result.stdout) || {};
+    if (!result.ok) {
+      return sendJson(res, 502, {
+        error: result.stderr || result.stdout || result.error || "Higgsfield CLIの生成開始に失敗しました。",
+        providerPayload: payload || { stdout: result.stdout, stderr: result.stderr },
+        request: { command: result.command, args: higgsfieldCliRequestSummary(args), reference: referenceFile?.reference || null }
+      });
+    }
+    let taskId = extractHiggsfieldJobId(payload);
+    const status = normalizeHiggsfieldStatus(payload.status || payload.state || payload.data?.status || payload.job?.status);
+    const videoUrl = extractHiggsfieldVideoUrl(payload);
+    let saved = null;
+    if (status === "succeeded" && videoUrl) {
+      taskId = taskId || crypto.randomUUID();
+      saved = await saveGeneratedVideo(videoUrl, taskId);
+    }
+    if (!taskId && !videoUrl) {
+      return sendJson(res, 502, {
+        error: "Higgsfield CLIのジョブIDを取得できませんでした。",
+        providerPayload: payload || { stdout: result.stdout },
+        request: { command: result.command, args: higgsfieldCliRequestSummary(args), reference: referenceFile?.reference || null }
+      });
+    }
+    sendJson(res, 200, {
+      id: taskId || crypto.randomUUID(),
+      status,
+      progress: status === "succeeded" ? 100 : extractHiggsfieldProgress(payload),
+      progressMessage: status === "succeeded" ? "Higgsfield CLIで生成が完了しました。" : "Higgsfield CLIで生成待機中です。",
+      videoUrl,
+      localUrl: saved?.url || "",
+      localPath: saved?.path || "",
+      providerPayload: payload || { stdout: result.stdout },
+      request: { command: result.command, args: higgsfieldCliRequestSummary(args), reference: referenceFile?.reference || null }
+    });
+  } catch (error) {
+    sendJson(res, 502, { error: `Higgsfield CLIへの生成投入に失敗しました: ${error.message}` });
+  }
+}
+
+async function handleHiggsfieldStatus(req, res) {
+  const body = await readJson(req, 1024 * 1024);
+  const command = String(body.command || "").trim();
+  const taskId = String(body.taskId || "").trim();
+  if (!taskId) return sendJson(res, 400, { error: "Higgsfield job id が必要です。" });
+  try {
+    const result = await runHiggsfieldCli(command, ["generate", "get", taskId, "--json"], { timeoutMs: 60000 });
+    const payload = parseCliJson(result.stdout) || {};
+    if (!result.ok) {
+      return sendJson(res, 502, {
+        error: result.stderr || result.stdout || result.error || "Higgsfield CLIのジョブ確認に失敗しました。",
+        providerPayload: payload || { stdout: result.stdout, stderr: result.stderr }
+      });
+    }
+    const status = normalizeHiggsfieldStatus(payload.status || payload.state || payload.data?.status || payload.job?.status);
+    const videoUrl = extractHiggsfieldVideoUrl(payload);
+    let saved = null;
+    if (status === "succeeded" && videoUrl) {
+      saved = await saveGeneratedVideo(videoUrl, taskId);
+    }
+    sendJson(res, 200, {
+      ...payload,
+      id: taskId,
+      status,
+      progress: status === "succeeded" ? 100 : extractHiggsfieldProgress(payload),
+      progressMessage: payload.progressMessage || payload.message || "",
+      videoUrl,
+      localUrl: saved?.url || "",
+      localPath: saved?.path || "",
+      providerPayload: payload
+    });
+  } catch (error) {
+    sendJson(res, 502, { error: `Higgsfield CLIのジョブ確認に失敗しました: ${error.message}` });
+  }
+}
+
 async function handleSeedanceCreate(req, res) {
   const body = await readJson(req, 90 * 1024 * 1024);
   const {
@@ -7080,6 +7511,26 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/seedance/status") {
       return await handleSeedanceStatus(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/higgsfield/check") {
+      return await handleHiggsfieldCheck(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/higgsfield/credits") {
+      return await handleHiggsfieldCredits(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/higgsfield/elements") {
+      return await handleHiggsfieldElements(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/higgsfield/create") {
+      return await handleHiggsfieldCreate(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/higgsfield/status") {
+      return await handleHiggsfieldStatus(req, res);
     }
 
     if ((req.method === "GET" || req.method === "HEAD") && url.pathname.startsWith("/uploads/")) {

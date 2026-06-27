@@ -1,7 +1,7 @@
 # Creative File Studio
 
 ローカル環境で動く、創作支援向けのファイル管理アプリです。作品、キャラ設定、取り込み画像、世界観資料、生成プロンプト、画像生成、画像編集、音声、動画をまとめて扱えます。
-画像生成はComfyUI互換API、Stable Diffusion WebUI Forge、Forge Neo、Draw Thingsを選択でき、ComfyUIではローカルGPUとクラウドGPUを切り替え、Forge / Forge Neo / Draw Thingsではtxt2img APIに送信できます。モデルライブラリではCheckpoint / LoRAを参考画像つきで検索し、保存済み・未保存を見ながら選択、ダウンロード、生成設定への反映ができます。画像編集は簡易ローカル処理、アスペクト比変換、手動フリーモード、ローカルAI rembg、ローカルAI backgroundremover、remove.bgクラウドAPIを切り替え、動画背景除去と動画GIF化も扱えます。動画生成は公式Seedance APIまたはOpenRouterの動画モデル、音声生成はOpenRouter TTS、ElevenLabs、Voicebox、ローカル VoxCPM、ローカル MisoTTS、ローカル Irodori-TTS を切り替えて使えます。音声編集ではmp3/wavの複数分割、不要範囲カット、音量変更、ピッチ変更ができます。
+画像生成はComfyUI互換API、Stable Diffusion WebUI Forge、Forge Neo、Draw Thingsを選択でき、ComfyUIではローカルGPUとクラウドGPUを切り替え、Forge / Forge Neo / Draw Thingsではtxt2img APIに送信できます。モデルライブラリではCheckpoint / LoRAを参考画像つきで検索し、保存済み・未保存を見ながら選択、ダウンロード、生成設定への反映ができます。画像編集は簡易ローカル処理、アスペクト比変換、手動フリーモード、ローカルAI rembg、ローカルAI backgroundremover、remove.bgクラウドAPIを切り替え、動画背景除去と動画GIF化も扱えます。動画生成は公式Seedance API、OpenRouterの動画モデル、Replicate Seedance、Higgsfield CLI、音声生成はOpenRouter TTS、ElevenLabs、Voicebox、ローカル VoxCPM、ローカル MisoTTS、ローカル Irodori-TTS を切り替えて使えます。音声編集ではmp3/wavの複数分割、不要範囲カット、音量変更、ピッチ変更ができます。
 
 ## 初回セットアップ
 
@@ -260,8 +260,8 @@ ZIPに含めないもの:
 ### 動画生成
 
 - 作品情報、世界観、キャラ情報、参照素材を読んだ動画生成エージェント
-- 公式Seedance API、OpenRouter動画モデル、Replicate Seedance 2.0を選択
-- OpenRouterではSeedance、Kling、Veo、Soraなど、ReplicateではSeedance 2.0 / Fastをプルダウンで選択
+- 公式Seedance API、OpenRouter動画モデル、Replicate Seedance 2.0、Higgsfield CLIを選択
+- OpenRouterではSeedance、Kling、Veo、Soraなど、ReplicateではSeedance 2.0 / Fast、HiggsfieldではCLI対応の動画モデルや `video_standard`（Enhanced Seedance 2.0 Fast / Unlimited）をプルダウンで選択
 - モデルごとの対応秒数、アスペクト比、解像度、開始/終了フレーム設定を画面に反映
 - 秒数、アスペクト比、解像度、音声生成、カメラ固定、透かし、Seedを指定
 - 参照素材として取り込み画像、キャラ立ち絵、その他情報の参考画像、動画、音声を選択
@@ -271,7 +271,7 @@ ZIPに含めないもの:
 - 生成履歴から動画、プロンプト、保存先を確認
 - 生成履歴の選択削除、一括削除、10件ごとのページ切り替え
 - 今月の動画生成コスト、日本円換算、現在モデルの1秒料金を表示
-- OpenRouter動画モデルの現在料金、Replicateの固定秒単価、USD/JPYレートを使って概算
+- OpenRouter動画モデルの現在料金、Replicateの固定秒単価、USD/JPYレートを使って概算。HiggsfieldはHiggsfield側のクレジット消費として扱い、この概算には含めません
 
 ### 音声生成
 
@@ -308,7 +308,7 @@ ZIPに含めないもの:
 - AnimaDex APIのURLを設定し、キャラクター/アーティスト検索を画像生成プロンプトに反映
 - モデルライブラリで保存先プラットフォームを指定し、Civitaiカタログ検索とローカル保存済みファイルを確認
 - 画像編集画面からローカルAI rembg / backgroundremoverの状態確認とセットアップ
-- 動画生成プロバイダーを公式 / OpenRouter / Replicateから選択
+- 動画生成プロバイダーを公式 / OpenRouter / Replicate / Higgsfield CLIから選択
 - VoiceboxのAPI URL、既定プロファイル、言語、Model sizeを設定
 - MisoTTS / Irodori-TTSの既存フォルダ指定、または `scripts/setup-misotts.sh` / `scripts/setup-irodori.sh` による取得
 
@@ -501,11 +501,11 @@ Irodori-TTS選択時:
 
 ## 動画生成
 
-設定画面の Seedance セクションで以下を設定します。
+設定画面の「動画生成」セクションで以下を設定します。
 
 - API キー: 公式APIを使う場合は公式側のキー、OpenRouterを使う場合はOpenRouterキー、Replicateを使う場合はReplicate tokenを使います。OpenRouterを選んだ場合は、上のOpenRouter APIキー欄のキーを優先して使います。
-- 動画生成プロバイダー: `公式 BytePlus / Volcengine`、`OpenRouter`、`Replicate` をプルダウンで選択します。
-- 動画モデル: 公式APIでは `dreamina-seedance-2-0-260128`、OpenRouterでは動画モデル一覧、Replicateでは `bytedance/seedance-2.0` または `bytedance/seedance-2.0-fast` から選択します。
+- 動画生成プロバイダー: `公式 BytePlus / Volcengine`、`OpenRouter`、`Replicate`、`Higgsfield CLI` をプルダウンで選択します。
+- 動画モデル: 公式APIでは `dreamina-seedance-2-0-260128`、OpenRouterでは動画モデル一覧、Replicateでは `bytedance/seedance-2.0` または `bytedance/seedance-2.0-fast`、Higgsfieldでは `video_standard`（Enhanced Seedance 2.0 Fast / Unlimited）、`seedance_2_0`、`kling3_0`、`veo3_1` などのCLI対応モデルから選択します。
 - 既定解像度: 動画生成画面の初期値として使います。
 
 OpenRouter選択時は、動画モデル専用APIから対応設定を取得します。取得できない場合も、以下のモデルはフォールバック設定で選択できます。
@@ -521,6 +521,20 @@ OpenRouter選択時は、動画モデル専用APIから対応設定を取得し�
 
 Replicate選択時は、`https://api.replicate.com/v1/models/{owner}/{model}/predictions` に送信し、`predictions/{id}` をポーリングします。完成動画URLは取得後に `data/videos` へ保存します。
 
+Higgsfield CLI選択時は、サーバー側からHiggsfield CLIを実行します。グローバルインストールで権限エラーが出る環境では、先に別ターミナルで以下を実行してください。
+
+```bash
+npx -y @higgsfield/cli auth login
+```
+
+その場合は、設定画面の「Higgsfield CLIコマンド」に `npx -y @higgsfield/cli` を入れてください。`higgsfield` コマンドとして恒久的に使う場合は、npmのグローバルインストール先をユーザー領域に設定してから `npm install -g @higgsfield/cli` と `higgsfield auth login` を実行します。
+
+設定画面の「Higgsfield確認」でCLI実行可否とログイン状態を確認できます。アプリにはHiggsfield APIキーを保存せず、CLI側のログイン状態を使います。CLI連携でこの画面から送れる参照素材は、現在は画像1枚までです。
+
+同じHiggsfield欄の「残クレジット更新」は `higgsfield account credits --json` を呼び出して残クレジットを保存・表示します。「Elements読み込み」は `higgsfield voices list --json` のうち `type=element` の項目を読み込み、登録済みElementsとしてアプリ設定に保存します。Elementsはまず一覧登録用で、動画生成リクエストには自動では付与しません。
+
+`video_standard` は Higgsfield の Enhanced Seedance 2.0 Fast / Unlimited 用候補として扱い、CLIには `generate create video_standard --mode fast` の組み合わせで送信します。
+
 動画生成画面では、作品、キャラ、秒数、アスペクト比、解像度、音声生成、カメラ固定、透かし、Seedを指定できます。
 
 画面上部には、今月作成した動画ジョブ全体のコスト目安を表示します。
@@ -529,7 +543,7 @@ Replicate選択時は、`https://api.replicate.com/v1/models/{owner}/{model}/pre
 - 日本円概算: 生成履歴の実コストが取得できる場合は実コストを優先し、未取得のジョブはモデル、秒数、解像度、アスペクト比から概算します。
 - 現在モデルの1秒料金: 選択中の動画モデル、解像度、アスペクト比に応じた秒単価を表示します。
 
-OpenRouterの料金取得にはOpenRouter APIキーが必要です。Replicateはアプリ内の固定秒単価を使います。取得できない場合も、保存済み料金またはフォールバック料金で概算表示します。
+OpenRouterの料金取得にはOpenRouter APIキーが必要です。Replicateはアプリ内の固定秒単価を使います。HiggsfieldはHiggsfieldアカウント側のクレジット消費として扱い、この画面の日本円概算には含めません。取得できない場合も、保存済み料金またはフォールバック料金で概算表示します。
 
 生成中は、プロバイダが進捗率を返す場合はパーセントを表示します。進捗率が返らない場合も、送信中・待機中・生成中などの状態、経過時間、最終更新時刻を表示します。
 
@@ -549,6 +563,6 @@ OpenRouterの料金取得にはOpenRouter APIキーが必要です。Replicate�
 
 更新後に新しい機能が動かない、または `Not found` が出る場合は、起動中のサーバーが古いままの可能性があります。ターミナルで `Ctrl + C` を押して停止し、もう一度起動してください。ブラウザもリロードしてください。
 
-Seedance/OpenRouter/Replicateの動画生成で `401` が出る場合は、設定画面のOpenRouter APIキーとSeedance/Replicate APIキーを確認してください。OpenRouter経由の完成動画は、保存時にも認証が必要になることがあります。このアプリはOpenRouter選択時に認証付きダウンロードを試します。
+Seedance/OpenRouter/Replicateの動画生成で `401` が出る場合は、設定画面のOpenRouter APIキーとSeedance/Replicate APIキーを確認してください。OpenRouter経由の完成動画は、保存時にも認証が必要になることがあります。このアプリはOpenRouter選択時に認証付きダウンロードを試します。Higgsfield CLIで認証エラーが出る場合は、設定したCLIコマンドに合わせて `higgsfield auth login` または `npx -y @higgsfield/cli auth login` を再実行してください。
 
 生成ジョブの「更新」を押しても古いエラーが残る場合は、アプリを完全に再起動してから再度「更新」を押してください。

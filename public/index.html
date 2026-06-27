@@ -7,12 +7,44 @@
     <link rel="stylesheet" href="/styles.css?v=20260605-misotts">
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <div class="boot-panel">
+        <strong>Creative File Studio</strong>
+        <span>読み込み中...</span>
+      </div>
+    </div>
     <template id="modal-template">
       <div class="modal-backdrop">
         <div class="modal" role="dialog" aria-modal="true"></div>
       </div>
     </template>
+    <script>
+      (() => {
+        const escapeHtml = (value = "") => String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
+        window.showCreativeFileStudioBootError = (error) => {
+          const app = document.querySelector("#app");
+          if (!app || app.querySelector(".app-shell")) return;
+          const message = error?.message || error || "アプリの読み込みに失敗しました。";
+          app.innerHTML = `
+            <div class="boot-panel boot-panel-error">
+              <strong>Creative File Studioを読み込めませんでした</strong>
+              <span>${escapeHtml(message)}</span>
+            </div>
+          `;
+        };
+        window.addEventListener("error", (event) => {
+          window.showCreativeFileStudioBootError(event.error || event.message);
+        });
+        window.addEventListener("unhandledrejection", (event) => {
+          window.showCreativeFileStudioBootError(event.reason || "起動処理に失敗しました。");
+        });
+      })();
+    </script>
     <script type="module" src="/app.js?v=20260605-misotts"></script>
   </body>
 </html>

@@ -26,6 +26,39 @@ body {
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
+.boot-panel {
+  width: min(420px, calc(100vw - 40px));
+  margin: 22vh auto 0;
+  border: 1px solid rgba(38, 40, 43, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 8px;
+  padding: 22px;
+  text-align: center;
+}
+
+.boot-panel strong {
+  font-size: 20px;
+  line-height: 1.25;
+}
+
+.boot-panel span {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.boot-panel-error {
+  border-color: rgba(164, 50, 46, 0.35);
+}
+
+.boot-panel-error strong {
+  color: #8d2926;
+}
+
 button,
 input,
 textarea,
@@ -2419,6 +2452,10 @@ textarea {
   grid-template-columns: 34px minmax(72px, 92px) auto 34px;
   align-items: center;
   gap: 6px;
+}
+
+.number-stepper.compact-stepper {
+  grid-template-columns: minmax(72px, 92px) auto;
 }
 
 .number-stepper input[type="number"] {

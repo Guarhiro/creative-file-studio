@@ -3,6 +3,7 @@ const modalTemplate = document.querySelector("#modal-template");
 
 const sidebarHiddenStorageKey = "creative_file_studio_sidebar_hidden";
 const imageEditControlsHiddenStorageKey = "creative_file_studio_image_edit_controls_hidden";
+const imageFileAccept = "image/*,.webp,image/webp";
 
 function readStoredFlag(key) {
   try {
@@ -93,6 +94,9 @@ const state = {
   imageEditAspectPositionX: 0,
   imageEditAspectPositionY: 0,
   imageEditAspectScale: 100,
+  imageEditFormat: "jpg",
+  imageEditJpegQuality: 90,
+  imageEditPngMode: "transparent",
   imageEditInputFile: null,
   imageEditResult: null,
   imageEditIsRunning: false,
@@ -180,6 +184,12 @@ const state = {
   voxcpmStatusMessage: "",
   misottsStatus: "idle",
   misottsStatusMessage: "",
+  higgsfieldStatus: "idle",
+  higgsfieldStatusMessage: "",
+  higgsfieldCreditsStatus: "idle",
+  higgsfieldCreditsMessage: "",
+  higgsfieldElementsStatus: "idle",
+  higgsfieldElementsMessage: "",
   seedanceGuide: "",
   worldSheetFiles: [],
   worldTextDraft: "",
@@ -692,6 +702,7 @@ const audioProviders = [
 
 const imageEditProviders = [
   ["aspect", "アスペクト比変換"],
+  ["format", "フォーマット変換"],
   ["manual", "手動フリーモード"],
   ["rembg", "ローカルAI rembg"],
   ["backgroundremover", "ローカルAI backgroundremover"],
@@ -725,6 +736,16 @@ const imageEditTransparentPreviewModes = [
   ["checker", "網目"],
   ["black", "黒"],
   ["white", "白"]
+];
+
+const imageEditFormatOptions = [
+  ["jpg", "JPG"],
+  ["png", "PNG"]
+];
+
+const imageEditPngModeOptions = [
+  ["transparent", "透過あり"],
+  ["opaque", "透過なし"]
 ];
 
 const manualImageEditTools = [
@@ -1217,6 +1238,8 @@ const fallbackOpenRouterModels = [
   { id: "google/gemini-3.1-pro-preview", name: "Gemini 3.1 Pro Preview", architecture: { input_modalities: ["text", "image"], output_modalities: ["text"] } }
 ];
 
+const higgsfieldCliBaseUrl = "higgsfield-cli://local";
+
 const seedanceApiBaseOptions = [
   {
     label: "公式 BytePlus / Volcengine",
@@ -1232,6 +1255,11 @@ const seedanceApiBaseOptions = [
     label: "Replicate",
     value: "https://api.replicate.com/v1",
     defaultModel: "bytedance/seedance-2.0"
+  },
+  {
+    label: "Higgsfield CLI",
+    value: higgsfieldCliBaseUrl,
+    defaultModel: "seedance_2_0"
   }
 ];
 
@@ -1367,6 +1395,81 @@ const replicateSeedanceVideoModels = [
   }
 ];
 
+const higgsfieldVideoModels = [
+  {
+    id: "video_standard",
+    name: "Enhanced Seedance 2.0 Fast (Unlimited)",
+    generate_audio: true,
+    supported_durations: [5, 10, 15],
+    supported_aspect_ratios: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"],
+    supported_resolutions: ["720p", "1080p"],
+    supported_frame_images: ["first_frame"]
+  },
+  {
+    id: "seedance_2_0",
+    name: "Seedance 2.0",
+    generate_audio: true,
+    supported_durations: [5, 10, 15],
+    supported_aspect_ratios: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"],
+    supported_resolutions: ["720p", "1080p", "4k"],
+    supported_frame_images: ["first_frame"]
+  },
+  {
+    id: "kling3_0",
+    name: "Kling v3.0",
+    generate_audio: true,
+    supported_durations: [5, 10],
+    supported_aspect_ratios: ["16:9", "9:16", "1:1"],
+    supported_resolutions: ["720p", "1080p"],
+    supported_frame_images: ["first_frame"]
+  },
+  {
+    id: "kling3_0_turbo",
+    name: "Kling 3.0 Turbo",
+    generate_audio: true,
+    supported_durations: [5, 10],
+    supported_aspect_ratios: ["16:9", "9:16", "1:1"],
+    supported_resolutions: ["720p", "1080p"],
+    supported_frame_images: ["first_frame"]
+  },
+  {
+    id: "veo3_1",
+    name: "Google Veo 3.1",
+    generate_audio: true,
+    supported_durations: [5, 8],
+    supported_aspect_ratios: ["16:9", "9:16"],
+    supported_resolutions: ["720p", "1080p"],
+    supported_frame_images: []
+  },
+  {
+    id: "veo3_1_lite",
+    name: "Google Veo 3.1 Lite",
+    generate_audio: true,
+    supported_durations: [5, 8],
+    supported_aspect_ratios: ["16:9", "9:16"],
+    supported_resolutions: ["720p", "1080p"],
+    supported_frame_images: []
+  },
+  {
+    id: "wan2_7",
+    name: "Wan 2.7",
+    generate_audio: false,
+    supported_durations: [5, 10],
+    supported_aspect_ratios: ["16:9", "9:16", "1:1"],
+    supported_resolutions: ["720p"],
+    supported_frame_images: ["first_frame"]
+  },
+  {
+    id: "cinematic_studio_3_0",
+    name: "Cinema Studio 3.0",
+    generate_audio: true,
+    supported_durations: [5, 10],
+    supported_aspect_ratios: ["16:9", "9:16"],
+    supported_resolutions: ["720p", "1080p"],
+    supported_frame_images: ["first_frame"]
+  }
+];
+
 const replicateSeedanceVideoPricing = {
   "bytedance/seedance-2.0": {
     modelId: "bytedance/seedance-2.0",
@@ -1411,12 +1514,13 @@ const forgeNeoApiKey = () => localStorage.getItem("forge_neo_api_key") || "";
 const drawThingsApiKey = () => localStorage.getItem("drawthings_api_key") || "";
 const civitaiApiKey = () => localStorage.getItem("civitai_api_key") || "";
 const removeBgApiKey = () => localStorage.getItem("removebg_api_key") || "";
+const isHiggsfieldSeedanceBaseUrl = (value = state.db?.settings?.seedanceBaseUrl) => String(value || "").startsWith("higgsfield-cli");
 const isOpenRouterSeedanceBaseUrl = (value = state.db?.settings?.seedanceBaseUrl) => String(value || "").includes("openrouter.ai");
 const isReplicateSeedanceBaseUrl = (value = state.db?.settings?.seedanceBaseUrl) => String(value || "").includes("replicate.com");
 const activeSeedanceApiKey = (baseUrl = state.db?.settings?.seedanceBaseUrl) =>
-  isOpenRouterSeedanceBaseUrl(baseUrl) ? (apiKey() || seedanceApiKey()) : seedanceApiKey();
+  isHiggsfieldSeedanceBaseUrl(baseUrl) ? "" : isOpenRouterSeedanceBaseUrl(baseUrl) ? (apiKey() || seedanceApiKey()) : seedanceApiKey();
 const seedanceProviderLabel = (baseUrl = state.db?.settings?.seedanceBaseUrl) =>
-  isOpenRouterSeedanceBaseUrl(baseUrl) ? "OpenRouter" : isReplicateSeedanceBaseUrl(baseUrl) ? "Replicate" : "Seedance";
+  isHiggsfieldSeedanceBaseUrl(baseUrl) ? "Higgsfield CLI" : isOpenRouterSeedanceBaseUrl(baseUrl) ? "OpenRouter" : isReplicateSeedanceBaseUrl(baseUrl) ? "Replicate" : "Seedance";
 const imageProviderFromValue = (value) => {
   const text = String(value || "").trim().toLowerCase();
   if (["drawthings", "draw-things", "draw_things", "draw things"].includes(text)) return "drawthings";
@@ -1925,6 +2029,91 @@ function plainInlineList(value, fallback = "未設定") {
 function renderTagList(value) {
   const items = asArray(value);
   return items.length ? `<div class="tag-row">${items.slice(0, 8).map((item) => `<span class="tag">${escapeHtml(item)}</span>`).join("")}</div>` : "";
+}
+
+function normalizeHiggsfieldCredits(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  const raw = String(value || "").trim();
+  return raw ? { raw } : null;
+}
+
+function higgsfieldCreditValue(value, depth = 0) {
+  if (!value || depth > 4) return null;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = higgsfieldCreditValue(item, depth + 1);
+      if (found !== null && found !== "") return found;
+    }
+    return null;
+  }
+  if (typeof value !== "object") return null;
+  const keys = [
+    "remaining_credits", "remainingCredits", "credits_remaining", "creditsRemaining",
+    "available_credits", "availableCredits", "credit_balance", "creditBalance",
+    "credits", "credit", "balance", "remaining", "available", "amount", "raw"
+  ];
+  for (const key of keys) {
+    if (!(key in value)) continue;
+    const found = higgsfieldCreditValue(value[key], depth + 1);
+    if (found !== null && found !== "") return found;
+  }
+  return null;
+}
+
+function formatHiggsfieldCredits(account) {
+  if (!account) return "未取得";
+  const value = higgsfieldCreditValue(account);
+  if (value !== null && value !== "") {
+    const numeric = Number(String(value).replace(/,/g, ""));
+    return Number.isFinite(numeric)
+      ? `${numeric.toLocaleString("ja-JP")} credits`
+      : String(value);
+  }
+  try {
+    return compactPromptText(JSON.stringify(account), 180);
+  } catch {
+    return "取得済み";
+  }
+}
+
+function normalizeHiggsfieldElement(item) {
+  if (!item || typeof item !== "object") return null;
+  const id = String(item.id || item.voice_id || item.voiceId || item.element_id || item.elementId || "").trim();
+  if (!id) return null;
+  const name = String(item.name || item.title || item.label || item.display_name || item.displayName || id).trim() || id;
+  return {
+    id,
+    name,
+    type: String(item.type || item.voice_type || item.voiceType || "element").trim() || "element",
+    provider: String(item.provider || item.model || item.engine || "").trim(),
+    description: String(item.description || item.summary || "").trim(),
+    previewUrl: String(item.previewUrl || item.preview_url || item.url || "").trim(),
+    updatedAt: item.updatedAt || ""
+  };
+}
+
+function normalizeHiggsfieldElements(value) {
+  const byId = new Map();
+  for (const item of asArray(value)) {
+    const normalized = normalizeHiggsfieldElement(item);
+    if (normalized) byId.set(normalized.id, normalized);
+  }
+  return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name, "ja"));
+}
+
+function renderHiggsfieldElements(elements = []) {
+  if (!elements.length) return `<div class="full empty compact">登録済みElementsはありません。</div>`;
+  return `
+    <div class="full tag-row">
+      ${elements.map((item) => {
+        const meta = [item.id, item.provider].filter(Boolean).join(" / ");
+        const title = meta ? `${item.name} (${meta})` : item.name;
+        return `<span class="tag" title="${escapeHtml(title)}">${escapeHtml(item.name || item.id)}</span>`;
+      }).join("")}
+    </div>
+  `;
 }
 
 function parseJsonField(value, fallback) {
@@ -2681,6 +2870,11 @@ function normalizeSettings() {
     voxcpmDefaults: { ...voxcpmDefaultSettings },
     misottsAppDir: "vendor/MisoTTS",
     misottsDefaults: { ...misottsDefaultSettings },
+    higgsfieldCommand: "higgsfield",
+    higgsfieldCredits: null,
+    higgsfieldCreditsUpdatedAt: "",
+    higgsfieldElements: [],
+    higgsfieldElementsUpdatedAt: "",
     seedanceBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3",
     seedanceModel: "dreamina-seedance-2-0-260128",
     seedanceResolution: "720p",
@@ -2730,6 +2924,11 @@ function normalizeSettings() {
   state.db.settings.voxcpmDefaults = normalizedVoxcpmSettings(state.db.settings.voxcpmDefaults);
   state.db.settings.misottsAppDir = String(state.db.settings.misottsAppDir || "vendor/MisoTTS").trim() || "vendor/MisoTTS";
   state.db.settings.misottsDefaults = normalizedMisoTtsSettings(state.db.settings.misottsDefaults);
+  state.db.settings.higgsfieldCommand = String(state.db.settings.higgsfieldCommand || "higgsfield").trim() || "higgsfield";
+  state.db.settings.higgsfieldCredits = normalizeHiggsfieldCredits(state.db.settings.higgsfieldCredits);
+  state.db.settings.higgsfieldCreditsUpdatedAt = String(state.db.settings.higgsfieldCreditsUpdatedAt || "").trim();
+  state.db.settings.higgsfieldElements = normalizeHiggsfieldElements(state.db.settings.higgsfieldElements);
+  state.db.settings.higgsfieldElementsUpdatedAt = String(state.db.settings.higgsfieldElementsUpdatedAt || "").trim();
   state.db.settings.comfy = normalizedComfySettings(state.db.settings.comfy);
   state.db.settings.comfyPresets = normalizedComfyPresets(state.db.settings.comfyPresets);
   state.db.settings.modelLibrary = normalizedModelLibrarySettings(state.db.settings.modelLibrary);
@@ -2864,7 +3063,26 @@ function replicateVideoModelChoices(selectedId = "") {
   return models;
 }
 
+function higgsfieldVideoModelChoices(selectedId = "") {
+  const models = higgsfieldVideoModels.map((model) => normalizeOpenRouterVideoModel(model));
+  if (selectedId && !models.some((model) => model.id === selectedId)) {
+    models.unshift(normalizeOpenRouterVideoModel({
+      id: selectedId,
+      name: selectedId,
+      generate_audio: true,
+      supported_durations: [5],
+      supported_aspect_ratios: ["16:9"],
+      supported_resolutions: ["720p"],
+      supported_frame_images: []
+    }));
+  }
+  return models;
+}
+
 function videoModelConfig(modelId, baseUrl = state.db?.settings?.seedanceBaseUrl) {
+  if (isHiggsfieldSeedanceBaseUrl(baseUrl)) {
+    return higgsfieldVideoModelChoices(modelId).find((model) => model.id === modelId) || higgsfieldVideoModelChoices()[0];
+  }
   if (isReplicateSeedanceBaseUrl(baseUrl)) {
     return replicateVideoModelChoices(modelId).find((model) => model.id === modelId) || replicateVideoModelChoices()[0];
   }
@@ -2877,6 +3095,7 @@ function videoModelConfig(modelId, baseUrl = state.db?.settings?.seedanceBaseUrl
 }
 
 function videoModelBrand(modelId = "", baseUrl = state.db?.settings?.seedanceBaseUrl) {
+  if (isHiggsfieldSeedanceBaseUrl(baseUrl)) return "Higgsfield";
   const model = videoModelConfig(modelId || state.db?.settings?.seedanceModel, baseUrl);
   const text = `${model?.name || ""} ${model?.id || modelId || ""}`.toLowerCase();
   if (text.includes("kling")) return "Kling";
@@ -2900,6 +3119,9 @@ function displayVideoJobTitle(job) {
 function compatibleVideoModelId(modelId, baseUrl = state.db?.settings?.seedanceBaseUrl) {
   const defaultModel = seedanceApiBasePreset(baseUrl).defaultModel;
   const value = modelId || defaultModel;
+  if (isHiggsfieldSeedanceBaseUrl(baseUrl)) {
+    return higgsfieldVideoModels.some((model) => model.id === value) ? value : defaultModel;
+  }
   if (isReplicateSeedanceBaseUrl(baseUrl)) {
     return replicateSeedanceVideoModels.some((model) => model.id === value) ? value : defaultModel;
   }
@@ -2931,6 +3153,15 @@ function videoModeOptionsForModel(model) {
 }
 
 function renderVideoModelSelect(id, value, baseUrl = state.db?.settings?.seedanceBaseUrl) {
+  if (isHiggsfieldSeedanceBaseUrl(baseUrl)) {
+    const choices = higgsfieldVideoModelChoices(value);
+    const current = choices.some((model) => model.id === value) ? value : seedanceApiBasePreset(baseUrl).defaultModel;
+    return `
+      <select id="${id}">
+        ${choices.map((model) => `<option value="${escapeHtml(model.id)}" ${model.id === current ? "selected" : ""}>${escapeHtml(model.name || model.id)} (${escapeHtml(model.id)})</option>`).join("")}
+      </select>
+    `;
+  }
   if (isReplicateSeedanceBaseUrl(baseUrl)) {
     const choices = replicateVideoModelChoices(value);
     const current = choices.some((model) => model.id === value) ? value : seedanceApiBasePreset(baseUrl).defaultModel;
@@ -2965,6 +3196,13 @@ function updateSettingSeedanceResolutionOptions(modelId, baseUrl) {
 function updateSettingSeedanceModelOptions(baseUrl, preferredModel = "") {
   const select = document.querySelector("#setting-seedance-model");
   if (!select) return;
+  if (isHiggsfieldSeedanceBaseUrl(baseUrl)) {
+    const choices = higgsfieldVideoModelChoices(preferredModel);
+    const current = choices.some((model) => model.id === preferredModel) ? preferredModel : seedanceApiBasePreset(baseUrl).defaultModel;
+    select.innerHTML = choices.map((model) => `<option value="${escapeHtml(model.id)}" ${model.id === current ? "selected" : ""}>${escapeHtml(model.name || model.id)} (${escapeHtml(model.id)})</option>`).join("");
+    updateSettingSeedanceResolutionOptions(current, baseUrl);
+    return;
+  }
   if (isReplicateSeedanceBaseUrl(baseUrl)) {
     const choices = replicateVideoModelChoices(preferredModel);
     const current = choices.some((model) => model.id === preferredModel) ? preferredModel : seedanceApiBasePreset(baseUrl).defaultModel;
@@ -2985,6 +3223,9 @@ function updateSettingSeedanceModelOptions(baseUrl, preferredModel = "") {
 }
 
 function seedanceSettingsStatusText(baseUrl = state.db?.settings?.seedanceBaseUrl) {
+  if (isHiggsfieldSeedanceBaseUrl(baseUrl)) {
+    return "Higgsfield CLIをサーバー側から呼び出します。グローバル導入できない場合は、CLIコマンドに npx -y @higgsfield/cli を指定できます。";
+  }
   if (isReplicateSeedanceBaseUrl(baseUrl)) {
     return "Replicate Predictions API向けのSeedance 2.0候補を表示しています。料金はReplicateの秒単価で概算します。";
   }
@@ -3050,6 +3291,7 @@ function formatPlainNumber(value, digits = 0) {
 }
 
 function videoPricingSourceLabel(source = "") {
+  if (source === "higgsfield") return "Higgsfieldクレジット";
   if (source === "replicate") return "Replicate固定料金";
   if (source === "openrouter") return "OpenRouter取得";
   if (source === "fallback-token") return "フォールバック（トークン単価）";
@@ -3106,6 +3348,7 @@ function collectPricingEntries(value, path = []) {
 }
 
 function fallbackVideoPricingForModel(modelId, baseUrl = state.db?.settings?.seedanceBaseUrl) {
+  if (isHiggsfieldSeedanceBaseUrl(baseUrl)) return { modelId, source: "higgsfield" };
   if (isReplicateSeedanceBaseUrl(baseUrl)) return replicateSeedanceVideoPricing[modelId] || {};
   return fallbackOpenRouterVideoPricing[modelId] || {};
 }
@@ -3318,7 +3561,9 @@ async function refreshVideoPricing() {
   }
   const models = isOpenRouterSeedanceBaseUrl()
     ? mergedOpenRouterVideoModels()
-    : isReplicateSeedanceBaseUrl()
+    : isHiggsfieldSeedanceBaseUrl()
+      ? higgsfieldVideoModels
+      : isReplicateSeedanceBaseUrl()
       ? replicateSeedanceVideoModels
       : [officialSeedanceVideoModel];
   const pricingModels = { ...(previous.models || {}) };
@@ -3453,10 +3698,33 @@ function characterForAsset(asset) {
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      const inferredMime = imageMimeTypeFromName(file?.name);
+      const fileType = String(file?.type || "").toLowerCase();
+      if (inferredMime && (!fileType || fileType === "application/octet-stream")) {
+        resolve(result.replace(/^data:[^;,]*;base64,/i, `data:${inferredMime};base64,`));
+        return;
+      }
+      resolve(result);
+    };
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
+}
+
+function imageMimeTypeFromName(name = "") {
+  const text = String(name || "").toLowerCase();
+  if (/\.jpe?g$/i.test(text)) return "image/jpeg";
+  if (/\.png$/i.test(text)) return "image/png";
+  if (/\.webp$/i.test(text)) return "image/webp";
+  if (/\.gif$/i.test(text)) return "image/gif";
+  return "";
+}
+
+function isImageFile(file) {
+  const type = String(file?.type || "").toLowerCase();
+  return type.startsWith("image/") || Boolean(imageMimeTypeFromName(file?.name));
 }
 
 function audioDurationFromDataUrl(dataUrl) {
@@ -3619,10 +3887,13 @@ async function postJson(url, body, method = "POST") {
 			    if (url.startsWith("/api/model-library/") && /Method not allowed|Not found/i.test(text)) {
 			      throw new Error("モデルライブラリAPIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
 			    }
-			    if (url.startsWith("/api/animadex/") && /Method not allowed|Not found/i.test(text)) {
-			      throw new Error("AnimaDex APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
-			    }
-			    const error = new Error(readableError(payload.error) || readableError(payload) || text || `${response.status} ${response.statusText}`);
+				    if (url.startsWith("/api/animadex/") && /Method not allowed|Not found/i.test(text)) {
+				      throw new Error("AnimaDex APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
+				    }
+				    if (url.startsWith("/api/higgsfield/") && /Method not allowed|Not found/i.test(text)) {
+				      throw new Error("Higgsfield APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
+				    }
+				    const error = new Error(readableError(payload.error) || readableError(payload) || text || `${response.status} ${response.statusText}`);
 	    error.payload = payload;
 	    error.responseText = text;
 	    throw error;
@@ -3642,6 +3913,32 @@ function lastPathSegment(value = "") {
   } catch {
     return segment;
   }
+}
+
+function uploadPathnameFromUrl(uploadUrl = "") {
+  try {
+    const parsed = new URL(uploadUrl, window.location.href);
+    return parsed.pathname.startsWith("/uploads/") ? parsed.pathname : "";
+  } catch {
+    return "";
+  }
+}
+
+function safeUploadFolderName(value, fallback) {
+  const name = String(value || "").trim().replace(/[<>:"/\\|?*\u0000-\u001f]+/g, "_").replace(/\.+$/g, "").slice(0, 80);
+  return name || fallback;
+}
+
+function expectedUploadPathname(uploadUrl, workName, characterName) {
+  const pathname = uploadPathnameFromUrl(uploadUrl);
+  const filename = pathname.split("/").filter(Boolean).pop() || "";
+  if (!filename) return "";
+  return `/uploads/${encodeURIComponent(safeUploadFolderName(workName, "_未分類作品"))}/${encodeURIComponent(safeUploadFolderName(characterName, "_未割当"))}/${filename}`;
+}
+
+function uploadUrlAlreadyTargeted(uploadUrl, workName, characterName) {
+  const pathname = uploadPathnameFromUrl(uploadUrl);
+  return Boolean(pathname && pathname === expectedUploadPathname(uploadUrl, workName, characterName));
 }
 
 function syncImageJobImageUploadReference(oldUrl, moved = {}, options = {}) {
@@ -3680,6 +3977,9 @@ async function relocateAsset(asset) {
   const char = characterForAsset(asset);
   const worldItem = worldItemForAsset(asset);
   const oldUrl = asset.url;
+  const oldWorkId = asset.workId;
+  const oldCharacterId = asset.characterId;
+  const oldWorldItemId = asset.worldItemId;
   if (char) {
     asset.workId = char.workId;
     asset.worldItemId = null;
@@ -3688,6 +3988,15 @@ async function relocateAsset(asset) {
     asset.characterId = null;
   }
   const work = workForAsset(asset) || byId(state.db.works, char?.workId || worldItem?.workId);
+  const metadataChanged = asset.workId !== oldWorkId || asset.characterId !== oldCharacterId || asset.worldItemId !== oldWorldItemId;
+  if (uploadUrlAlreadyTargeted(asset.url, work?.name, char?.name || worldItem?.name)) {
+    return {
+      moved: { url: asset.url, path: asset.localPath || "" },
+      imageJobsChanged: false,
+      metadataChanged,
+      skipped: true
+    };
+  }
   const moved = await postJson("/api/move-upload", {
     url: asset.url,
     workName: work?.name,
@@ -3695,11 +4004,12 @@ async function relocateAsset(asset) {
   });
   asset.url = moved.url;
   asset.localPath = moved.path;
-  return { moved, imageJobsChanged: syncImageJobImageUploadReference(oldUrl, moved, { sourceJobId: asset.sourceJobId }) };
+  return { moved, imageJobsChanged: syncImageJobImageUploadReference(oldUrl, moved, { sourceJobId: asset.sourceJobId }), metadataChanged };
 }
 
 async function relocateUploadUrl(uploadUrl, work, char) {
   if (!uploadUrl) return uploadUrl;
+  if (uploadUrlAlreadyTargeted(uploadUrl, work?.name, char?.name)) return uploadUrl;
   const moved = await postJson("/api/move-upload", {
     url: uploadUrl,
     workName: work?.name,
@@ -3876,7 +4186,7 @@ async function deleteGenerationHistoryItems(kind, items, scope = "selected") {
   render();
 }
 
-async function normalizeStoredUploads() {
+function normalizeStoredDbForRender() {
   let changed = false;
   const oldSettings = JSON.stringify(state.db.settings || {});
   normalizeSettings();
@@ -3939,6 +4249,11 @@ async function normalizeStoredUploads() {
       changed = true;
     }
   }
+  return changed;
+}
+
+async function relocateStoredUploads() {
+  let changed = false;
   for (const char of state.db.characters) {
     if (!char.portraitUrl) continue;
     const work = byId(state.db.works, char.workId);
@@ -3957,12 +4272,20 @@ async function normalizeStoredUploads() {
       const oldUrl = asset.url;
       const oldLocalPath = asset.localPath || "";
       const result = await relocateAsset(asset);
-      if (asset.url !== oldUrl || (asset.localPath || "") !== oldLocalPath || result?.imageJobsChanged) changed = true;
+      if (asset.url !== oldUrl || (asset.localPath || "") !== oldLocalPath || result?.imageJobsChanged || result?.metadataChanged) changed = true;
     } catch {
       // Missing files stay visible in metadata so the user can repair them later.
     }
   }
+  return changed;
+}
+
+async function normalizeStoredUploads() {
+  const normalizedChanged = normalizeStoredDbForRender();
+  const relocatedChanged = await relocateStoredUploads();
+  const changed = normalizedChanged || relocatedChanged;
   if (changed) await saveDb();
+  return changed;
 }
 
 function toast(message) {
@@ -4391,7 +4714,7 @@ function renderWorldInfo(work) {
         </div>
       </div>
       <div class="panel-body">
-        <input id="world-sheet-input" class="is-hidden" type="file" accept="image/*" multiple>
+        <input id="world-sheet-input" class="is-hidden" type="file" accept="${imageFileAccept}" multiple>
         <input id="world-text-file-input" class="is-hidden" type="file" accept=".md,.markdown,.txt,text/markdown,text/plain">
         <div class="world-summary">
           <div class="world-main">
@@ -4631,7 +4954,7 @@ function renderImport() {
           <div>
             <h2 class="section-title">画像をまとめて追加</h2>
             <p class="meta">PNG / JPEG / WebP / GIF を選択またはドラッグしてください。</p>
-            <input id="file-input" type="file" accept="image/*" multiple hidden>
+            <input id="file-input" type="file" accept="${imageFileAccept}" multiple hidden>
             <button data-action="choose-files">画像を選択</button>
           </div>
         </div>
@@ -5016,6 +5339,14 @@ function normalizedImageEditTransparentPreview(value) {
   return imageEditTransparentPreviewModes.some(([mode]) => mode === value) ? value : "checker";
 }
 
+function normalizedImageEditFormat(value) {
+  return imageEditFormatOptions.some(([format]) => format === value) ? value : "jpg";
+}
+
+function normalizedImageEditPngMode(value) {
+  return imageEditPngModeOptions.some(([mode]) => mode === value) ? value : "transparent";
+}
+
 function normalizedManualImageEditTool(value) {
   const text = value === "boundary" ? "cut-boundary" : value;
   return manualImageEditTools.some(([tool]) => tool === text) ? text : "erase";
@@ -5059,6 +5390,10 @@ function imageEditAspectPositionValue(value) {
 
 function imageEditAspectScaleValue(value) {
   return boundedSettingNumber(value, 100, 10, 400, true);
+}
+
+function imageEditJpegQualityValue(value) {
+  return boundedSettingNumber(value, 90, 1, 100, true);
 }
 
 function imageEditManualTransformScaleValue(value) {
@@ -5670,6 +6005,12 @@ function transparentPngName(name = "image", suffix = "transparent") {
   return `${parsed || "image"}-${suffix}.png`;
 }
 
+function imageEditConvertedName(name = "image", controls = {}) {
+  const parsed = String(name || "image").split(/[\\/]/).pop().replace(/\.[^.]+$/i, "").trim();
+  const ext = normalizedImageEditFormat(controls.format) === "jpg" ? "jpg" : "png";
+  return `${parsed || "image"}-format.${ext}`;
+}
+
 function renderImageEditAspectRatioOptions(selectedValue) {
   const selected = normalizedImageEditAspectRatio(selectedValue);
   return imageEditAspectRatioOptions
@@ -5727,9 +6068,17 @@ function imageEditAspectProviderLabel(controls) {
   return `アスペクト比変換 / ${imageEditAspectRatioLabel(controls)} / ${imageEditAspectFillLabel(controls.aspectFill)} / ${imageEditAspectScaleValue(controls.aspectScale)}%`;
 }
 
+function imageEditFormatProviderLabel(controls) {
+  const format = normalizedImageEditFormat(controls.format);
+  if (format === "jpg") return `フォーマット変換 / JPG / 品質${imageEditJpegQualityValue(controls.jpegQuality)}% / 背景白`;
+  const mode = normalizedImageEditPngMode(controls.pngMode);
+  return `フォーマット変換 / PNG / ${mode === "opaque" ? "透過なし / 背景白" : "透過あり"}`;
+}
+
 function imageEditRunButtonLabel(provider) {
   if (provider === "manual") return "手動編集を結果に反映";
   if (provider === "aspect") return "アスペクト比を変換";
+  if (provider === "format") return "フォーマットを変換";
   return "透過PNGを作成";
 }
 
@@ -5760,6 +6109,20 @@ function renderImageEditTransparentPreviewButtons(selectedMode) {
         aria-pressed="${value === selected ? "true" : "false"}"
       >${escapeHtml(label)}</button>
     `)
+    .join("");
+}
+
+function renderImageEditFormatOptions(selectedValue) {
+  const selected = normalizedImageEditFormat(selectedValue);
+  return imageEditFormatOptions
+    .map(([value, label]) => `<option value="${escapeHtml(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(label)}</option>`)
+    .join("");
+}
+
+function renderImageEditPngModeOptions(selectedValue) {
+  const selected = normalizedImageEditPngMode(selectedValue);
+  return imageEditPngModeOptions
+    .map(([value, label]) => `<option value="${escapeHtml(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(label)}</option>`)
     .join("");
 }
 
@@ -5928,6 +6291,9 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
   const manualPasteDraftReady = Boolean(manualImageEditor.pasteDraft);
   const manualSelectionReady = manualImageEditorSelectionReady();
   const transparentPreview = normalizedImageEditTransparentPreview(state.imageEditTransparentPreview);
+  const imageEditFormat = normalizedImageEditFormat(state.imageEditFormat);
+  const imageEditPngMode = normalizedImageEditPngMode(state.imageEditPngMode);
+  const imageEditJpegQuality = imageEditJpegQualityValue(state.imageEditJpegQuality);
   const controlsHidden = Boolean(state.imageEditControlsHidden);
   return `
     <div class="image-edit-stack image-edit-transparent-${escapeHtml(transparentPreview)} ${controlsHidden ? "image-edit-controls-hidden" : ""}">
@@ -5946,7 +6312,7 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
           <label class="full">対象画像
             <select id="image-edit-source">${renderImageEditSourceOptions(sources, state.imageEditSourceKey)}</select>
           </label>
-          <input id="image-edit-file-input" type="file" accept="image/*" hidden>
+          <input id="image-edit-file-input" type="file" accept="${imageFileAccept}" hidden>
           <div class="full toolbar">
             <button class="ghost" data-action="choose-image-edit-file">画像を追加</button>
             <button class="ghost" data-action="clear-image-edit-file" ${state.imageEditInputFile ? "" : "disabled"}>追加画像を解除</button>
@@ -6018,6 +6384,27 @@ function renderImageEditor({ forcedProvider = "", hideProviderChooser = false, i
               <button class="ghost" data-action="reset-image-edit-aspect-position">中央に戻す</button>
               <button class="ghost" data-action="reset-image-edit-aspect-scale">拡大率100%</button>
             </div>
+          ` : provider === "format" ? `
+            <label>出力形式
+              <select id="image-edit-format">${renderImageEditFormatOptions(imageEditFormat)}</select>
+            </label>
+            ${imageEditFormat === "jpg" ? `
+              <label class="full">JPG品質
+                <div class="image-edit-range-number image-edit-format-quality">
+                  <input id="image-edit-jpeg-quality" type="range" min="1" max="100" value="${escapeHtml(imageEditJpegQuality)}">
+                  <div class="number-stepper compact-stepper">
+                    <input id="image-edit-jpeg-quality-number" type="number" min="1" max="100" value="${escapeHtml(imageEditJpegQuality)}">
+                    <span class="stepper-unit">%</span>
+                  </div>
+                </div>
+              </label>
+              <div class="full meta">背景: 白</div>
+            ` : `
+              <label>PNG透過
+                <select id="image-edit-png-mode">${renderImageEditPngModeOptions(imageEditPngMode)}</select>
+              </label>
+              ${imageEditPngMode === "opaque" ? `<div class="full meta">背景: 白</div>` : ""}
+            `}
           ` : provider === "manual" ? `
             <label>手動ツール
               <select id="image-edit-manual-tool">
@@ -6329,6 +6716,9 @@ function imageEditControlsFromDom() {
     aspectPositionX: imageEditAspectPositionValue(aspectPositionXValue),
     aspectPositionY: imageEditAspectPositionValue(aspectPositionYValue),
     aspectScale: imageEditAspectScaleValue(aspectScaleValue),
+    format: normalizedImageEditFormat(document.querySelector("#image-edit-format")?.value || state.imageEditFormat),
+    jpegQuality: imageEditJpegQualityValue(document.querySelector("#image-edit-jpeg-quality-number")?.value ?? document.querySelector("#image-edit-jpeg-quality")?.value ?? state.imageEditJpegQuality),
+    pngMode: normalizedImageEditPngMode(document.querySelector("#image-edit-png-mode")?.value || state.imageEditPngMode),
     removeBgKey: document.querySelector("#image-edit-removebg-key")?.value.trim() || removeBgApiKey()
   };
 }
@@ -6356,6 +6746,9 @@ function rememberImageEditControls(controls = imageEditControlsFromDom()) {
   state.imageEditAspectPositionX = imageEditAspectPositionValue(controls.aspectPositionX);
   state.imageEditAspectPositionY = imageEditAspectPositionValue(controls.aspectPositionY);
   state.imageEditAspectScale = imageEditAspectScaleValue(controls.aspectScale);
+  state.imageEditFormat = normalizedImageEditFormat(controls.format);
+  state.imageEditJpegQuality = imageEditJpegQualityValue(controls.jpegQuality);
+  state.imageEditPngMode = normalizedImageEditPngMode(controls.pngMode);
   if (controls.removeBgKey) localStorage.setItem("removebg_api_key", controls.removeBgKey);
 }
 
@@ -7456,6 +7849,66 @@ function imageEditAspectResultMetaText(result) {
   return `${result.name || ""}${size} / ${result.providerLabel || ""}`;
 }
 
+function buildImageEditFormatResult(source, controls, output) {
+  return {
+    dataUrl: output.dataUrl,
+    name: imageEditConvertedName(source.name, controls),
+    sourceName: source.name || "",
+    provider: "format",
+    providerLabel: imageEditFormatProviderLabel(controls),
+    width: output.width,
+    height: output.height,
+    aspectRatio: output.aspectRatio,
+    aspectRatioText: output.aspectRatioText,
+    mimeType: output.mimeType,
+    settings: output.settings || {},
+    createdAt: new Date().toISOString()
+  };
+}
+
+async function convertImageFormat(dataUrl, controls) {
+  const image = await imageFromDataUrl(dataUrl);
+  const width = image.naturalWidth || image.width;
+  const height = image.naturalHeight || image.height;
+  if (!width || !height) throw new Error("画像サイズを取得できませんでした。");
+  if (width > 16000 || height > 16000 || width * height > 120000000) {
+    throw new Error("変換する画像が大きすぎます。元画像を小さくしてから試してください。");
+  }
+
+  const format = normalizedImageEditFormat(controls.format);
+  const pngMode = normalizedImageEditPngMode(controls.pngMode);
+  const jpegQuality = imageEditJpegQualityValue(controls.jpegQuality);
+  const keepAlpha = format === "png" && pngMode === "transparent";
+  const mimeType = format === "jpg" ? "image/jpeg" : "image/png";
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  context.clearRect(0, 0, width, height);
+  if (!keepAlpha) {
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, width, height);
+  }
+  context.drawImage(image, 0, 0, width, height);
+  const outputDataUrl = format === "jpg"
+    ? canvas.toDataURL(mimeType, jpegQuality / 100)
+    : canvas.toDataURL(mimeType);
+  return {
+    dataUrl: outputDataUrl,
+    width,
+    height,
+    aspectRatio: Number((width / height).toFixed(4)),
+    aspectRatioText: formatAspectRatio(width, height),
+    mimeType,
+    settings: {
+      format,
+      jpegQuality,
+      pngMode,
+      background: keepAlpha ? "transparent" : "white"
+    }
+  };
+}
+
 async function convertImageAspectRatio(dataUrl, controls) {
   const image = await imageFromDataUrl(dataUrl);
   const sourceWidth = image.naturalWidth || image.width;
@@ -7643,11 +8096,14 @@ async function runImageEdit() {
     } else if (controls.provider === "aspect") {
       output = await convertImageAspectRatio(dataUrl, controls);
       providerLabel = imageEditAspectProviderLabel(controls);
+    } else if (controls.provider === "format") {
+      output = await convertImageFormat(dataUrl, controls);
+      providerLabel = imageEditFormatProviderLabel(controls);
     } else {
       throw new Error("選択した画像編集処理は利用できません。");
     }
     const info = await getImageInfo(output.dataUrl);
-    state.imageEditResult = controls.provider === "aspect" ? buildImageEditAspectResult(source, controls, output) : {
+    state.imageEditResult = controls.provider === "aspect" ? buildImageEditAspectResult(source, controls, output) : controls.provider === "format" ? buildImageEditFormatResult(source, controls, output) : {
       dataUrl: output.dataUrl,
       name: transparentPngName(source.name, controls.provider === "removebg" ? "removebg" : controls.provider === "rembg" ? "rembg" : controls.provider === "backgroundremover" ? "backgroundremover" : controls.provider === "aspect" ? "aspect" : "transparent"),
       sourceName: source.name || "",
@@ -7659,7 +8115,7 @@ async function runImageEdit() {
       aspectRatioText: info.aspectRatioText,
       createdAt: new Date().toISOString()
     };
-    toast(controls.provider === "aspect" ? "アスペクト比を変換しました。" : "透過PNGを作成しました。");
+    toast(controls.provider === "aspect" ? "アスペクト比を変換しました。" : controls.provider === "format" ? "フォーマットを変換しました。" : "透過PNGを作成しました。");
   } catch (error) {
     toast(error.message);
   } finally {
@@ -8126,6 +8582,35 @@ function bindImageEditor({ forcedProvider = "" } = {}) {
       setImageEditTransparentPreview(button.dataset.mode);
     });
   });
+  const clearFormatResult = () => {
+    if (state.imageEditResult?.provider === "format") state.imageEditResult = null;
+    const saveButton = document.querySelector("[data-action='save-image-edit-result']");
+    if (saveButton && currentImageEditProviderFromDom() === "format") saveButton.disabled = true;
+  };
+  document.querySelector("#image-edit-format")?.addEventListener("change", () => {
+    persist();
+    clearFormatResult();
+    render();
+  });
+  document.querySelector("#image-edit-png-mode")?.addEventListener("change", () => {
+    persist();
+    clearFormatResult();
+    render();
+  });
+  const jpegQualityRange = document.querySelector("#image-edit-jpeg-quality");
+  const jpegQualityNumber = document.querySelector("#image-edit-jpeg-quality-number");
+  const syncJpegQuality = (value, { rerender = false } = {}) => {
+    const next = imageEditJpegQualityValue(value);
+    if (jpegQualityRange) jpegQualityRange.value = String(next);
+    if (jpegQualityNumber) jpegQualityNumber.value = String(next);
+    state.imageEditJpegQuality = next;
+    clearFormatResult();
+    if (rerender) render();
+  };
+  jpegQualityRange?.addEventListener("input", () => syncJpegQuality(jpegQualityRange.value));
+  jpegQualityRange?.addEventListener("change", () => syncJpegQuality(jpegQualityRange.value, { rerender: true }));
+  jpegQualityNumber?.addEventListener("input", () => syncJpegQuality(jpegQualityNumber.value));
+  jpegQualityNumber?.addEventListener("change", () => syncJpegQuality(jpegQualityNumber.value, { rerender: true }));
   ["#image-edit-rembg-model", "#image-edit-rembg-alpha-matting", "#image-edit-rembg-post-process"].forEach((selector) => {
     document.querySelector(selector)?.addEventListener("change", persist);
   });
@@ -8259,7 +8744,7 @@ function bindImageEditor({ forcedProvider = "" } = {}) {
     document.querySelector("#image-edit-file-input")?.click();
   });
   document.querySelector("#image-edit-file-input")?.addEventListener("change", async (event) => {
-    const file = [...(event.target.files || [])].find((item) => item.type.startsWith("image/"));
+    const file = [...(event.target.files || [])].find(isImageFile);
     if (!file) return;
     const preview = await fileToDataUrl(file);
     state.imageEditInputFile = {
@@ -8395,6 +8880,7 @@ function bindVideoGifConverter() {
 function mediaKindFromFile(file) {
   if (file.type.startsWith("video/")) return "video";
   if (file.type.startsWith("audio/")) return "audio";
+  if (isImageFile(file)) return "image";
   return "image";
 }
 
@@ -8827,22 +9313,33 @@ function validateSeedanceReferenceLimits(references) {
   if (counts.audio > 3) throw new Error("参照音声は最大3本までです。");
 }
 
+function validateHiggsfieldReferenceLimits(references) {
+  const unsupported = references.find((item) => item.kind !== "image");
+  if (unsupported) throw new Error("Higgsfield CLI連携では、この画面からは画像参照のみ送信できます。");
+  if (references.filter((item) => item.kind === "image").length > 1) {
+    throw new Error("Higgsfield CLI連携で送れる参照画像は現在1枚までです。");
+  }
+}
+
 async function startSeedanceGeneration() {
   const controls = videoControlsFromDom();
   const prompt = controls.prompt.trim();
+  const providerBaseUrl = state.db.settings.seedanceBaseUrl;
+  const useHiggsfield = isHiggsfieldSeedanceBaseUrl(providerBaseUrl);
   const seedanceKey = activeSeedanceApiKey();
-  if (!seedanceKey) return toast(`設定画面で ${seedanceProviderLabel()} API キーを保存してください。`);
+  if (!useHiggsfield && !seedanceKey) return toast(`設定画面で ${seedanceProviderLabel()} API キーを保存してください。`);
   if (!prompt) return toast("API送信用プロンプトを入力してください。");
   let job = null;
   try {
     state.db.settings.seedanceModel = controls.model;
     state.db.settings.seedanceResolution = controls.resolution;
     const references = referencesForSeedance(controls);
-    validateSeedanceReferenceLimits(references);
+    if (useHiggsfield) validateHiggsfieldReferenceLimits(references);
+    else validateSeedanceReferenceLimits(references);
     job = {
       id: uid(),
       workId: controls.workId || null,
-      title: state.videoPromptDraft?.title || defaultVideoJobTitle(controls.model, state.db.settings.seedanceBaseUrl),
+      title: state.videoPromptDraft?.title || defaultVideoJobTitle(controls.model, providerBaseUrl),
       prompt,
       status: "submitting",
       providerTaskId: "",
@@ -8850,7 +9347,8 @@ async function startSeedanceGeneration() {
       request: null,
       settings: {
         ...controls,
-        baseUrl: state.db.settings.seedanceBaseUrl
+        baseUrl: providerBaseUrl,
+        higgsfieldCommand: state.db.settings.higgsfieldCommand || "higgsfield"
       },
       references: references.map((item) => ({
         key: item.key,
@@ -8872,10 +9370,8 @@ async function startSeedanceGeneration() {
     state.videoIsGenerating = true;
     await saveDb();
     render();
-    toastApiSubmitted("動画生成APIに送信しました。返答を待っています。");
-    const payload = await postJson("/api/seedance/create", {
-      apiKey: seedanceKey,
-      baseUrl: state.db.settings.seedanceBaseUrl,
+    toastApiSubmitted(`${seedanceProviderLabel(providerBaseUrl)}に動画生成を送信しました。返答を待っています。`);
+    const commonPayload = {
       model: controls.model,
       prompt,
       ratio: controls.ratio,
@@ -8885,6 +9381,7 @@ async function startSeedanceGeneration() {
       cameraFixed: controls.cameraFixed,
       watermark: controls.watermark,
       seed: controls.seed,
+      mode: controls.mode,
       returnLastFrame: controls.returnLastFrame,
       references: references.map((item) => ({
         kind: item.kind,
@@ -8892,7 +9389,17 @@ async function startSeedanceGeneration() {
         url: item.url,
         name: item.name
       }))
-    });
+    };
+    const payload = useHiggsfield
+      ? await postJson("/api/higgsfield/create", {
+        ...commonPayload,
+        command: state.db.settings.higgsfieldCommand || "higgsfield"
+      })
+      : await postJson("/api/seedance/create", {
+        ...commonPayload,
+        apiKey: seedanceKey,
+        baseUrl: providerBaseUrl
+      });
     job.providerPayload = payload.providerPayload || payload;
     job.request = payload.request || payload.providerPayload?.request || null;
     const providerError = readableError(payload.error) || readableError(payload.providerPayload?.error);
@@ -8905,7 +9412,7 @@ async function startSeedanceGeneration() {
       throw new Error(providerError);
     }
     job.providerTaskId = payload.id || payload.task_id || "";
-    if (!job.providerTaskId) {
+    if (!job.providerTaskId && !payload.localUrl) {
       job.status = "failed";
       job.error = "動画生成タスクIDを取得できませんでした。";
       job.updatedAt = new Date().toISOString();
@@ -8916,9 +9423,21 @@ async function startSeedanceGeneration() {
     job.status = payload.status || "submitted";
     job.progress = payload.progress ?? job.progress ?? 0;
     job.progressMessage = payload.progressMessage || job.progressMessage || "";
+    job.videoUrl = payload.videoUrl || job.videoUrl || "";
+    job.localUrl = payload.localUrl || job.localUrl || "";
+    job.localPath = payload.localPath || job.localPath || "";
     job.updatedAt = new Date().toISOString();
     await saveDb();
     render();
+    if (job.status === "succeeded" || job.localUrl) {
+      job.status = "succeeded";
+      job.progress = 100;
+      state.videoIsGenerating = false;
+      await saveDb();
+      render();
+      toast("生成動画を保存しました。");
+      return;
+    }
     toast("動画生成タスクを開始しました。");
     await pollSeedanceJob(job.id);
   } catch (error) {
@@ -8938,6 +9457,7 @@ async function startSeedanceGeneration() {
 async function pollSeedanceJob(jobId) {
   const job = byId(state.db.videoJobs || [], jobId);
   const jobBaseUrl = job?.settings?.baseUrl || state.db.settings.seedanceBaseUrl;
+  const useHiggsfield = isHiggsfieldSeedanceBaseUrl(jobBaseUrl);
   const seedanceKey = activeSeedanceApiKey(jobBaseUrl);
   if (job && !activeVideoJobStatuses.includes(job.status)) {
     state.videoIsGenerating = false;
@@ -8945,7 +9465,7 @@ async function pollSeedanceJob(jobId) {
     render();
     return;
   }
-  if (!job?.providerTaskId || !seedanceKey) {
+  if (!job?.providerTaskId || (!useHiggsfield && !seedanceKey)) {
     state.videoIsGenerating = false;
     if (state.videoPollingJobId === job?.id) state.videoPollingJobId = "";
     return;
@@ -8953,11 +9473,16 @@ async function pollSeedanceJob(jobId) {
   state.videoPollingJobId = job.id;
   render();
   try {
-    const payload = await postJson("/api/seedance/status", {
-      apiKey: seedanceKey,
-      baseUrl: jobBaseUrl,
-      taskId: job.providerTaskId
-    });
+    const payload = useHiggsfield
+      ? await postJson("/api/higgsfield/status", {
+        command: job.settings?.higgsfieldCommand || state.db.settings.higgsfieldCommand || "higgsfield",
+        taskId: job.providerTaskId
+      })
+      : await postJson("/api/seedance/status", {
+        apiKey: seedanceKey,
+        baseUrl: jobBaseUrl,
+        taskId: job.providerTaskId
+      });
     job.status = payload.status || job.status;
     job.progress = payload.progress ?? (job.status === "succeeded" ? 100 : job.progress ?? null);
     job.progressMessage = payload.progressMessage || job.progressMessage || "";
@@ -9006,7 +9531,7 @@ async function pollSeedanceJob(jobId) {
 async function uploadVideoReferenceFiles(files) {
   const selectedChar = byId(state.db.characters, state.videoCharacterId);
   const work = byId(state.db.works, selectedChar?.workId || state.videoWorkId || state.selectedWorkId);
-  const accepted = [...files].filter((file) => file.type.startsWith("image/") || file.type.startsWith("video/") || file.type.startsWith("audio/"));
+  const accepted = [...files].filter((file) => isImageFile(file) || file.type.startsWith("video/") || file.type.startsWith("audio/"));
   if (!accepted.length) return;
   try {
     for (const file of accepted) {
@@ -9046,7 +9571,7 @@ async function uploadVideoReferenceFiles(files) {
 async function uploadImageReferenceFiles(files) {
   const selectedChar = byId(state.db.characters, state.imageCharacterId);
   const work = byId(state.db.works, selectedChar?.workId || state.imageWorkId || state.selectedWorkId);
-  const accepted = [...files].filter((file) => file.type.startsWith("image/"));
+  const accepted = [...files].filter(isImageFile);
   if (!accepted.length) return;
   try {
     for (const file of accepted) {
@@ -10223,7 +10748,7 @@ function renderImageAgent() {
                 <div class="meta">元画像を選ぶとimg2imgで生成します。Denoiseが小さいほど元画像を保持（推奨0.4〜0.8、1.0はほぼ新規生成）。未選択ならtxt2imgです。</div>
               </div>
               <div>
-                <input id="image-init-file-input" type="file" accept="image/*" hidden>
+                <input id="image-init-file-input" type="file" accept="${imageFileAccept}" hidden>
                 <button class="ghost" data-action="choose-image-init-file">画像追加</button>
               </div>
             </div>
@@ -10279,7 +10804,7 @@ function renderImageAgent() {
                   <div class="meta">LoadImage系NodeのIDを指定すると、選んだ画像をComfyUIへアップロードして差し替えます。</div>
                 </div>
                 <div>
-                  <input id="image-reference-file-input" type="file" accept="image/*" multiple hidden>
+                  <input id="image-reference-file-input" type="file" accept="${imageFileAccept}" multiple hidden>
                   <button class="ghost" data-action="choose-image-reference-files">画像追加</button>
                 </div>
               </div>
@@ -13577,6 +14102,104 @@ function videoStatusLabel(status) {
   }[status] || status || "確認中";
 }
 
+function videoModelStatusText() {
+  if (isHiggsfieldSeedanceBaseUrl()) {
+    return "Higgsfield CLIで動画生成します。料金はHiggsfield側のクレジット消費として扱われるため、この画面の概算には含めません。";
+  }
+  if (isReplicateSeedanceBaseUrl()) {
+    return "Replicate Predictions APIでSeedance 2.0を実行します。参照動画を含む場合はvideo_in単価で概算します。";
+  }
+  if (isOpenRouterSeedanceBaseUrl()) {
+    return state.openRouterVideoModelStatus === "loaded"
+      ? "OpenRouter動画モデルの対応設定を読み込み済み。"
+      : state.openRouterVideoModelStatus === "loading"
+        ? "OpenRouter動画モデルの対応設定を読み込み中。"
+        : state.openRouterVideoModelError || "フォールバック設定を使用中。";
+  }
+  return "公式API向けの既定設定です。";
+}
+
+function videoModelDependentControls(controls = {}) {
+  const currentModelId = compatibleVideoModelId(controls.model || state.db.settings.seedanceModel, state.db.settings.seedanceBaseUrl);
+  const currentModel = videoModelConfig(currentModelId, state.db.settings.seedanceBaseUrl);
+  const modeOptions = videoModeOptionsForModel(currentModel);
+  const durationOptions = optionList(currentModel.supported_durations, [5]);
+  const ratioOptions = optionList(currentModel.supported_aspect_ratios, ["16:9"]);
+  const resolutionOptions = optionList(currentModel.supported_resolutions, [state.db.settings.seedanceResolution || "720p"]);
+  const modeValue = modeOptions.some(([value]) => value === (controls.mode || "reference")) ? (controls.mode || "reference") : modeOptions[0][0];
+  const durationValue = optionValue(controls.duration || 5, durationOptions);
+  const ratioValue = optionValue(controls.ratio || "16:9", ratioOptions);
+  const resolutionValue = optionValue(controls.resolution || state.db.settings.seedanceResolution || "720p", resolutionOptions);
+  const audioOptions = currentModel.generate_audio === false ? [["false", "生成しない"]] : [["true", "生成する"], ["false", "生成しない"]];
+  const generateAudioValue = currentModel.generate_audio === false ? "false" : String(controls.generateAudio ?? true);
+  return {
+    currentModelId,
+    currentModel,
+    modeOptions,
+    durationOptions,
+    ratioOptions,
+    resolutionOptions,
+    audioOptions,
+    modeValue,
+    durationValue,
+    ratioValue,
+    resolutionValue,
+    generateAudioValue,
+    modelStatusText: videoModelStatusText()
+  };
+}
+
+function refreshVideoModelDependentControls() {
+  const controls = videoControlsFromDom();
+  const dependent = videoModelDependentControls(controls);
+  const modelSelect = document.querySelector("#video-seedance-model");
+  if (modelSelect) modelSelect.value = dependent.currentModelId;
+  const modeSelect = document.querySelector("#video-mode");
+  if (modeSelect) {
+    modeSelect.innerHTML = dependent.modeOptions.map(([value, label]) => `<option value="${escapeHtml(value)}" ${dependent.modeValue === value ? "selected" : ""}>${escapeHtml(label)}</option>`).join("");
+    modeSelect.value = dependent.modeValue;
+  }
+  const durationSelect = document.querySelector("#video-duration");
+  if (durationSelect) {
+    durationSelect.innerHTML = dependent.durationOptions.map((value) => `<option value="${escapeHtml(value)}" ${dependent.durationValue === value ? "selected" : ""}>${escapeHtml(value)}秒</option>`).join("");
+    durationSelect.value = dependent.durationValue;
+  }
+  const ratioSelect = document.querySelector("#video-ratio");
+  if (ratioSelect) {
+    ratioSelect.innerHTML = dependent.ratioOptions.map((value) => `<option value="${escapeHtml(value)}" ${dependent.ratioValue === value ? "selected" : ""}>${escapeHtml(value)}</option>`).join("");
+    ratioSelect.value = dependent.ratioValue;
+  }
+  const resolutionSelect = document.querySelector("#video-resolution");
+  if (resolutionSelect) {
+    resolutionSelect.innerHTML = dependent.resolutionOptions.map((value) => `<option value="${escapeHtml(value)}" ${dependent.resolutionValue === value ? "selected" : ""}>${escapeHtml(value)}</option>`).join("");
+    resolutionSelect.value = dependent.resolutionValue;
+  }
+  const audioSelect = document.querySelector("#video-generate-audio");
+  if (audioSelect) {
+    audioSelect.innerHTML = dependent.audioOptions.map(([value, label]) => `<option value="${value}" ${dependent.generateAudioValue === value ? "selected" : ""}>${label}</option>`).join("");
+    audioSelect.value = dependent.generateAudioValue;
+  }
+  const status = document.querySelector("[data-video-model-status]");
+  if (status) status.textContent = dependent.modelStatusText;
+  state.videoCharacterId = controls.characterId || "";
+  state.videoPromptDraft = {
+    ...(state.videoPromptDraft || {}),
+    model: dependent.currentModelId,
+    mode: dependent.modeValue,
+    duration: Number(dependent.durationValue) || 5,
+    ratio: dependent.ratioValue,
+    resolution: dependent.resolutionValue,
+    generateAudio: dependent.generateAudioValue === "true",
+    cameraFixed: controls.cameraFixed,
+    watermark: controls.watermark,
+    returnLastFrame: controls.returnLastFrame,
+    seed: controls.seed,
+    prompt: controls.prompt
+  };
+  state.db.settings.seedanceModel = dependent.currentModelId;
+  state.db.settings.seedanceResolution = dependent.resolutionValue;
+}
+
 function activeVideoJob() {
   return byId(state.db.videoJobs || [], state.videoPollingJobId)
     || (state.db.videoJobs || []).find((job) => activeVideoJobStatuses.includes(job.status))
@@ -13599,27 +14222,20 @@ function renderVideoAgent() {
     state.videoCharacterId = "";
   }
   const controls = state.videoPromptDraft || {};
-  const currentModelId = compatibleVideoModelId(controls.model || state.db.settings.seedanceModel, state.db.settings.seedanceBaseUrl);
-  const currentModel = videoModelConfig(currentModelId);
-  const modeOptions = videoModeOptionsForModel(currentModel);
-  const durationOptions = optionList(currentModel.supported_durations, [5]);
-  const ratioOptions = optionList(currentModel.supported_aspect_ratios, ["16:9"]);
-  const resolutionOptions = optionList(currentModel.supported_resolutions, [state.db.settings.seedanceResolution || "720p"]);
-  const modeValue = modeOptions.some(([value]) => value === (controls.mode || "reference")) ? (controls.mode || "reference") : modeOptions[0][0];
-  const durationValue = optionValue(controls.duration || 5, durationOptions);
-  const ratioValue = optionValue(controls.ratio || "16:9", ratioOptions);
-  const resolutionValue = optionValue(controls.resolution || state.db.settings.seedanceResolution || "720p", resolutionOptions);
-  const audioOptions = currentModel.generate_audio === false ? [["false", "生成しない"]] : [["true", "生成する"], ["false", "生成しない"]];
-  const generateAudioValue = currentModel.generate_audio === false ? "false" : String(controls.generateAudio ?? true);
-  const modelStatusText = isReplicateSeedanceBaseUrl()
-    ? "Replicate Predictions APIでSeedance 2.0を実行します。参照動画を含む場合はvideo_in単価で概算します。"
-    : isOpenRouterSeedanceBaseUrl()
-    ? state.openRouterVideoModelStatus === "loaded"
-      ? "OpenRouter動画モデルの対応設定を読み込み済み。"
-      : state.openRouterVideoModelStatus === "loading"
-        ? "OpenRouter動画モデルの対応設定を読み込み中。"
-        : state.openRouterVideoModelError || "フォールバック設定を使用中。"
-    : "公式API向けの既定設定です。";
+  const {
+    currentModelId,
+    modeOptions,
+    durationOptions,
+    ratioOptions,
+    resolutionOptions,
+    audioOptions,
+    modeValue,
+    durationValue,
+    ratioValue,
+    resolutionValue,
+    generateAudioValue,
+    modelStatusText
+  } = videoModelDependentControls(controls);
   const references = filteredVideoReferences();
   const selectedItems = selectedVideoReferences();
   const counts = selectedVideoReferenceCounts(selectedItems);
@@ -13690,7 +14306,7 @@ function renderVideoAgent() {
             </select>
           </label>
           <label class="full">Seed<input id="video-seed" type="number" value="${escapeHtml(controls.seed ?? -1)}"></label>
-          <div class="full meta">${escapeHtml(modelStatusText)}</div>
+          <div class="full meta" data-video-model-status>${escapeHtml(modelStatusText)}</div>
         </div>
         <div class="panel-header compact-header">
           <h2>参照素材</h2>
@@ -14375,6 +14991,13 @@ function renderSettings() {
   const settingsResolutionOptions = optionList(videoModel.supported_resolutions, [state.db.settings.seedanceResolution || "720p"]);
   const settingsResolution = optionValue(state.db.settings.seedanceResolution || "720p", settingsResolutionOptions);
 	  const videoStatusText = seedanceSettingsStatusText(state.db.settings.seedanceBaseUrl);
+    const settingsVideoProviderIsHiggsfield = isHiggsfieldSeedanceBaseUrl(state.db.settings.seedanceBaseUrl);
+    const higgsfieldStatusText = state.higgsfieldStatusMessage || "Higgsfield CLIを使う場合は、CLIコマンドに higgsfield または npx -y @higgsfield/cli を指定し、ターミナルで auth login 済みの状態にしてください。";
+    const higgsfieldElements = normalizeHiggsfieldElements(state.db.settings.higgsfieldElements);
+    const higgsfieldCreditsUpdated = state.db.settings.higgsfieldCreditsUpdatedAt ? ` / ${new Date(state.db.settings.higgsfieldCreditsUpdatedAt).toLocaleString("ja-JP")}` : "";
+    const higgsfieldElementsUpdated = state.db.settings.higgsfieldElementsUpdatedAt ? ` / ${new Date(state.db.settings.higgsfieldElementsUpdatedAt).toLocaleString("ja-JP")}` : "";
+    const higgsfieldCreditsText = state.higgsfieldCreditsMessage || `残クレジット: ${formatHiggsfieldCredits(state.db.settings.higgsfieldCredits)}${higgsfieldCreditsUpdated}`;
+    const higgsfieldElementsText = state.higgsfieldElementsMessage || `登録済みElements: ${higgsfieldElements.length.toLocaleString("ja-JP")}件${higgsfieldElementsUpdated}`;
 	  const elevenLabsVoiceText = state.elevenLabsVoiceStatus === "loaded"
 	    ? `${state.elevenLabsVoices.length} 件のElevenLabs音声を読み込みました。`
 	    : state.elevenLabsVoiceStatus === "loading"
@@ -14527,12 +15150,27 @@ function renderSettings() {
     ${renderComfySettings()}
     ${renderAnimaDexSettings()}
     <section class="panel settings-panel">
-      <div class="panel-header"><h2>Seedance</h2></div>
+      <div class="panel-header"><h2>動画生成</h2></div>
       <div class="panel-body form-grid">
-        <label class="full">API キー
-          <input id="setting-seedance-api-key" type="password" placeholder="BytePlus / OpenRouter / Replicate API key" value="${escapeHtml(seedanceApiKey())}">
-        </label>
         ${renderSeedanceApiBaseSelect(state.db.settings.seedanceBaseUrl)}
+        ${settingsVideoProviderIsHiggsfield ? `
+          <label class="full">Higgsfield CLIコマンド
+            <input id="setting-higgsfield-command" placeholder="higgsfield" value="${escapeHtml(state.db.settings.higgsfieldCommand || "higgsfield")}">
+          </label>
+          <div class="full meta">${escapeHtml(higgsfieldStatusText)}</div>
+          <div class="full meta">${escapeHtml(higgsfieldCreditsText)}</div>
+          <div class="full meta">${escapeHtml(higgsfieldElementsText)}</div>
+          ${renderHiggsfieldElements(higgsfieldElements)}
+          <div class="full toolbar">
+            <button class="ghost" data-action="check-higgsfield" ${state.higgsfieldStatus === "loading" ? "disabled" : ""}>Higgsfield確認</button>
+            <button class="ghost" data-action="refresh-higgsfield-credits" ${state.higgsfieldCreditsStatus === "loading" ? "disabled" : ""}>残クレジット更新</button>
+            <button class="ghost" data-action="load-higgsfield-elements" ${state.higgsfieldElementsStatus === "loading" ? "disabled" : ""}>Elements読み込み</button>
+          </div>
+        ` : `
+          <label class="full">API キー
+            <input id="setting-seedance-api-key" type="password" placeholder="BytePlus / OpenRouter / Replicate API key" value="${escapeHtml(seedanceApiKey())}">
+          </label>
+        `}
         <label>動画モデル
           ${renderVideoModelSelect("setting-seedance-model", settingsVideoModelId, state.db.settings.seedanceBaseUrl)}
         </label>
@@ -14542,7 +15180,7 @@ function renderSettings() {
           </select>
         </label>
         <div id="setting-seedance-status" class="full meta">${escapeHtml(videoStatusText)}</div>
-        <div class="full meta">生成動画は完了後に data/videos に保存されます。OpenRouterを選んだ場合は上のOpenRouter APIキー欄を優先し、Replicateを選んだ場合はこのAPIキー欄にReplicate tokenを保存してください。</div>
+        <div class="full meta">${settingsVideoProviderIsHiggsfield ? "生成動画は完了後に data/videos に保存されます。Higgsfieldの料金と利用可能モデルはHiggsfieldアカウントのクレジット/プランに従います。" : "生成動画は完了後に data/videos に保存されます。OpenRouterを選んだ場合は上のOpenRouter APIキー欄を優先し、Replicateを選んだ場合はこのAPIキー欄にReplicate tokenを保存してください。"}</div>
       </div>
     </section>
   `;
@@ -14674,7 +15312,7 @@ function bindStudio() {
   };
   document.querySelector("[data-action='choose-world-sheet']")?.addEventListener("click", () => worldSheetInput?.click());
   worldSheetInput?.addEventListener("change", async (event) => {
-    const files = Array.from(event.target.files || []).filter((file) => file.type.startsWith("image/"));
+    const files = Array.from(event.target.files || []).filter(isImageFile);
     if (!files.length) return;
     if (files.length > maxWorldSheetImages) {
       toast(`画像シートは一度に${maxWorldSheetImages}枚までです。先頭${maxWorldSheetImages}枚を読み込みます。`);
@@ -14819,7 +15457,7 @@ function bindImport() {
 }
 
 async function loadImportFiles(files) {
-  const images = [...files].filter((file) => file.type.startsWith("image/"));
+  const images = [...files].filter(isImageFile);
   state.importFiles = await Promise.all(images.map(async (file) => {
     const preview = await fileToDataUrl(file);
     return {
@@ -16289,7 +16927,7 @@ function bindVideoAgent() {
     state.db.settings.seedanceModel = controls.model;
     state.db.settings.seedanceResolution = controls.resolution;
   };
-  ["#video-duration", "#video-ratio", "#video-resolution", "#video-seedance-model", "#video-generate-audio", "#video-camera-fixed", "#video-watermark", "#video-return-last-frame", "#video-seed", "#video-prompt-text"].forEach((selector) => {
+  ["#video-duration", "#video-ratio", "#video-resolution", "#video-generate-audio", "#video-camera-fixed", "#video-watermark", "#video-return-last-frame", "#video-seed", "#video-prompt-text"].forEach((selector) => {
     document.querySelector(selector)?.addEventListener("change", persistVideoControls);
   });
   document.querySelector("#video-prompt-text")?.addEventListener("input", (event) => {
@@ -16303,7 +16941,7 @@ function bindVideoAgent() {
   });
   document.querySelector("#video-seedance-model")?.addEventListener("change", () => {
     persistVideoControls();
-    render();
+    refreshVideoModelDependentControls();
   });
   document.querySelector("#video-work")?.addEventListener("change", (event) => {
     persistVideoControls();
@@ -16759,6 +17397,94 @@ async function setupMisoTts() {
   render();
 }
 
+function higgsfieldCommandFromSettingsDom() {
+  return document.querySelector("#setting-higgsfield-command")?.value.trim() || state.db.settings.higgsfieldCommand || "higgsfield";
+}
+
+async function refreshHiggsfieldCredits() {
+  const command = higgsfieldCommandFromSettingsDom();
+  state.db.settings.higgsfieldCommand = command;
+  state.higgsfieldCreditsStatus = "loading";
+  state.higgsfieldCreditsMessage = "Higgsfieldの残クレジットを取得しています。";
+  render();
+  try {
+    const result = await postJson("/api/higgsfield/credits", { command });
+    state.db.settings.higgsfieldCredits = normalizeHiggsfieldCredits(result.account || result.accountOutput);
+    state.db.settings.higgsfieldCreditsUpdatedAt = new Date().toISOString();
+    state.higgsfieldCreditsStatus = "loaded";
+    state.higgsfieldCreditsMessage = `残クレジット: ${formatHiggsfieldCredits(state.db.settings.higgsfieldCredits)} / ${new Date(state.db.settings.higgsfieldCreditsUpdatedAt).toLocaleString("ja-JP")}`;
+    await saveDb();
+    toast(state.higgsfieldCreditsMessage);
+  } catch (error) {
+    state.higgsfieldCreditsStatus = "failed";
+    state.higgsfieldCreditsMessage = `残クレジットを取得できませんでした。${error.message}`;
+    toast(error.message);
+  }
+  render();
+}
+
+async function loadHiggsfieldElements() {
+  const command = higgsfieldCommandFromSettingsDom();
+  state.db.settings.higgsfieldCommand = command;
+  state.higgsfieldElementsStatus = "loading";
+  state.higgsfieldElementsMessage = "Higgsfield Elementsを読み込んでいます。";
+  render();
+  try {
+    const result = await postJson("/api/higgsfield/elements", { command });
+    const updatedAt = new Date().toISOString();
+    const elements = normalizeHiggsfieldElements((result.elements || []).map((item) => ({ ...item, updatedAt })));
+    state.db.settings.higgsfieldElements = elements;
+    state.db.settings.higgsfieldElementsUpdatedAt = updatedAt;
+    state.higgsfieldElementsStatus = "loaded";
+    const voiceText = Number.isFinite(Number(result.totalVoices)) ? ` / voices ${Number(result.totalVoices).toLocaleString("ja-JP")}件` : "";
+    state.higgsfieldElementsMessage = `登録済みElements: ${elements.length.toLocaleString("ja-JP")}件 / ${new Date(updatedAt).toLocaleString("ja-JP")}${voiceText}`;
+    await saveDb();
+    toast(`${elements.length.toLocaleString("ja-JP")} 件のHiggsfield Elementsを登録しました。`);
+  } catch (error) {
+    state.higgsfieldElementsStatus = "failed";
+    state.higgsfieldElementsMessage = `Elementsを読み込めませんでした。${error.message}`;
+    toast(error.message);
+  }
+  render();
+}
+
+async function checkHiggsfieldConnection() {
+  const command = higgsfieldCommandFromSettingsDom();
+  state.db.settings.higgsfieldCommand = command;
+  state.higgsfieldStatus = "loading";
+  state.higgsfieldStatusMessage = "Higgsfield CLIの実行可否とログイン状態を確認しています。";
+  render();
+  try {
+    const result = await postJson("/api/higgsfield/check", { command });
+    if (result.installed && result.authenticated) {
+      state.higgsfieldStatus = "ready";
+      if (result.account || result.accountOutput) {
+        state.db.settings.higgsfieldCredits = normalizeHiggsfieldCredits(result.account || result.accountOutput);
+        state.db.settings.higgsfieldCreditsUpdatedAt = new Date().toISOString();
+        state.higgsfieldCreditsStatus = "loaded";
+        state.higgsfieldCreditsMessage = `残クレジット: ${formatHiggsfieldCredits(state.db.settings.higgsfieldCredits)} / ${new Date(state.db.settings.higgsfieldCreditsUpdatedAt).toLocaleString("ja-JP")}`;
+      }
+      const creditText = result.account || result.accountOutput ? ` / ${formatHiggsfieldCredits(result.account || result.accountOutput)}` : "";
+      state.higgsfieldStatusMessage = `連携できます。${result.version || result.command || command}${creditText}`;
+      await saveDb();
+      toast("Higgsfield CLIに連携できます。");
+    } else if (result.installed) {
+      state.higgsfieldStatus = "missing";
+      state.higgsfieldStatusMessage = `Higgsfield CLIは見つかりましたがログイン確認に失敗しました。ターミナルで ${command} auth login を実行してください。${result.accountOutput ? ` ${result.accountOutput}` : ""}`;
+      toast("Higgsfield CLIのログインが必要です。");
+    } else {
+      state.higgsfieldStatus = "missing";
+      state.higgsfieldStatusMessage = result.error || "Higgsfield CLIが見つかりません。";
+      toast("Higgsfield CLIが見つかりません。");
+    }
+  } catch (error) {
+    state.higgsfieldStatus = "missing";
+    state.higgsfieldStatusMessage = `${error.message} CLI未導入または権限エラーの場合は、Higgsfield CLIコマンドに npx -y @higgsfield/cli を指定して再確認してください。`;
+    toast(error.message);
+  }
+  render();
+}
+
 function saveElevenLabsSettingsFromDom() {
   const keyInput = document.querySelector("#setting-elevenlabs-api-key");
   if (keyInput) localStorage.setItem("elevenlabs_api_key", keyInput.value.trim());
@@ -16943,9 +17669,16 @@ function bindSettings() {
     const selected = seedanceApiBasePreset(event.target.value);
     const modelInput = document.querySelector("#setting-seedance-model");
     const knownDefaultModels = seedanceApiBaseOptions.map((option) => option.defaultModel);
-    const nextModel = modelInput && (!modelInput.value.trim() || knownDefaultModels.includes(modelInput.value.trim()) || targetOpenRouterVideoModelIds.includes(modelInput.value.trim()))
+    const knownVideoModels = [
+      ...targetOpenRouterVideoModelIds,
+      ...replicateSeedanceVideoModels.map((model) => model.id),
+      ...higgsfieldVideoModels.map((model) => model.id)
+    ];
+    const nextModel = modelInput && (!modelInput.value.trim() || knownDefaultModels.includes(modelInput.value.trim()) || knownVideoModels.includes(modelInput.value.trim()))
       ? selected.defaultModel
       : modelInput?.value.trim() || selected.defaultModel;
+    state.db.settings.seedanceBaseUrl = selected.value;
+    state.db.settings.seedanceModel = nextModel;
     updateSettingSeedanceModelOptions(selected.value, nextModel);
     const status = document.querySelector("#setting-seedance-status");
     if (status) status.textContent = seedanceSettingsStatusText(selected.value);
@@ -16956,6 +17689,7 @@ function bindSettings() {
         if (nextStatus) nextStatus.textContent = seedanceSettingsStatusText(selected.value);
       });
     }
+    render({ preserveLiveTextDrafts: true });
   });
   document.querySelector("#setting-seedance-model")?.addEventListener("change", (event) => {
     const baseUrl = document.querySelector("#setting-seedance-base-url")?.value || state.db.settings.seedanceBaseUrl;
@@ -16964,7 +17698,8 @@ function bindSettings() {
   document.querySelector("[data-action='check-animadex']")?.addEventListener("click", checkAnimaDexConnection);
 	  document.querySelector("[data-action='save-settings']")?.addEventListener("click", async () => {
 	    localStorage.setItem("openrouter_api_key", document.querySelector("#setting-api-key").value.trim());
-	    localStorage.setItem("seedance_api_key", document.querySelector("#setting-seedance-api-key")?.value.trim() || "");
+        const seedanceKeyInput = document.querySelector("#setting-seedance-api-key");
+        if (seedanceKeyInput) localStorage.setItem("seedance_api_key", seedanceKeyInput.value.trim());
 	    saveElevenLabsSettingsFromDom();
 	    saveVoiceboxSettingsFromDom();
 	    saveAnimaDexSettingsFromDom();
@@ -16981,6 +17716,7 @@ function bindSettings() {
     state.db.settings.voxcpmAppDir = document.querySelector("#setting-voxcpm-app-dir")?.value.trim() || "vendor/VoxCPM";
     state.db.settings.misottsAppDir = document.querySelector("#setting-misotts-app-dir")?.value.trim() || "vendor/MisoTTS";
     state.db.settings.irodoriAppDir = document.querySelector("#setting-irodori-app-dir")?.value.trim() || "vendor/Irodori-TTS";
+    state.db.settings.higgsfieldCommand = document.querySelector("#setting-higgsfield-command")?.value.trim() || state.db.settings.higgsfieldCommand || "higgsfield";
     state.db.settings.seedanceBaseUrl = document.querySelector("#setting-seedance-base-url")?.value.trim() || "https://ark.ap-southeast.bytepluses.com/api/v3";
     state.db.settings.seedanceModel = document.querySelector("#setting-seedance-model")?.value.trim() || "dreamina-seedance-2-0-260128";
     state.db.settings.seedanceResolution = document.querySelector("#setting-seedance-resolution")?.value || "720p";
@@ -17005,6 +17741,7 @@ function bindSettings() {
     state.db.settings.voxcpmAppDir = document.querySelector("#setting-voxcpm-app-dir")?.value.trim() || "vendor/VoxCPM";
     state.db.settings.misottsAppDir = document.querySelector("#setting-misotts-app-dir")?.value.trim() || "vendor/MisoTTS";
     state.db.settings.irodoriAppDir = document.querySelector("#setting-irodori-app-dir")?.value.trim() || "vendor/Irodori-TTS";
+    state.db.settings.higgsfieldCommand = document.querySelector("#setting-higgsfield-command")?.value.trim() || state.db.settings.higgsfieldCommand || "higgsfield";
     try {
       await callOpenRouter({
         textOnly: true,
@@ -17032,6 +17769,9 @@ function bindSettings() {
 	  document.querySelector("[data-action='check-voxcpm']")?.addEventListener("click", checkVoxcpmConnection);
 	  document.querySelector("[data-action='check-misotts']")?.addEventListener("click", checkMisoTtsConnection);
 	  document.querySelector("[data-action='check-irodori']")?.addEventListener("click", checkIrodoriConnection);
+    document.querySelector("[data-action='check-higgsfield']")?.addEventListener("click", checkHiggsfieldConnection);
+    document.querySelector("[data-action='refresh-higgsfield-credits']")?.addEventListener("click", refreshHiggsfieldCredits);
+    document.querySelector("[data-action='load-higgsfield-elements']")?.addEventListener("click", loadHiggsfieldElements);
   document.querySelector("[data-action='check-comfy']")?.addEventListener("click", checkComfyConnection);
   document.querySelectorAll("[data-action='load-comfy-models']").forEach((button) => {
     button.addEventListener("click", () => loadComfyModels());
@@ -17152,7 +17892,7 @@ function openWorldItemModal(item = null) {
           </select>
         </label>
         <label class="full">名前<input id="world-item-name" value="${escapeHtml(item?.name || "")}" placeholder="例：港町の市場、封印された短剣、森の発光虫"></label>
-        <label class="full">参考画像<input id="world-item-reference" type="file" accept="image/*"></label>
+        <label class="full">参考画像<input id="world-item-reference" type="file" accept="${imageFileAccept}"></label>
         <div class="full">${item?.referenceUrl ? `<img class="portrait" style="max-width:220px;" src="${escapeHtml(item.referenceUrl)}" alt="">` : `<div class="empty compact">参考画像プレビュー</div>`}</div>
         <label class="full">説明<textarea id="world-item-description">${escapeHtml(item?.description || "")}</textarea></label>
         <label class="full">ベースプロンプト<textarea id="world-item-base">${escapeHtml(item?.basePrompt || "")}</textarea></label>
@@ -17238,7 +17978,7 @@ function openCharacterModal(char = null) {
             <option value="tags" ${promptFormatOf(char) === "tags" ? "selected" : ""}>タグ</option>
           </select>
         </label>
-        <label class="full">基本立ち絵<input id="char-portrait" type="file" accept="image/*"></label>
+        <label class="full">基本立ち絵<input id="char-portrait" type="file" accept="${imageFileAccept}"></label>
         <div class="full">${char?.portraitUrl ? `<img class="portrait" style="max-width:220px;" src="${escapeHtml(char.portraitUrl)}" alt="">` : `<div class="empty">立ち絵プレビュー</div>`}</div>
         <label class="full">ベースプロンプト<textarea id="char-base">${escapeHtml(char?.basePrompt || "")}</textarea></label>
         <label class="full">ネガティブプロンプト<textarea id="char-negative">${escapeHtml(char?.negativePrompt || "")}</textarea></label>
@@ -17954,6 +18694,30 @@ function openAssetModal(asset) {
   );
 }
 
+function showBootError(error) {
+  const message = readableError(error?.message || error) || "アプリの読み込みに失敗しました。";
+  if (typeof window.showCreativeFileStudioBootError === "function") {
+    window.showCreativeFileStudioBootError(message);
+    return;
+  }
+  app.innerHTML = `<div class="empty">${escapeHtml(message)}</div>`;
+}
+
+function runStartupUploadMaintenance(afterSave = Promise.resolve()) {
+  window.setTimeout(async () => {
+    try {
+      await afterSave;
+      const changed = await relocateStoredUploads();
+      if (!changed) return;
+      await saveDb();
+      render({ preserveLiveTextDrafts: true });
+    } catch (error) {
+      console.warn(error);
+      toast(`素材フォルダ整理に失敗しました: ${error.message}`);
+    }
+  }, 0);
+}
+
 async function boot() {
   try {
     state.session = {
@@ -17968,15 +18732,22 @@ async function boot() {
     state.videoWorkId = state.selectedWorkId;
     state.galleryWorkId = state.selectedWorkId;
     const hadInterruptedClassifications = markInterruptedImageClassifications();
-    await normalizeStoredUploads();
-    if (hadInterruptedClassifications) await saveDb();
+    const normalizedChanged = normalizeStoredDbForRender();
     render();
+    const startupSave = hadInterruptedClassifications || normalizedChanged
+      ? saveDb().catch((error) => {
+        console.warn(error);
+        toast(`起動時データ保存に失敗しました: ${error.message}`);
+      })
+      : Promise.resolve();
     const activeImageJob = (state.db.imageJobs || []).find((job) => job.providerTaskId && activeImageJobStatuses.includes(job.status));
     if (activeImageJob) window.setTimeout(() => pollComfyJob(activeImageJob.id), 1200);
     const activeJob = (state.db.videoJobs || []).find((job) => job.providerTaskId && activeVideoJobStatuses.includes(job.status));
     if (activeJob) window.setTimeout(() => pollSeedanceJob(activeJob.id), 1200);
+    runStartupUploadMaintenance(startupSave);
   } catch (error) {
-    app.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+    console.error(error);
+    showBootError(error);
   }
 }
 
