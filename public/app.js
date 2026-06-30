@@ -9114,16 +9114,53 @@ function renderVideoReferencePreview(item) {
   const src = escapeHtml(item.url);
   const label = escapeHtml(`${item.name || "reference"} のプレビュー`);
   if (item.kind === "video") {
-    return `<video class="reference-thumb reference-video-player" src="${src}" controls preload="metadata" playsinline data-reference-media-preview aria-label="${label}"></video>`;
+    return `
+      <button class="reference-thumb reference-media-loader" type="button" data-action="load-reference-media-preview" data-kind="video" data-src="${src}" aria-label="${label}を読み込む">
+        <span>動画を読み込む</span>
+        <small>未読み込み</small>
+      </button>
+    `;
   }
   if (item.kind === "audio") {
     return `
-      <div class="reference-thumb reference-audio-preview">
-        <audio class="reference-audio-player" controls preload="metadata" src="${src}" data-reference-media-preview aria-label="${label}"></audio>
-      </div>
+      <button class="reference-thumb reference-media-loader reference-audio-loader" type="button" data-action="load-reference-media-preview" data-kind="audio" data-src="${src}" aria-label="${label}を読み込む">
+        <span>音声を読み込む</span>
+        <small>未読み込み</small>
+      </button>
     `;
   }
   return `<img class="reference-thumb" src="${src}" alt="" loading="lazy" decoding="async">`;
+}
+
+function loadReferenceMediaPreview(button) {
+  const src = button?.dataset?.src || "";
+  const kind = button?.dataset?.kind || "";
+  if (!src || !["video", "audio"].includes(kind)) return;
+  const label = (button.getAttribute("aria-label") || "参照素材のプレビュー").replace(/を読み込む$/, "");
+  let media = null;
+  let replacement = null;
+  if (kind === "video") {
+    media = document.createElement("video");
+    media.className = "reference-thumb reference-video-player";
+    media.controls = true;
+    media.preload = "none";
+    media.playsInline = true;
+    media.setAttribute("aria-label", label);
+    replacement = media;
+  } else {
+    replacement = document.createElement("div");
+    replacement.className = "reference-thumb reference-audio-preview";
+    media = document.createElement("audio");
+    media.className = "reference-audio-player";
+    media.controls = true;
+    media.preload = "none";
+    media.setAttribute("aria-label", label);
+    replacement.append(media);
+  }
+  media.dataset.referenceMediaPreview = "";
+  media.src = src;
+  button.replaceWith(replacement);
+  media.load();
 }
 
 function videoFrameSourceKey(type, id) {
@@ -17195,6 +17232,9 @@ function bindVideoAgent() {
   document.querySelector("#video-ref-file-input")?.addEventListener("change", async (event) => {
     await uploadVideoReferenceFiles(event.target.files);
   });
+  document.querySelectorAll("[data-action='load-reference-media-preview']").forEach((button) => {
+    button.addEventListener("click", () => loadReferenceMediaPreview(button));
+  });
   document.querySelectorAll("[data-action='toggle-video-reference']").forEach((checkbox) => {
     checkbox.addEventListener("change", () => {
       const id = checkbox.dataset.id;
@@ -17224,13 +17264,13 @@ function bindVideoAgent() {
       state.videoReferenceRoles[select.dataset.id] = select.value;
     });
   });
-  document.querySelectorAll("[data-reference-media-preview]").forEach((media) => {
-    media.addEventListener("play", () => {
-      document.querySelectorAll("[data-reference-media-preview]").forEach((other) => {
-        if (other !== media) other.pause();
-      });
+  document.querySelector(".video-layout")?.addEventListener("play", (event) => {
+    const media = event.target;
+    if (!media?.matches?.("[data-reference-media-preview]")) return;
+    document.querySelectorAll("[data-reference-media-preview]").forEach((other) => {
+      if (other !== media) other.pause();
     });
-  });
+  }, true);
   document.querySelector("[data-action='video-send-message']")?.addEventListener("click", () => handleVideoAgentMessage(false));
   document.querySelector("[data-action='video-make-draft']")?.addEventListener("click", () => handleVideoAgentMessage(true));
   document.querySelector("[data-action='toggle-video-cost']")?.addEventListener("click", () => {

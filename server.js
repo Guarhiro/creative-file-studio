@@ -44,6 +44,12 @@ const animaDexOfficialBaseUrl = "https://animadex.net";
 const animaDexBlobOrigin = "https://blobs.animadex.net";
 const animaDexSearchCacheTtlMs = 5 * 60 * 1000;
 const animaDexSearchCache = new Map();
+const localReferenceDataUrlLimits = Object.freeze({
+  image: 32 * 1024 * 1024,
+  video: 24 * 1024 * 1024,
+  audio: 12 * 1024 * 1024
+});
+const localReferenceDataUrlTotalLimit = 48 * 1024 * 1024;
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -544,16 +550,74 @@ function localMediaPathFromUrl(mediaUrl) {
   return filePath;
 }
 
-async function localUploadAsDataUrl(uploadUrl, maxBytes = 64 * 1024 * 1024) {
+function mediaKindFromMimeType(mimeType = "") {
+  const type = String(mimeType || "").toLowerCase();
+  if (type.startsWith("video/")) return "video";
+  if (type.startsWith("audio/")) return "audio";
+  if (type.startsWith("image/")) return "image";
+  return "image";
+}
+
+function localReferenceDataUrlLimit(kind = "image") {
+  return localReferenceDataUrlLimits[kind] || localReferenceDataUrlLimits.image;
+}
+
+function formatWholeMb(bytes) {
+  return Math.max(1, Math.round(Number(bytes || 0) / 1024 / 1024));
+}
+
+function localReferenceKindLabel(kind = "image") {
+  if (kind === "video") return "動画";
+  if (kind === "audio") return "音声";
+  return "画像";
+}
+
+function localReferenceTooLargeMessage(info, limit) {
+  const label = localReferenceKindLabel(info.kind);
+  const name = cleanFileNamePart(info.name || path.basename(info.filePath || "reference"), "reference", 80);
+  return `参照${label}「${name}」が大きすぎます（${formatWholeMb(info.size)}MB）。ローカル素材をAPIへ送る場合は${formatWholeMb(limit)}MB以下にしてください。短く変換するか、APIから直接参照できるURLを使ってください。`;
+}
+
+async function localReferenceDataUrlInfo(uploadUrl, reference = {}) {
   const filePath = localMediaPathFromUrl(uploadUrl);
   const stat = await fs.stat(filePath);
   if (!stat.isFile()) throw new Error("参照素材ファイルが見つかりません。");
-  if (stat.size > maxBytes) {
-    throw new Error(`参照素材が大きすぎます（${Math.round(stat.size / 1024 / 1024)}MB）。APIが直接参照できるURLに置いてから指定してください。`);
-  }
   const ext = path.extname(filePath).toLowerCase();
-  const data = await fs.readFile(filePath);
-  return `data:${mimeForExtension(ext)};base64,${data.toString("base64")}`;
+  const mimeType = mimeForExtension(ext);
+  const hintedKind = String(reference.kind || "").toLowerCase();
+  const kind = ["image", "video", "audio"].includes(hintedKind) ? hintedKind : mediaKindFromMimeType(mimeType);
+  return {
+    filePath,
+    size: stat.size,
+    ext,
+    mimeType,
+    kind,
+    name: reference.name || path.basename(filePath)
+  };
+}
+
+async function assertLocalReferenceDataUrlBudget(references = []) {
+  const localReferences = [];
+  for (const reference of references) {
+    const url = String(reference?.url || "");
+    if (!url.startsWith("/")) continue;
+    const info = await localReferenceDataUrlInfo(url, reference);
+    const limit = localReferenceDataUrlLimit(info.kind);
+    if (info.size > limit) throw new Error(localReferenceTooLargeMessage(info, limit));
+    localReferences.push(info);
+  }
+  const total = localReferences.reduce((sum, info) => sum + info.size, 0);
+  if (total > localReferenceDataUrlTotalLimit) {
+    throw new Error(`選択中のローカル参照素材が合計${formatWholeMb(total)}MBあります。APIへbase64送信すると負荷が高いため、合計${formatWholeMb(localReferenceDataUrlTotalLimit)}MB以下にしてください。動画は短いクリップや開始/終了フレーム画像にすると安定します。`);
+  }
+}
+
+async function localUploadAsDataUrl(uploadUrl, maxBytes = null) {
+  const info = await localReferenceDataUrlInfo(uploadUrl);
+  const limit = Number.isFinite(maxBytes) && maxBytes > 0 ? maxBytes : localReferenceDataUrlLimit(info.kind);
+  if (info.size > limit) throw new Error(localReferenceTooLargeMessage(info, limit));
+  const data = await fs.readFile(info.filePath);
+  return `data:${info.mimeType};base64,${data.toString("base64")}`;
 }
 
 function expandLocalPath(value) {
@@ -7297,6 +7361,7 @@ async function handleSeedanceCreate(req, res) {
 
   try {
     const provider = seedanceProviderFromBaseUrl(baseUrl);
+    await assertLocalReferenceDataUrlBudget(references);
     let requestPayload;
     if (provider === "openrouter") {
       requestPayload = await buildOpenRouterVideoPayload({
