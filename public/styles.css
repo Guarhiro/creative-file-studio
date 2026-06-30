@@ -1546,6 +1546,11 @@ textarea {
   min-width: 0;
 }
 
+.reference-frame-button {
+  width: 100%;
+  min-height: 34px;
+}
+
 .reference-thumb {
   width: 100%;
   aspect-ratio: 1;
@@ -2267,6 +2272,45 @@ textarea {
   max-height: 420px;
   border-radius: 8px;
   background: #111;
+}
+
+.video-frame-screenshot-summary {
+  display: grid;
+  gap: 8px;
+}
+
+.video-frame-screenshot-item {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(248, 247, 242, 0.82);
+  color: inherit;
+  text-decoration: none;
+  padding: 6px;
+}
+
+.video-frame-screenshot-item img {
+  width: 54px;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 6px;
+  background: #111;
+}
+
+.video-frame-screenshot-item span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.video-frame-screenshot-item .meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .generated-image-grid {

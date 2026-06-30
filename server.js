@@ -329,6 +329,7 @@ const lanAllowedApiRoutes = new Set([
   "PUT /api/db",
   "POST /api/upload",
   "POST /api/media-upload",
+  "POST /api/video/frame-screenshots",
   "POST /api/move-upload",
   "POST /api/remove-bg",
   "POST /api/rembg/status",
@@ -1506,6 +1507,155 @@ async function handleMediaUpload(req, res) {
     kind: parsed.kind,
     mimeType: `${parsed.kind}/${parsed.subtype}`
   });
+}
+
+function videoFrameScreenshotOutputName(name, suffix) {
+  const parsed = path.parse(path.basename(String(name || "video")));
+  const base = cleanFileNamePart(parsed.name, "video", 70);
+  return `${base}_${suffix}.png`;
+}
+
+async function probeVideoDuration(inputPath) {
+  const result = await runProcess([
+    "ffprobe",
+    "-v",
+    "error",
+    "-show_entries",
+    "format=duration",
+    "-of",
+    "default=noprint_wrappers=1:nokey=1",
+    inputPath
+  ], {
+    cwd: __dirname,
+    timeoutMs: 30000,
+    env: backgroundRemoverEnv()
+  });
+  if (!result.ok) return null;
+  const duration = Number(String(result.stdout || "").trim());
+  return Number.isFinite(duration) && duration > 0 ? Math.round(duration * 1000) / 1000 : null;
+}
+
+async function extractVideoFrameScreenshot(inputPath, outputPath, seconds) {
+  const seekSeconds = Math.max(0, Number(seconds) || 0);
+  const result = await runProcess([
+    "ffmpeg",
+    "-y",
+    "-hide_banner",
+    "-loglevel",
+    "warning",
+    "-ss",
+    String(seekSeconds),
+    "-i",
+    inputPath,
+    "-frames:v",
+    "1",
+    "-update",
+    "1",
+    outputPath
+  ], {
+    cwd: __dirname,
+    timeoutMs: 5 * 60 * 1000,
+    env: backgroundRemoverEnv()
+  });
+  if (!result.ok) return { ok: false, result };
+  const stat = await fs.stat(outputPath).catch(() => null);
+  if (!stat?.size) return { ok: false, result, error: "抽出したフレーム画像が空です。" };
+  return { ok: true, result, size: stat.size };
+}
+
+async function handleVideoFrameScreenshots(req, res) {
+  const body = await readJson(req, 2 * 1024 * 1024);
+  const sourceUrl = String(body.url || "").trim();
+  if (!sourceUrl) return sendJson(res, 400, { error: "動画URLが必要です。" });
+
+  let inputPath;
+  try {
+    inputPath = localMediaPathFromUrl(sourceUrl);
+  } catch (error) {
+    return sendJson(res, 400, { error: error.message || "ローカル動画URLではありません。" });
+  }
+
+  const sourceStat = await fs.stat(inputPath).catch(() => null);
+  if (!sourceStat?.isFile()) {
+    return sendJson(res, 404, { error: "動画ファイルが見つかりません。", path: inputPath });
+  }
+  const ext = path.extname(inputPath).toLowerCase();
+  const mimeType = mimeForExtension(ext);
+  if (!mimeType.startsWith("video/") && ext !== ".gif") {
+    return sendJson(res, 400, { error: "開始・終了フレームを抽出できる動画ファイルではありません。" });
+  }
+
+  const tools = await checkFfmpeg();
+  const ffmpegStatus = audioEditFfmpegStatus(tools);
+  if (!ffmpegStatus.found) {
+    return sendJson(res, 400, {
+      error: `動画フレーム抽出にはffmpegとffprobeが必要です。${ffmpegStatus.error || ""}`.trim(),
+      status: ffmpegStatus
+    });
+  }
+
+  const duration = await probeVideoDuration(inputPath);
+  if (!duration) {
+    return sendJson(res, 400, { error: "動画の長さを取得できませんでした。", status: ffmpegStatus });
+  }
+
+  const workFolder = safeFolderName(body.workName, "_未分類作品");
+  const destinationDir = path.join(uploadDir, workFolder, "_動画生成_画像");
+  const sourceName = body.name || path.basename(inputPath);
+  const positions = [
+    { key: "start", frameType: "first_frame", label: "開始フレーム", suffix: "start_frame", seconds: 0 },
+    { key: "end", frameType: "last_frame", label: "終了フレーム", suffix: "end_frame", seconds: Math.max(0, duration - 0.08) }
+  ];
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "creative-file-studio-video-frames-"));
+  try {
+    await fs.mkdir(destinationDir, { recursive: true });
+    const frames = [];
+    for (const position of positions) {
+      const tempOutput = path.join(tempDir, `${position.key}.png`);
+      const extraction = await extractVideoFrameScreenshot(inputPath, tempOutput, position.seconds);
+      if (!extraction.ok) {
+        return sendJson(res, 500, {
+          error: `${position.label}の抽出に失敗しました: ${extraction.error || extraction.result?.stderr || extraction.result?.stdout || extraction.result?.error || "ffmpegが失敗しました。"}`,
+          result: extraction.result,
+          status: ffmpegStatus
+        });
+      }
+      const destination = await uniqueFilePath(destinationDir, videoFrameScreenshotOutputName(sourceName, position.suffix));
+      await fs.copyFile(tempOutput, destination);
+      const savedStat = await fs.stat(destination);
+      frames.push({
+        key: position.key,
+        frameType: position.frameType,
+        label: position.label,
+        seconds: position.seconds,
+        url: uploadUrlFor(destination),
+        path: destination,
+        name: path.basename(destination),
+        mimeType: "image/png",
+        size: savedStat.size,
+        result: {
+          stdout: extraction.result.stdout,
+          stderr: extraction.result.stderr,
+          command: extraction.result.command
+        }
+      });
+    }
+    sendJson(res, 200, {
+      ok: true,
+      duration,
+      source: {
+        url: sourceUrl,
+        path: inputPath,
+        name: sourceName,
+        mimeType
+      },
+      frames
+    });
+  } catch (error) {
+    sendJson(res, 502, { error: `動画フレーム抽出に失敗しました: ${error.message}`, status: ffmpegStatus });
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 async function handleRemoveBackground(req, res) {
@@ -7331,6 +7481,10 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/image-edit/video-gif") {
       return await handleVideoGifConvert(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/video/frame-screenshots") {
+      return await handleVideoFrameScreenshots(req, res);
     }
 
     if (req.method === "POST" && url.pathname === "/api/audio-edit/status") {

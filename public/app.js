@@ -139,6 +139,7 @@ const state = {
   videoIsThinking: false,
   videoIsGenerating: false,
   videoPollingJobId: "",
+  videoFrameCaptureTarget: "",
   videoHistoryPage: 1,
   videoSelectedJobIds: [],
   audioWorkId: null,
@@ -582,7 +583,7 @@ const screenHelpContent = {
           { term: "生成設定", description: "作品、動画モデル、秒数、比率、解像度、音声有無などを選びます。" },
           { term: "参照素材", description: "画像、動画、音声を追加・選択し、モデルが対応する範囲で生成に使います。" },
           { term: "エージェント", description: "構成、タイムライン、カメラ、エフェクトなどを会話で整理し、API送信用プロンプト案を作ります。" },
-          { term: "生成履歴", description: "送信後のステータス、進行率、保存動画、エラー、最終フレーム保存を確認し、選択削除と一括削除ができます。" }
+          { term: "生成履歴", description: "送信後のステータス、進行率、保存動画、エラー、開始・終了フレーム保存を確認し、選択削除と一括削除ができます。" }
         ]
       },
       {
@@ -3880,6 +3881,9 @@ async function postJson(url, body, method = "POST") {
 		    }
 		    if (url.startsWith("/api/audio-edit/") && /Method not allowed|Not found/i.test(text)) {
 		      throw new Error("音声編集APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
+		    }
+		    if (url.startsWith("/api/video/") && /Method not allowed|Not found/i.test(text)) {
+		      throw new Error("動画生成APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
 		    }
 			    if (url.startsWith("/api/forge/") && /Method not allowed|Not found/i.test(text)) {
 			      throw new Error("Forge APIが起動中のサーバーに反映されていません。アプリのサーバーを停止して再起動し、ブラウザをリロードしてください。");
@@ -8976,6 +8980,12 @@ function allVideoReferences() {
       subject: media.subject || "動画生成素材",
       prompt: media.memo || "",
       dimensions: media.width && media.height ? `${media.width}x${media.height}${media.aspectRatioText ? ` / ${media.aspectRatioText}` : ""}` : "",
+      localPath: media.localPath || "",
+      startFrameUrl: media.startFrameUrl || "",
+      startFrameLocalPath: media.startFrameLocalPath || "",
+      endFrameUrl: media.endFrameUrl || "",
+      endFrameLocalPath: media.endFrameLocalPath || "",
+      frameScreenshotError: media.frameScreenshotError || "",
       createdAt: media.createdAt
     });
   });
@@ -9083,11 +9093,49 @@ function renderVideoReferencePreview(item) {
   return `<img class="reference-thumb" src="${src}" alt="" loading="lazy" decoding="async">`;
 }
 
+function videoFrameSourceKey(type, id) {
+  return `${type}:${id}`;
+}
+
+function hasVideoFrameScreenshots(source = {}) {
+  return Boolean(source.startFrameUrl && source.endFrameUrl);
+}
+
+function videoFrameCaptureButtonLabel(source = {}, isCapturing = false) {
+  if (isCapturing) return "保存中...";
+  return hasVideoFrameScreenshots(source) ? "開始＋終了保存済み" : "開始＋終了フレーム保存";
+}
+
+function renderVideoFrameScreenshotSummary(source = {}) {
+  const frames = [
+    ["start", "開始", source.startFrameUrl, source.startFrameLocalPath],
+    ["end", "終了", source.endFrameUrl, source.endFrameLocalPath]
+  ].filter(([, , url]) => url);
+  const error = source.frameScreenshotError || "";
+  if (!frames.length && !error) return "";
+  return `
+    <div class="video-frame-screenshot-summary">
+      ${frames.map(([, label, url, localPath]) => `
+        <a class="video-frame-screenshot-item" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">
+          <img src="${escapeHtml(url)}" alt="">
+          <span>
+            <strong>${escapeHtml(label)}フレーム</strong>
+            <span class="meta">${escapeHtml(localPath || url)}</span>
+          </span>
+        </a>
+      `).join("")}
+      ${error ? `<div class="meta danger-text">フレーム保存エラー: ${escapeHtml(error)}</div>` : ""}
+    </div>
+  `;
+}
+
 function renderVideoReferenceCard(item) {
   const checked = state.videoSelectedReferenceIds.includes(item.key);
   const selectedItems = selectedVideoReferences();
   const label = checked ? seedanceReferenceLabel(item, selectedItems) : "";
   const preview = renderVideoReferencePreview(item);
+  const frameCaptureKey = videoFrameSourceKey("media", item.id);
+  const isCapturingFrames = state.videoFrameCaptureTarget === frameCaptureKey;
   return `
     <article class="reference-card ${checked ? "selected" : ""}">
       ${preview}
@@ -9099,6 +9147,12 @@ function renderVideoReferenceCard(item) {
         <div class="asset-name">${escapeHtml(item.name || "reference")}</div>
         <div class="meta">${escapeHtml(item.subject || "")}${item.dimensions ? ` / ${escapeHtml(item.dimensions)}` : ""}</div>
         ${renderVideoReferenceRoleSelect(item)}
+        ${item.kind === "video" ? `
+          <button class="ghost reference-frame-button" data-action="save-video-media-frames" data-id="${escapeHtml(item.id)}" ${isCapturingFrames || hasVideoFrameScreenshots(item) ? "disabled" : ""}>
+            ${escapeHtml(videoFrameCaptureButtonLabel(item, isCapturingFrames))}
+          </button>
+          ${renderVideoFrameScreenshotSummary(item)}
+        ` : ""}
       </div>
     </article>
   `;
@@ -9604,6 +9658,132 @@ async function uploadImageReferenceFiles(files) {
     toast(`${accepted.length} 件をComfy参照画像に追加しました。`);
   } catch (error) {
     toast(error.message);
+  }
+}
+
+function existingVideoFrameScreenshotMedia(sourceKey, frameKey) {
+  return (state.db.videoMedia || []).find((media) =>
+    media.kind === "image" && media.frameSourceKey === sourceKey && media.frameKey === frameKey
+  );
+}
+
+function assignVideoFrameScreenshotRef(target, frameKey, media) {
+  if (!target || !media) return;
+  if (frameKey === "start") {
+    target.startFrameUrl = media.url;
+    target.startFrameLocalPath = media.localPath || "";
+    return;
+  }
+  if (frameKey === "end") {
+    target.endFrameUrl = media.url;
+    target.endFrameLocalPath = media.localPath || "";
+  }
+}
+
+function videoFrameSourceFromJob(job) {
+  return {
+    type: "job",
+    id: job.id,
+    key: videoFrameSourceKey("job", job.id),
+    target: job,
+    url: job.localUrl,
+    name: fileNameFromUrl(job.localUrl, `${cleanFileLabel(displayVideoJobTitle(job) || "video")}.mp4`),
+    title: displayVideoJobTitle(job) || "生成動画",
+    workId: job.workId || null,
+    characterId: null,
+    prompt: job.prompt || "",
+    subjectPrefix: "生成動画"
+  };
+}
+
+function videoFrameSourceFromMedia(media) {
+  return {
+    type: "media",
+    id: media.id,
+    key: videoFrameSourceKey("media", media.id),
+    target: media,
+    url: media.url,
+    name: media.name || fileNameFromUrl(media.url, "reference-video"),
+    title: media.name || "参照動画",
+    workId: media.workId || null,
+    characterId: media.characterId || null,
+    prompt: media.memo || "",
+    subjectPrefix: "参照動画"
+  };
+}
+
+async function saveVideoFrameScreenshots(source) {
+  if (!source?.url) {
+    toast("フレーム抽出する動画が見つかりません。");
+    return [];
+  }
+  const existingStart = existingVideoFrameScreenshotMedia(source.key, "start");
+  const existingEnd = existingVideoFrameScreenshotMedia(source.key, "end");
+  if (existingStart && existingEnd) {
+    assignVideoFrameScreenshotRef(source.target, "start", existingStart);
+    assignVideoFrameScreenshotRef(source.target, "end", existingEnd);
+    source.target.frameScreenshotError = "";
+    await saveDb();
+    render();
+    toast("開始・終了フレームはすでに保存済みです。");
+    return [];
+  }
+
+  state.videoFrameCaptureTarget = source.key;
+  source.target.frameScreenshotError = "";
+  render();
+  try {
+    const work = byId(state.db.works, source.workId) || byId(state.db.works, state.videoWorkId || state.selectedWorkId);
+    const payload = await postJson("/api/video/frame-screenshots", {
+      url: source.url,
+      name: source.name,
+      workName: work?.name
+    });
+    const created = [];
+    for (const frame of payload.frames || []) {
+      const info = await getImageInfo(frame.url);
+      const media = {
+        id: uid(),
+        workId: source.workId || work?.id || null,
+        characterId: source.characterId || null,
+        kind: "image",
+        name: `${source.title} ${frame.label}`,
+        url: frame.url,
+        localPath: frame.path,
+        mimeType: frame.mimeType || "image/png",
+        width: info.width || null,
+        height: info.height || null,
+        aspectRatio: info.aspectRatio || null,
+        aspectRatioText: info.aspectRatioText || "",
+        frameSourceKey: source.key,
+        frameKey: frame.key,
+        frameType: frame.frameType,
+        frameSeconds: frame.seconds,
+        sourceVideoUrl: source.url,
+        sourceVideoName: source.name,
+        sourceFrameJobId: source.type === "job" ? source.id : null,
+        sourceFrameMediaId: source.type === "media" ? source.id : null,
+        subject: `${source.subjectPrefix}の${frame.label}`,
+        memo: source.prompt || "",
+        createdAt: new Date().toISOString()
+      };
+      state.db.videoMedia.unshift(media);
+      assignVideoFrameScreenshotRef(source.target, frame.key, media);
+      created.push(media);
+    }
+    source.target.frameScreenshotDuration = payload.duration || null;
+    source.target.frameScreenshotError = "";
+    await saveDb();
+    toast(`${created.length} 件の開始・終了フレームを参照素材へ保存しました。`);
+    return created;
+  } catch (error) {
+    source.target.frameScreenshotError = error.message;
+    await saveDb();
+    toast(error.message);
+    return [];
+  } finally {
+    state.videoFrameCaptureTarget = "";
+    render();
   }
 }
 
@@ -14418,6 +14598,8 @@ function renderVideoJob(job) {
   const costText = cost.usd !== null
     ? `${cost.source === "actual" ? "実コスト" : "概算"} ${formatUsd(cost.usd)}`
     : "";
+  const frameCaptureKey = videoFrameSourceKey("job", job.id);
+  const isCapturingFrames = state.videoFrameCaptureTarget === frameCaptureKey;
   return `
     <article class="video-job ${status} ${isGenerationHistorySelected("video", job.id) ? "history-selected" : ""}">
       ${renderGenerationHistoryCheckbox("video", job)}
@@ -14436,9 +14618,11 @@ function renderVideoJob(job) {
         ${job.localUrl ? renderDownloadButton(job.localUrl) : ""}
         <button class="ghost" data-action="refresh-video-job" data-id="${job.id}" ${!job.providerTaskId || ["succeeded", "failed", "expired", "cancelled"].includes(status) ? "disabled" : ""}>更新</button>
         <button class="ghost" data-action="copy-video-job-prompt" data-id="${job.id}">プロンプト</button>
+        ${status === "succeeded" && job.localUrl ? `<button class="ghost" data-action="save-video-job-frames" data-id="${job.id}" ${isCapturingFrames || hasVideoFrameScreenshots(job) ? "disabled" : ""}>${escapeHtml(videoFrameCaptureButtonLabel(job, isCapturingFrames))}</button>` : ""}
         ${status === "succeeded" && job.settings?.returnLastFrame && job.localUrl && !job.lastFrameUrl ? `<button class="ghost" data-action="save-video-last-frame" data-id="${job.id}">最終フレーム保存</button>` : ""}
         ${canUseDestructiveActions() ? `<button class="ghost danger-outline" data-action="delete-video-history" data-id="${job.id}">履歴削除</button>` : ""}
       </div>
+      ${renderVideoFrameScreenshotSummary(job)}
       ${job.localPath ? `<div class="meta">保存先: ${escapeHtml(job.localPath)}</div>` : ""}
       ${job.lastFrameUrl ? `<div class="meta">最終フレーム: ${escapeHtml(job.lastFrameLocalPath || job.lastFrameUrl)}</div>` : ""}
       ${job.lastFrameError ? `<div class="meta danger-text">最終フレーム保存エラー: ${escapeHtml(job.lastFrameError)}</div>` : ""}
@@ -17034,6 +17218,20 @@ function bindVideoAgent() {
     button.addEventListener("click", () => {
       const job = byId(state.db.videoJobs || [], button.dataset.id);
       if (job) copyText(job.prompt || "");
+    });
+  });
+  document.querySelectorAll("[data-action='save-video-job-frames']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const job = byId(state.db.videoJobs || [], button.dataset.id);
+      if (!job) return;
+      await saveVideoFrameScreenshots(videoFrameSourceFromJob(job));
+    });
+  });
+  document.querySelectorAll("[data-action='save-video-media-frames']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const media = byId(state.db.videoMedia || [], button.dataset.id);
+      if (!media) return;
+      await saveVideoFrameScreenshots(videoFrameSourceFromMedia(media));
     });
   });
   document.querySelectorAll("[data-action='save-video-last-frame']").forEach((button) => {
