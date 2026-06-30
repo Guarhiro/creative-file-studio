@@ -1579,15 +1579,61 @@ function videoFrameScreenshotOutputName(name, suffix) {
   return `${base}_${suffix}.png`;
 }
 
-async function probeVideoDuration(inputPath) {
+function positiveNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function positiveInteger(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : null;
+}
+
+function parseFfprobeRate(value = "") {
+  const text = String(value || "").trim();
+  if (!text || text === "0/0") return null;
+  const parts = text.split("/");
+  if (parts.length === 2) {
+    const numerator = Number(parts[0]);
+    const denominator = Number(parts[1]);
+    if (Number.isFinite(numerator) && Number.isFinite(denominator) && denominator > 0) {
+      return numerator / denominator;
+    }
+  }
+  return positiveNumber(text);
+}
+
+function roundVideoSeconds(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return Math.max(0, Math.round(number * 1000000) / 1000000);
+}
+
+function uniqueVideoSeekSeconds(values = []) {
+  const seen = new Set();
+  const seconds = [];
+  for (const value of values) {
+    const rounded = roundVideoSeconds(value);
+    if (rounded === null) continue;
+    const key = rounded.toFixed(6);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    seconds.push(rounded);
+  }
+  return seconds;
+}
+
+async function probeVideoFrameTiming(inputPath) {
   const result = await runProcess([
     "ffprobe",
     "-v",
     "error",
+    "-select_streams",
+    "v:0",
     "-show_entries",
-    "format=duration",
+    "format=duration:stream=duration,nb_frames,avg_frame_rate,r_frame_rate",
     "-of",
-    "default=noprint_wrappers=1:nokey=1",
+    "json",
     inputPath
   ], {
     cwd: __dirname,
@@ -1595,36 +1641,113 @@ async function probeVideoDuration(inputPath) {
     env: backgroundRemoverEnv()
   });
   if (!result.ok) return null;
-  const duration = Number(String(result.stdout || "").trim());
-  return Number.isFinite(duration) && duration > 0 ? Math.round(duration * 1000) / 1000 : null;
+  let payload = {};
+  try {
+    payload = JSON.parse(result.stdout || "{}");
+  } catch {
+    return null;
+  }
+  const stream = Array.isArray(payload.streams) ? payload.streams[0] : null;
+  const formatDuration = positiveNumber(payload.format?.duration);
+  const streamDuration = positiveNumber(stream?.duration);
+  const fps = parseFfprobeRate(stream?.avg_frame_rate) || parseFfprobeRate(stream?.r_frame_rate);
+  const frameCount = positiveInteger(stream?.nb_frames);
+  const frameDuration = fps ? 1 / fps : null;
+  const videoDuration = streamDuration || (frameCount && fps ? frameCount / fps : null);
+  const duration = formatDuration || videoDuration;
+  const lastFrameSeconds = frameCount && fps
+    ? (frameCount - 1) / fps
+    : videoDuration && frameDuration
+      ? videoDuration - frameDuration
+      : videoDuration
+        ? videoDuration - 0.08
+        : duration
+          ? duration - 0.08
+          : null;
+  if (!duration) return null;
+  return {
+    duration: roundVideoSeconds(duration),
+    formatDuration: roundVideoSeconds(formatDuration),
+    videoDuration: roundVideoSeconds(videoDuration),
+    fps,
+    frameCount,
+    frameDuration,
+    lastFrameSeconds: roundVideoSeconds(lastFrameSeconds)
+  };
+}
+
+function endVideoFrameSeekCandidates(timing = {}) {
+  const primary = timing.lastFrameSeconds;
+  const videoDuration = timing.videoDuration || timing.duration;
+  const formatDuration = timing.formatDuration || timing.duration;
+  const frameDuration = timing.frameDuration || 0;
+  const frameBackoff = frameDuration || 0.04;
+  return uniqueVideoSeekSeconds([
+    primary,
+    videoDuration ? videoDuration - frameBackoff : null,
+    videoDuration ? videoDuration - 0.08 : null,
+    primary !== null && primary !== undefined ? primary - frameBackoff : null,
+    primary !== null && primary !== undefined ? primary - 0.12 : null,
+    videoDuration ? videoDuration - 0.12 : null,
+    formatDuration ? formatDuration - 0.12 : null,
+    primary !== null && primary !== undefined ? primary - 0.25 : null,
+    videoDuration ? videoDuration - 0.25 : null,
+    formatDuration ? formatDuration - 0.25 : null,
+    primary !== null && primary !== undefined ? primary - 0.5 : null,
+    videoDuration ? videoDuration - 0.5 : null
+  ]);
 }
 
 async function extractVideoFrameScreenshot(inputPath, outputPath, seconds) {
-  const seekSeconds = Math.max(0, Number(seconds) || 0);
-  const result = await runProcess([
-    "ffmpeg",
-    "-y",
-    "-hide_banner",
-    "-loglevel",
-    "warning",
-    "-ss",
-    String(seekSeconds),
-    "-i",
-    inputPath,
-    "-frames:v",
-    "1",
-    "-update",
-    "1",
-    outputPath
-  ], {
-    cwd: __dirname,
-    timeoutMs: 5 * 60 * 1000,
-    env: backgroundRemoverEnv()
-  });
-  if (!result.ok) return { ok: false, result };
-  const stat = await fs.stat(outputPath).catch(() => null);
-  if (!stat?.size) return { ok: false, result, error: "抽出したフレーム画像が空です。" };
-  return { ok: true, result, size: stat.size };
+  const seekCandidates = uniqueVideoSeekSeconds(Array.isArray(seconds) ? seconds : [seconds]);
+  const attempts = [];
+  let lastResult = null;
+  let lastError = "抽出したフレーム画像が空です。";
+  for (const seekSeconds of seekCandidates) {
+    await fs.rm(outputPath, { force: true }).catch(() => {});
+    const result = await runProcess([
+      "ffmpeg",
+      "-y",
+      "-hide_banner",
+      "-loglevel",
+      "warning",
+      "-ss",
+      String(seekSeconds),
+      "-i",
+      inputPath,
+      "-frames:v",
+      "1",
+      "-update",
+      "1",
+      outputPath
+    ], {
+      cwd: __dirname,
+      timeoutMs: 5 * 60 * 1000,
+      env: backgroundRemoverEnv()
+    });
+    const stat = await fs.stat(outputPath).catch(() => null);
+    const attempt = {
+      seconds: seekSeconds,
+      ok: Boolean(result.ok && stat?.size),
+      size: stat?.size || 0,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      error: result.error,
+      command: result.command
+    };
+    attempts.push(attempt);
+    lastResult = result;
+    if (!result.ok) {
+      lastError = result.stderr || result.stdout || result.error || "ffmpegが失敗しました。";
+      continue;
+    }
+    if (!stat?.size) {
+      lastError = "抽出したフレーム画像が空です。";
+      continue;
+    }
+    return { ok: true, result, size: stat.size, seconds: seekSeconds, attempts };
+  }
+  return { ok: false, result: lastResult, error: lastError, attempts };
 }
 
 async function handleVideoFrameScreenshots(req, res) {
@@ -1658,17 +1781,18 @@ async function handleVideoFrameScreenshots(req, res) {
     });
   }
 
-  const duration = await probeVideoDuration(inputPath);
-  if (!duration) {
+  const timing = await probeVideoFrameTiming(inputPath);
+  if (!timing?.duration) {
     return sendJson(res, 400, { error: "動画の長さを取得できませんでした。", status: ffmpegStatus });
   }
+  const duration = timing.duration;
 
   const workFolder = safeFolderName(body.workName, "_未分類作品");
   const destinationDir = path.join(uploadDir, workFolder, "_動画生成_画像");
   const sourceName = body.name || path.basename(inputPath);
   const positions = [
-    { key: "start", frameType: "first_frame", label: "開始フレーム", suffix: "start_frame", seconds: 0 },
-    { key: "end", frameType: "last_frame", label: "終了フレーム", suffix: "end_frame", seconds: Math.max(0, duration - 0.08) }
+    { key: "start", frameType: "first_frame", label: "開始フレーム", suffix: "start_frame", seconds: 0, seekCandidates: [0] },
+    { key: "end", frameType: "last_frame", label: "終了フレーム", suffix: "end_frame", seconds: timing.lastFrameSeconds, seekCandidates: endVideoFrameSeekCandidates(timing) }
   ];
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "creative-file-studio-video-frames-"));
   try {
@@ -1676,7 +1800,7 @@ async function handleVideoFrameScreenshots(req, res) {
     const frames = [];
     for (const position of positions) {
       const tempOutput = path.join(tempDir, `${position.key}.png`);
-      const extraction = await extractVideoFrameScreenshot(inputPath, tempOutput, position.seconds);
+      const extraction = await extractVideoFrameScreenshot(inputPath, tempOutput, position.seekCandidates || position.seconds);
       if (!extraction.ok) {
         return sendJson(res, 500, {
           error: `${position.label}の抽出に失敗しました: ${extraction.error || extraction.result?.stderr || extraction.result?.stdout || extraction.result?.error || "ffmpegが失敗しました。"}`,
@@ -1691,7 +1815,7 @@ async function handleVideoFrameScreenshots(req, res) {
         key: position.key,
         frameType: position.frameType,
         label: position.label,
-        seconds: position.seconds,
+        seconds: extraction.seconds ?? position.seconds,
         url: uploadUrlFor(destination),
         path: destination,
         name: path.basename(destination),
@@ -1700,7 +1824,8 @@ async function handleVideoFrameScreenshots(req, res) {
         result: {
           stdout: extraction.result.stdout,
           stderr: extraction.result.stderr,
-          command: extraction.result.command
+          command: extraction.result.command,
+          attempts: extraction.attempts
         }
       });
     }
@@ -1713,6 +1838,7 @@ async function handleVideoFrameScreenshots(req, res) {
         name: sourceName,
         mimeType
       },
+      timing,
       frames
     });
   } catch (error) {

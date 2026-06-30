@@ -460,6 +460,7 @@ button:disabled {
   min-height: 2.45em;
   line-height: 1.22;
   overflow-wrap: anywhere;
+  word-break: break-word;
   text-overflow: clip;
   white-space: normal;
   -webkit-box-orient: vertical;
@@ -1546,9 +1547,20 @@ textarea {
   min-width: 0;
 }
 
+.reference-card .asset-name {
+  max-width: 100%;
+}
+
 .reference-frame-button {
   width: 100%;
   min-height: 34px;
+  height: auto;
+  min-width: 0;
+  padding: 7px 8px;
+  line-height: 1.25;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .reference-thumb {

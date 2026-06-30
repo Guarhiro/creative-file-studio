@@ -3703,7 +3703,7 @@ function fileToDataUrl(file) {
     const reader = new FileReader();
     reader.onload = () => {
       const result = String(reader.result || "");
-      const inferredMime = imageMimeTypeFromName(file?.name);
+      const inferredMime = mediaMimeTypeFromName(file?.name);
       const fileType = String(file?.type || "").toLowerCase();
       if (inferredMime && (!fileType || fileType === "application/octet-stream")) {
         resolve(result.replace(/^data:[^;,]*;base64,/i, `data:${inferredMime};base64,`));
@@ -3716,6 +3716,24 @@ function fileToDataUrl(file) {
   });
 }
 
+function videoMimeTypeFromName(name = "") {
+  const text = String(name || "").toLowerCase();
+  if (/\.(mp4|m4v)$/i.test(text)) return "video/mp4";
+  if (/\.(mov|qt)$/i.test(text)) return "video/quicktime";
+  if (/\.webm$/i.test(text)) return "video/webm";
+  return "";
+}
+
+function audioMimeTypeFromName(name = "") {
+  const text = String(name || "").toLowerCase();
+  if (/\.(mp3|mpeg)$/i.test(text)) return "audio/mpeg";
+  if (/\.(m4a|aac)$/i.test(text)) return "audio/mp4";
+  if (/\.wav$/i.test(text)) return "audio/wav";
+  if (/\.ogg$/i.test(text)) return "audio/ogg";
+  if (/\.webm$/i.test(text)) return "audio/webm";
+  return "";
+}
+
 function imageMimeTypeFromName(name = "") {
   const text = String(name || "").toLowerCase();
   if (/\.jpe?g$/i.test(text)) return "image/jpeg";
@@ -3725,9 +3743,23 @@ function imageMimeTypeFromName(name = "") {
   return "";
 }
 
+function mediaMimeTypeFromName(name = "") {
+  return imageMimeTypeFromName(name) || videoMimeTypeFromName(name) || audioMimeTypeFromName(name);
+}
+
 function isImageFile(file) {
   const type = String(file?.type || "").toLowerCase();
   return type.startsWith("image/") || Boolean(imageMimeTypeFromName(file?.name));
+}
+
+function isVideoFile(file) {
+  const type = String(file?.type || "").toLowerCase();
+  return type.startsWith("video/") || Boolean(videoMimeTypeFromName(file?.name));
+}
+
+function isAudioFile(file) {
+  const type = String(file?.type || "").toLowerCase();
+  return type.startsWith("audio/") || Boolean(audioMimeTypeFromName(file?.name));
 }
 
 function audioDurationFromDataUrl(dataUrl) {
@@ -8915,10 +8947,19 @@ function bindVideoGifConverter() {
 }
 
 function mediaKindFromFile(file) {
-  if (file.type.startsWith("video/")) return "video";
-  if (file.type.startsWith("audio/")) return "audio";
+  if (isVideoFile(file)) return "video";
+  if (isAudioFile(file)) return "audio";
   if (isImageFile(file)) return "image";
   return "image";
+}
+
+function mediaKindFromStoredMedia(media = {}) {
+  const type = String(media.mimeType || "").toLowerCase();
+  const name = media.name || fileNameFromUrl(media.url || media.localPath || "", "");
+  if (type.startsWith("video/") || videoMimeTypeFromName(name) || videoMimeTypeFromName(media.url || "")) return "video";
+  if (type.startsWith("audio/") || audioMimeTypeFromName(name) || audioMimeTypeFromName(media.url || "")) return "audio";
+  if (type.startsWith("image/") || imageMimeTypeFromName(name) || imageMimeTypeFromName(media.url || "")) return "image";
+  return media.kind || "image";
 }
 
 function seedanceRoleForKind(kind, mode = "reference") {
@@ -9000,10 +9041,11 @@ function allVideoReferences() {
     });
   });
   (state.db.videoMedia || []).forEach((media) => {
+    const kind = mediaKindFromStoredMedia(media);
     push({
       key: `media:${media.id}`,
       source: "media",
-      kind: media.kind || "image",
+      kind,
       id: media.id,
       workId: media.workId,
       characterId: media.characterId || null,
@@ -9655,9 +9697,13 @@ async function pollSeedanceJob(jobId) {
 async function uploadVideoReferenceFiles(files) {
   const selectedChar = byId(state.db.characters, state.videoCharacterId);
   const work = byId(state.db.works, selectedChar?.workId || state.videoWorkId || state.selectedWorkId);
-  const accepted = [...files].filter((file) => isImageFile(file) || file.type.startsWith("video/") || file.type.startsWith("audio/"));
-  if (!accepted.length) return;
+  const accepted = [...files].filter((file) => isImageFile(file) || isVideoFile(file) || isAudioFile(file));
+  if (!accepted.length) {
+    toast("画像・動画・音声ファイルを選択してください。");
+    return;
+  }
   try {
+    const uploadedKinds = [];
     for (const file of accepted) {
       const dataUrl = await fileToDataUrl(file);
       const kind = mediaKindFromFile(file);
@@ -9667,23 +9713,28 @@ async function uploadVideoReferenceFiles(files) {
         workName: work?.name,
         folderName: "_Comfy参照画像"
       });
+      const savedKind = uploaded.kind || kind;
       const info = kind === "image" ? await getImageInfo(dataUrl) : {};
       state.db.videoMedia.unshift({
         id: uid(),
         workId: work?.id || null,
         characterId: selectedChar?.id || null,
-        kind: uploaded.kind || kind,
+        kind: savedKind,
         name: file.name,
         url: uploaded.url,
         localPath: uploaded.path,
-        mimeType: uploaded.mimeType || file.type,
+        mimeType: uploaded.mimeType || mediaMimeTypeFromName(file.name) || file.type,
         width: info.width || null,
         height: info.height || null,
         aspectRatio: info.aspectRatio || null,
         aspectRatioText: info.aspectRatioText || "",
         createdAt: new Date().toISOString()
       });
+      uploadedKinds.push(savedKind);
     }
+    if (uploadedKinds.includes("video")) state.videoReferenceKind = "video";
+    else if (uploadedKinds.includes("audio")) state.videoReferenceKind = "audio";
+    else if (uploadedKinds.includes("image")) state.videoReferenceKind = "image";
     await saveDb();
     render();
     toast(`${accepted.length} 件を参照素材に追加しました。`);
@@ -14560,7 +14611,7 @@ function renderVideoAgent() {
         </div>
         <div class="panel-header compact-header">
           <h2>参照素材</h2>
-          <input id="video-ref-file-input" type="file" accept="image/*,video/*,audio/*" multiple hidden>
+          <input id="video-ref-file-input" type="file" accept="image/*,video/*,audio/*,.mp4,.mov,.m4v,.webm,.mp3,.m4a,.wav,.ogg" multiple hidden>
           <button class="ghost" data-action="choose-video-reference-files">追加</button>
         </div>
         <div class="panel-body">
@@ -17231,6 +17282,7 @@ function bindVideoAgent() {
   });
   document.querySelector("#video-ref-file-input")?.addEventListener("change", async (event) => {
     await uploadVideoReferenceFiles(event.target.files);
+    event.target.value = "";
   });
   document.querySelectorAll("[data-action='load-reference-media-preview']").forEach((button) => {
     button.addEventListener("click", () => loadReferenceMediaPreview(button));
