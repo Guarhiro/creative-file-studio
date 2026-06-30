@@ -1,7 +1,7 @@
 # Creative File Studio
 
 ローカル環境で動く、創作支援向けのファイル管理アプリです。作品、キャラ設定、取り込み画像、世界観資料、生成プロンプト、画像生成、画像編集、音声、動画をまとめて扱えます。
-画像生成はComfyUI互換API、Stable Diffusion WebUI Forge、Forge Neo、Draw Thingsを選択でき、ComfyUIではローカルGPUとクラウドGPUを切り替え、Forge / Forge Neo / Draw Thingsではtxt2img APIに送信できます。モデルライブラリではCheckpoint / LoRAを参考画像つきで検索し、保存済み・未保存を見ながら選択、ダウンロード、生成設定への反映ができます。画像編集は簡易ローカル処理、アスペクト比変換、手動フリーモード、ローカルAI rembg、ローカルAI backgroundremover、remove.bgクラウドAPIを切り替え、動画背景除去と動画GIF化も扱えます。動画生成は公式Seedance API、OpenRouterの動画モデル、Replicate Seedance、Higgsfield CLI、音声生成はOpenRouter TTS、ElevenLabs、Voicebox、ローカル VoxCPM、ローカル MisoTTS、ローカル Irodori-TTS を切り替えて使えます。音声編集ではmp3/wavの複数分割、不要範囲カット、音量変更、ピッチ変更ができます。
+画像生成はComfyUI互換API、Stable Diffusion WebUI Forge、Forge Neo、Draw Thingsを選択でき、ComfyUIではローカルGPUとクラウドGPUを切り替え、Forge / Forge Neo / Draw Thingsではtxt2img APIに送信できます。モデルライブラリではCheckpoint / LoRAを参考画像つきで検索し、保存済み・未保存を見ながら選択、ダウンロード、生成設定への反映ができます。画像編集は簡易ローカル処理、アスペクト比変換、手動フリーモード、ローカルAI rembg、ローカルAI backgroundremover、remove.bgクラウドAPIを切り替え、動画背景除去と動画GIF/WebP変換も扱えます。動画生成は公式Seedance API、OpenRouterの動画モデル、Replicate Seedance、Higgsfield CLI、音声生成はOpenRouter TTS、ElevenLabs、Voicebox、ローカル VoxCPM、ローカル MisoTTS、ローカル Irodori-TTS を切り替えて使えます。音声編集ではmp3/wavの複数分割、不要範囲カット、音量変更、ピッチ変更ができます。
 
 ## 初回セットアップ
 
@@ -49,7 +49,7 @@ Mac/Windowsの起動スクリプトから起動した場合、同じWi-Fi内の�
 - 画像生成、音声生成、動画生成の指示と履歴確認
 - 画像編集のうち、背景除去とアスペクト比変換
 
-スマホ接続では、設定画面は表示されません。設定内の項目変更、Finder表示、取り込み元ファイルのゴミ箱移動設定、音声編集、動画GIF化、履歴削除、ローカルAIのセットアップはMac/Windows本体のブラウザから行います。スマホから作品やキャラを保存しても、アプリ設定は上書きされません。
+スマホ接続では、設定画面は表示されません。設定内の項目変更、Finder表示、取り込み元ファイルのゴミ箱移動設定、音声編集、動画GIF/WebP変換、履歴削除、ローカルAIのセットアップはMac/Windows本体のブラウザから行います。スマホから作品やキャラを保存しても、アプリ設定は上書きされません。
 
 スマホから生成指示を出す場合は、Mac/Windows側の `.env` にAPIキーを入れておくと、スマホ側に設定画面を出さずに生成できます。
 
@@ -239,7 +239,7 @@ ZIPに含めないもの:
 
 ### 画像編集
 
-- 左メニューの「画像編集」配下に「背景除去」「アスペクト比変換」「動画GIF化」を表示する階層メニューに対応
+- 左メニューの「画像編集」配下に「背景除去」「アスペクト比変換」「動画GIF/WebP変換」を表示する階層メニューに対応
 - 画像一覧、キャラ立ち絵、その他情報、生成画像、追加アップロード画像から編集元を選択
 - 背景除去と透過PNG変換に対応
 - 背景除去の処理方式はプルダウンではなく画面上のボタンで切り替え
@@ -250,7 +250,7 @@ ZIPに含めないもの:
 - rembg未導入環境では画像編集画面から `vendor/rembg-venv` にセットアップ可能
 - ローカルAI backgroundremoverでは `u2net`、`u2netp`、`u2net_human_seg` を選択し、Alpha mattingも試用可能
 - 画像編集画面の動画背景除去ではbackgroundremoverで透過GIF、透過MOV、マット動画MP4を作成
-- 動画GIF化ではffmpegでFPS、最大幅、開始秒、長さを指定してGIFを書き出し、保存時のキャラ指定があれば `data/uploads/<作品名>/<キャラ名>/`、紐づけなしなら `data/uploads/<作品名>/_画像編集/` に保存
+- 動画GIF/WebP変換ではffmpegでFPS、最大幅、開始秒、長さを指定してGIFまたはアニメーションWebPを書き出し、保存時のキャラ指定があれば `data/uploads/<作品名>/<キャラ名>/`、紐づけなしなら `data/uploads/<作品名>/_画像編集/` に保存
 - backgroundremover未導入環境では画像編集画面から `vendor/backgroundremover-venv` にセットアップ可能。動画処理用のffmpeg/ffprobeもアプリ内venvに用意
 - クラウド処理ではremove.bg APIを選択し、透過PNGを取得
 - 編集結果を `data/uploads/<作品名>/_画像編集/` に保存し、画像一覧と画像整理に自動登録

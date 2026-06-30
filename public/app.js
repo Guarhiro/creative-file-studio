@@ -117,6 +117,7 @@ const state = {
   backgroundRemoverVideoResult: null,
   backgroundRemoverVideoIsRunning: false,
   videoGifFile: null,
+  videoGifOutputFormat: "gif",
   videoGifFrameRate: 12,
   videoGifWidth: 640,
   videoGifStartTime: 0,
@@ -260,7 +261,7 @@ const navItems = [
     children: [
       { id: "edit", label: "背景除去" },
       { id: "edit-aspect", label: "アスペクト比変換" },
-      { id: "edit-gif", label: "動画GIF化" }
+      { id: "edit-gif", label: "動画GIF/WebP変換" }
     ]
   },
   { id: "audio", label: "音声生成" },
@@ -438,7 +439,7 @@ const screenHelpContent = {
           { term: "画像一覧へ保存", description: "処理後のPNGを作品の画像一覧へ登録します。" },
           { term: "動画/GIFを選択", description: "動画背景除去で処理する元ファイルを追加します。" },
           { term: "動画背景除去を開始", description: "選択した動画またはGIFをbackgroundremoverで処理し、結果を動画生成の参照素材にも登録します。" },
-          { term: "動画GIF化", description: "動画ファイルからGIFを作成し、画像一覧と動画生成の参照素材へ登録します。" }
+          { term: "動画GIF/WebP変換", description: "動画ファイルからGIFまたはWebP動画を作成し、画像一覧と動画生成の参照素材へ登録します。" }
         ]
       },
       {
@@ -471,8 +472,8 @@ const screenHelpContent = {
           { term: "フレーム上限", description: "-1で全体処理、1-20000で処理する最大フレーム数です。長い動画は少ない値で試すと安全です。" },
           { term: "GPU batch", description: "一度にまとめて処理するフレーム数です。1-8で、大きいほど高速化しやすい一方、GPU/メモリ使用量が増えます。" },
           { term: "Workers", description: "動画処理の並列ワーカー数です。1-4で、多いほど速くなる場合がありますが、CPU負荷とメモリ使用量も増えます。" },
-          { term: "最大幅（GIF化）", description: "GIF化時の横幅です。縦横比は維持され、値を下げるほど軽くなります。" },
-          { term: "開始秒 / 長さ", description: "動画のどこから何秒GIF化するかを指定します。長さ0なら末尾まで変換します。" }
+          { term: "最大幅（GIF/WebP変換）", description: "変換後の横幅です。縦横比は維持され、値を下げるほど軽くなります。" },
+          { term: "開始秒 / 長さ", description: "動画のどこから何秒変換するかを指定します。長さ0なら末尾まで変換します。" }
         ]
       }
     ]
@@ -496,14 +497,15 @@ const screenHelpContent = {
     ]
   },
   "edit-gif": {
-    title: "動画GIF化のヘルプ",
-    lead: "動画をGIFに変換し、作品の画像一覧と動画生成用の参照素材に保存する画面です。",
+    title: "動画GIF/WebP変換のヘルプ",
+    lead: "動画をGIFまたはWebP動画に変換し、作品の画像一覧と動画生成用の参照素材に保存する画面です。",
     sections: [
       {
         title: "使い方",
         items: [
           { term: "動画を選択", description: "MP4、MOV、WebMなどの動画、またはGIFを選択します。" },
-          { term: "GIF化を開始", description: "FPS、最大幅、開始秒、長さに従ってGIFを書き出します。" },
+          { term: "出力形式", description: "GIFまたはWebP動画を選びます。WebP動画はアニメーションWebPとして保存します。" },
+          { term: "変換を開始", description: "FPS、最大幅、開始秒、長さに従って選択形式で書き出します。" },
           { term: "保存先", description: "保存時のキャラを選ぶとキャラの画像フォルダへ、紐づけなしなら作品の _画像編集 へ保存されます。" }
         ]
       }
@@ -4554,7 +4556,7 @@ function currentTitle() {
   if (state.view === "model-library") return ["モデルライブラリ", "モデルとLoRAを参考画像から探し、保存や生成設定への反映を行います。"];
   if (state.view === "edit") return ["背景除去", "背景除去と透過PNG変換を行います。"];
   if (state.view === "edit-aspect") return ["アスペクト比変換", "指定比率へ配置し、位置と拡大率を調整します。"];
-  if (state.view === "edit-gif") return ["動画GIF化", "動画をGIFに変換して画像一覧へ保存します。"];
+  if (state.view === "edit-gif") return ["動画GIF/WebP変換", "動画をGIFまたはWebP動画に変換して画像一覧へ保存します。"];
   if (state.view === "audio") return ["音声生成", "OpenRouter、ElevenLabs、Voicebox、VoxCPM、MisoTTS、Irodori-TTSでキャラ音声やナレーションを作ります。"];
   if (state.view === "audio-edit") return ["音声編集", "mp3/wavを分割、カット、音量・ピッチ変更します。"];
   if (state.view === "video") return ["動画生成", "選択した動画モデル向けの指示書作成と生成を行います。"];
@@ -5442,6 +5444,22 @@ function videoGifStartTimeValue(value) {
 
 function videoGifDurationValue(value) {
   return boundedSettingNumber(value, 6, 0, 600, false);
+}
+
+function videoGifOutputFormatValue(value) {
+  return String(value || "").trim().toLowerCase() === "webp" ? "webp" : "gif";
+}
+
+function videoGifOutputFormatLabel(format) {
+  return videoGifOutputFormatValue(format) === "webp" ? "WebP動画" : "GIF";
+}
+
+function renderVideoGifOutputFormatOptions(selectedValue) {
+  const selected = videoGifOutputFormatValue(selectedValue);
+  return [
+    { value: "gif", label: "GIF" },
+    { value: "webp", label: "WebP動画" }
+  ].map((item) => `<option value="${item.value}" ${selected === item.value ? "selected" : ""}>${item.label}</option>`).join("");
 }
 
 function formatBytes(value) {
@@ -6608,7 +6626,7 @@ function renderBackgroundRemoverVideoPanel(work) {
 function videoGifStatusText() {
   if (state.videoGifStatus === "loading") return "ffmpegの状態を確認中です。";
   if (state.videoGifInfo?.found) return `ffmpeg使用可能: ${state.videoGifInfo.version || ""}`;
-  return state.videoGifError || "ffmpegは未確認です。動画GIF化にはffmpegが必要です。";
+  return state.videoGifError || "ffmpegは未確認です。動画変換にはffmpegが必要です。";
 }
 
 function renderVideoGifInputPreview(file) {
@@ -6628,12 +6646,15 @@ function renderVideoGifConverter() {
   const file = state.videoGifFile;
   const result = state.videoGifResult;
   const busy = state.videoGifIsRunning;
+  const outputFormat = videoGifOutputFormatValue(state.videoGifOutputFormat);
+  const outputFormatLabel = videoGifOutputFormatLabel(outputFormat);
+  const resultFormatLabel = videoGifOutputFormatLabel(result?.settings?.outputFormat || outputFormat);
   const selectedChar = byId(state.db.characters, state.imageEditCharacterId);
   const saveTargetText = selectedChar ? `保存先: ${selectedChar.name} の画像フォルダ` : "保存先: 作品の _画像編集";
   return `
     <div class="video-layout image-edit-layout">
       <section class="panel">
-        <div class="panel-header"><h2>GIF化設定</h2></div>
+        <div class="panel-header"><h2>変換設定</h2></div>
         <div class="panel-body form-grid">
           <label>作品
             <select id="video-gif-work">
@@ -6649,7 +6670,10 @@ function renderVideoGifConverter() {
             <button class="ghost" data-action="clear-video-gif-file" ${file ? "" : "disabled"}>選択を解除</button>
           </div>
           <div class="full meta">${file ? `${escapeHtml(file.name)} / ${escapeHtml(formatBytes(file.size || 0))}` : "MP4、MOV、WebMなどの動画を選択してください。"}</div>
-          <div class="full meta">${escapeHtml(saveTargetText)}。元動画は保存せず、作成したGIFだけを保存します。</div>
+          <div class="full meta">${escapeHtml(saveTargetText)}。元動画は保存せず、作成した${escapeHtml(outputFormatLabel)}だけを保存します。</div>
+          <label>出力形式
+            <select id="video-gif-output-format">${renderVideoGifOutputFormatOptions(outputFormat)}</select>
+          </label>
           <label>FPS
             <input id="video-gif-frame-rate" type="number" min="1" max="30" value="${escapeHtml(state.videoGifFrameRate)}">
           </label>
@@ -6662,10 +6686,10 @@ function renderVideoGifConverter() {
           <label>長さ（秒）
             <input id="video-gif-duration" type="number" min="0" max="600" step="0.1" value="${escapeHtml(state.videoGifDuration)}">
           </label>
-          <div class="full meta">長さは0で開始秒から末尾まで。GIFは大きくなりやすいので、まず短めの秒数と低めのFPSで試すと扱いやすくなります。</div>
+          <div class="full meta">長さは0で開始秒から末尾まで。出力サイズは大きくなりやすいので、まず短めの秒数と低めのFPSで試すと扱いやすくなります。</div>
           <div class="full toolbar">
             <button class="ghost" data-action="check-video-gif-ffmpeg" ${state.videoGifStatus === "loading" ? "disabled" : ""}>ffmpeg確認</button>
-            <button class="accent" data-action="run-video-gif-conversion" ${busy || !file ? "disabled" : ""}>GIF化を開始</button>
+            <button class="accent" data-action="run-video-gif-conversion" ${busy || !file ? "disabled" : ""}>${escapeHtml(outputFormatLabel)}へ変換を開始</button>
           </div>
           <div class="full meta">${escapeHtml(videoGifStatusText())}</div>
         </div>
@@ -6679,12 +6703,12 @@ function renderVideoGifConverter() {
               ${renderVideoGifInputPreview(file)}
             </article>
             <article class="image-edit-preview-card">
-              <div class="meta">GIF</div>
-              ${busy ? `<div class="empty compact">GIF化しています。動画の長さによって時間がかかります。</div>` : result ? `
+              <div class="meta">${escapeHtml(resultFormatLabel)}</div>
+              ${busy ? `<div class="empty compact">${escapeHtml(outputFormatLabel)}へ変換しています。動画の長さによって時間がかかります。</div>` : result ? `
                 <img class="transparent-preview" src="${escapeHtml(result.url)}" alt="">
                 <div class="meta">${escapeHtml(result.name || "")} / ${escapeHtml(formatBytes(result.size || 0))}</div>
                 <div class="meta">${escapeHtml(result.saveTargetLabel || "画像一覧と動画生成の参照素材に登録済みです。")}</div>
-              ` : `<div class="empty compact">まだGIFがありません。</div>`}
+              ` : `<div class="empty compact">まだ変換結果がありません。</div>`}
             </article>
           </div>
         </div>
@@ -6780,6 +6804,7 @@ function videoGifControlsFromDom() {
   return {
     workId: document.querySelector("#video-gif-work")?.value || state.imageEditWorkId || "",
     characterId: document.querySelector("#video-gif-character")?.value || "",
+    outputFormat: videoGifOutputFormatValue(document.querySelector("#video-gif-output-format")?.value || state.videoGifOutputFormat),
     frameRate: videoGifFrameRateValue(document.querySelector("#video-gif-frame-rate")?.value || state.videoGifFrameRate),
     width: videoGifWidthValue(document.querySelector("#video-gif-width")?.value || state.videoGifWidth),
     startTime: videoGifStartTimeValue(document.querySelector("#video-gif-start-time")?.value ?? state.videoGifStartTime),
@@ -6790,6 +6815,7 @@ function videoGifControlsFromDom() {
 function rememberVideoGifControls(controls = videoGifControlsFromDom()) {
   state.imageEditWorkId = controls.workId || null;
   state.imageEditCharacterId = controls.characterId || "";
+  state.videoGifOutputFormat = videoGifOutputFormatValue(controls.outputFormat);
   state.videoGifFrameRate = videoGifFrameRateValue(controls.frameRate);
   state.videoGifWidth = videoGifWidthValue(controls.width);
   state.videoGifStartTime = videoGifStartTimeValue(controls.startTime);
@@ -8339,27 +8365,29 @@ async function checkVideoGifStatus({ silent = false } = {}) {
 
 function videoGifMemo(controls) {
   const duration = Number(controls.duration) > 0 ? `${controls.duration}秒` : "末尾まで";
-  return `${controls.frameRate}fps / 幅${controls.width}px / ${controls.startTime}秒から${duration}`;
+  return `${videoGifOutputFormatLabel(controls.outputFormat)} / ${controls.frameRate}fps / 幅${controls.width}px / ${controls.startTime}秒から${duration}`;
 }
 
 async function runVideoGifConversion() {
   const file = state.videoGifFile;
-  if (!file?.dataUrl) return toast("GIF化する動画を選択してください。");
+  if (!file?.dataUrl) return toast("変換する動画を選択してください。");
   const controls = videoGifControlsFromDom();
   rememberVideoGifControls(controls);
+  const outputFormatLabel = videoGifOutputFormatLabel(controls.outputFormat);
   const selectedChar = byId(state.db.characters, state.imageEditCharacterId);
   const work = byId(state.db.works, selectedChar?.workId || state.imageEditWorkId || state.selectedWorkId);
   state.videoGifIsRunning = true;
   state.videoGifResult = null;
   render();
   try {
-    toastApiSubmitted("動画のGIF化を開始しました。完了までお待ちください。");
+    toastApiSubmitted(`動画を${outputFormatLabel}へ変換しています。完了までお待ちください。`);
     const result = await postJson("/api/image-edit/video-gif", {
       dataUrl: file.dataUrl,
       name: file.name || "video.mp4",
       workName: work?.name,
       characterName: selectedChar?.name || "",
       folderName: "_画像編集",
+      outputFormat: controls.outputFormat,
       frameRate: controls.frameRate,
       width: controls.width,
       startTime: controls.startTime,
@@ -8372,19 +8400,20 @@ async function runVideoGifConversion() {
     const info = await getImageInfo(result.url);
     const createdAt = new Date().toISOString();
     const memo = videoGifMemo(controls);
+    const fallbackExt = videoGifOutputFormatValue(controls.outputFormat);
     state.db.assets.unshift({
       id: uid(),
       workId: work?.id || null,
       characterId: selectedChar?.id || null,
       worldItemId: null,
-      name: result.name || file.name || "video.gif",
+      name: result.name || file.name || `video.${fallbackExt}`,
       url: result.url,
       localPath: result.path,
       status: selectedChar ? "matched" : "unassigned",
       confidence: selectedChar ? 1 : null,
       aiPrompt: "",
       aiPromptFormat: selectedChar ? promptFormatOf(selectedChar) : "natural",
-      aiReason: `動画GIF化で作成（${memo}）`,
+      aiReason: `動画を${outputFormatLabel}へ変換して作成（${memo}）`,
       width: info.width,
       height: info.height,
       aspectRatio: info.aspectRatio,
@@ -8396,20 +8425,20 @@ async function runVideoGifConversion() {
       workId: work?.id || null,
       characterId: selectedChar?.id || null,
       kind: "image",
-      name: result.name || file.name || "video.gif",
+      name: result.name || file.name || `video.${fallbackExt}`,
       url: result.url,
       localPath: result.path,
-      mimeType: "image/gif",
+      mimeType: result.mimeType || (fallbackExt === "webp" ? "image/webp" : "image/gif"),
       width: info.width || null,
       height: info.height || null,
       aspectRatio: info.aspectRatio || null,
       aspectRatioText: info.aspectRatioText || "",
-      subject: "動画GIF化",
+      subject: `動画から${outputFormatLabel}へ変換`,
       memo,
       createdAt
     });
     await saveDb();
-    toast(selectedChar ? `GIFを ${selectedChar.name} に保存しました。` : "GIF化した動画を画像一覧へ保存しました。");
+    toast(selectedChar ? `${outputFormatLabel}を ${selectedChar.name} に保存しました。` : `${outputFormatLabel}へ変換した動画を画像一覧へ保存しました。`);
   } catch (error) {
     toast(error.message);
   } finally {
@@ -8843,6 +8872,10 @@ function bindVideoGifConverter() {
     }
     render();
   });
+  document.querySelector("#video-gif-output-format")?.addEventListener("change", () => {
+    rememberVideoGifControls();
+    render();
+  });
   ["#video-gif-frame-rate", "#video-gif-width", "#video-gif-start-time", "#video-gif-duration"].forEach((selector) => {
     document.querySelector(selector)?.addEventListener("input", persist);
     document.querySelector(selector)?.addEventListener("change", persist);
@@ -8855,7 +8888,7 @@ function bindVideoGifConverter() {
     if (!file) return;
     if (file.size > 180 * 1024 * 1024) {
       event.target.value = "";
-      return toast("動画は180MB以下を選択してください。長い素材は短く切ってからGIF化すると安定します。");
+      return toast("動画は180MB以下を選択してください。長い素材は短く切ってから変換すると安定します。");
     }
     state.videoGifFile = {
       name: file.name,

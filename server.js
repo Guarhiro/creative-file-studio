@@ -1856,10 +1856,22 @@ function normalizedVideoGifDuration(value) {
   return boundedNumber(value, 6, 0, 600, false);
 }
 
-function videoGifOutputName(name) {
+function normalizedVideoGifOutputFormat(value) {
+  return String(value || "").trim().toLowerCase() === "webp" ? "webp" : "gif";
+}
+
+function videoGifOutput(format) {
+  if (format === "webp") {
+    return { ext: ".webp", mimeType: "image/webp", suffix: "webp", label: "WebP動画" };
+  }
+  return { ext: ".gif", mimeType: "image/gif", suffix: "gif", label: "GIF" };
+}
+
+function videoGifOutputName(name, format = "gif") {
   const parsed = path.parse(path.basename(String(name || "video")));
   const base = cleanFileNamePart(parsed.name, "video", 80);
-  return `${base}-gif.gif`;
+  const output = videoGifOutput(normalizedVideoGifOutputFormat(format));
+  return `${base}-${output.suffix}${output.ext}`;
 }
 
 async function handleBackgroundRemoverStatus(req, res) {
@@ -2079,7 +2091,7 @@ async function handleVideoGifConvert(req, res) {
   const ffmpegStatus = videoGifFfmpegStatus(tools);
   if (!ffmpegStatus.found) {
     return sendJson(res, 400, {
-      error: `動画GIF化にはffmpegが必要です。${ffmpegStatus.error || ""}`.trim(),
+      error: `動画変換にはffmpegが必要です。${ffmpegStatus.error || ""}`.trim(),
       status: ffmpegStatus
     });
   }
@@ -2088,21 +2100,36 @@ async function handleVideoGifConvert(req, res) {
   const width = normalizedVideoGifWidth(body.width);
   const startTime = normalizedVideoGifStartTime(body.startTime);
   const duration = normalizedVideoGifDuration(body.duration);
+  const outputFormat = normalizedVideoGifOutputFormat(body.outputFormat);
+  const output = videoGifOutput(outputFormat);
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "creative-file-studio-video-gif-"));
   const inputPath = path.join(tempDir, safeOriginalFileName(body.name, parsed.ext, "video"));
-  const outputPath = path.join(tempDir, "output.gif");
+  const outputPath = path.join(tempDir, `output${output.ext}`);
   try {
     await fs.writeFile(inputPath, Buffer.from(parsed.base64, "base64"));
-    const filter = [
-      `fps=${frameRate}`,
-      `scale=${width}:-1:flags=lanczos`,
-      "split[s0][s1];[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=sierra2_4a"
-    ].join(",");
+    const baseFilter = `fps=${frameRate},scale=${width}:-1:flags=lanczos`;
     const args = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning"];
     if (startTime > 0) args.push("-ss", String(startTime));
     args.push("-i", inputPath);
     if (duration > 0) args.push("-t", String(duration));
-    args.push("-filter_complex", filter, "-loop", "0", outputPath);
+    if (outputFormat === "webp") {
+      args.push(
+        "-vf", baseFilter,
+        "-an",
+        "-c:v", "libwebp",
+        "-lossless", "0",
+        "-compression_level", "6",
+        "-q:v", "78",
+        "-loop", "0",
+        outputPath
+      );
+    } else {
+      const filter = [
+        baseFilter,
+        "split[s0][s1];[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=sierra2_4a"
+      ].join(",");
+      args.push("-filter_complex", filter, "-loop", "0", outputPath);
+    }
     const result = await runProcess(args, {
       cwd: __dirname,
       timeoutMs: 30 * 60 * 1000,
@@ -2110,24 +2137,24 @@ async function handleVideoGifConvert(req, res) {
     });
     if (!result.ok) {
       return sendJson(res, 500, {
-        error: `動画GIF化に失敗しました: ${result.stderr || result.stdout || result.error}`,
+        error: `動画変換に失敗しました: ${result.stderr || result.stdout || result.error}`,
         result,
         status: ffmpegStatus
       });
     }
     if (/Output file is empty|Conversion failed/i.test(`${result.stderr}\n${result.stdout}`)) {
       return sendJson(res, 500, {
-        error: "動画GIF化が空出力で終了しました。開始秒、長さ、FPSを下げて試してください。",
+        error: "動画変換が空出力で終了しました。開始秒、長さ、FPSを下げて試してください。",
         result,
         status: ffmpegStatus
       });
     }
     if (!await isFile(outputPath)) {
-      return sendJson(res, 500, { error: "GIFの出力ファイルが見つかりません。", result, status: ffmpegStatus });
+      return sendJson(res, 500, { error: `${output.label}の出力ファイルが見つかりません。`, result, status: ffmpegStatus });
     }
     const outputStat = await fs.stat(outputPath);
     if (!outputStat.size) {
-      return sendJson(res, 500, { error: "GIFの出力ファイルが空です。開始秒、長さ、FPSを調整して試してください。", result, status: ffmpegStatus });
+      return sendJson(res, 500, { error: `${output.label}の出力ファイルが空です。開始秒、長さ、FPSを調整して試してください。`, result, status: ffmpegStatus });
     }
     const workFolder = safeFolderName(body.workName, "_未分類作品");
     const folderName = String(body.characterName || "").trim()
@@ -2135,17 +2162,17 @@ async function handleVideoGifConvert(req, res) {
       : safeFolderName(body.folderName || "_画像編集", "_画像編集");
     const destinationDir = path.join(uploadDir, workFolder, folderName);
     await fs.mkdir(destinationDir, { recursive: true });
-    const destination = await uniqueFilePath(destinationDir, videoGifOutputName(body.name));
+    const destination = await uniqueFilePath(destinationDir, videoGifOutputName(body.name, outputFormat));
     await fs.copyFile(outputPath, destination);
     const savedStat = await fs.stat(destination);
     sendJson(res, 200, {
       url: uploadUrlFor(destination),
       path: destination,
       name: path.basename(destination),
-      mimeType: "image/gif",
+      mimeType: output.mimeType,
       provider: "ffmpeg",
       size: savedStat.size,
-      settings: { frameRate, width, startTime, duration },
+      settings: { frameRate, width, startTime, duration, outputFormat },
       result: {
         stdout: result.stdout,
         stderr: result.stderr,
@@ -2153,7 +2180,7 @@ async function handleVideoGifConvert(req, res) {
       }
     });
   } catch (error) {
-    sendJson(res, 502, { error: `動画GIF化に失敗しました: ${error.message}` });
+    sendJson(res, 502, { error: `動画変換に失敗しました: ${error.message}` });
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
