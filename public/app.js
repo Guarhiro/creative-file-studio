@@ -9241,9 +9241,8 @@ function renderVideoFrameScreenshotSummary(source = {}) {
   `;
 }
 
-function renderVideoReferenceCard(item) {
+function renderVideoReferenceCard(item, selectedItems = selectedVideoReferences()) {
   const checked = state.videoSelectedReferenceIds.includes(item.key);
-  const selectedItems = selectedVideoReferences();
   const label = checked ? seedanceReferenceLabel(item, selectedItems) : "";
   const preview = renderVideoReferencePreview(item);
   const frameCaptureKey = videoFrameSourceKey("media", item.id);
@@ -14325,7 +14324,7 @@ function renderVideoCostSummary(summary, currentRate) {
     : "実コストが取れるジョブは実コストを優先します。";
   const unknownText = summary.unknown ? `単価未取得の ${summary.unknown} 件は未計上です。` : estimateText;
   return `
-    <section class="panel video-cost-panel ${collapsed ? "collapsed" : ""}">
+    <section class="panel video-cost-panel ${collapsed ? "collapsed" : ""}" data-video-cost-summary>
       <div class="panel-header">
         <div>
           <div class="video-cost-title-row">
@@ -14515,6 +14514,46 @@ function elapsedVideoText(job) {
   return `${elapsed}秒`;
 }
 
+function renderVideoCharacterOptions(referenceCharacters = videoCharacterOptions()) {
+  return `
+    <option value="">全キャラ</option>
+    ${referenceCharacters.map((char) => {
+      const optionWork = byId(state.db.works, char.workId);
+      const label = state.videoWorkId ? char.name : `${char.name}${optionWork ? ` / ${optionWork.name}` : ""}`;
+      return `<option value="${char.id}" ${state.videoCharacterId === char.id ? "selected" : ""}>${escapeHtml(label)}</option>`;
+    }).join("")}
+  `;
+}
+
+function renderVideoReferenceCounts(counts = selectedVideoReferenceCounts()) {
+  return `画像 ${counts.image}/9 / 動画 ${counts.video}/3 / 音声 ${counts.audio}/3`;
+}
+
+function renderVideoReferenceResults(references = filteredVideoReferences(), selectedItems = selectedVideoReferences()) {
+  return references.length
+    ? `<div class="reference-grid">${references.map((item) => renderVideoReferenceCard(item, selectedItems)).join("")}</div>`
+    : `<div class="empty compact">参照素材がありません。</div>`;
+}
+
+function videoHistoryRenderState() {
+  const allJobs = visibleVideoHistoryItems();
+  const { items: jobs, pageInfo } = getPagedGenerationHistoryItems("video", allJobs);
+  return { allJobs, jobs, pageInfo };
+}
+
+function renderVideoHistoryHeader({ allJobs, jobs, pageInfo } = videoHistoryRenderState()) {
+  return `
+    <h2>生成履歴</h2>
+    ${renderGenerationHistoryActions("video", allJobs, jobs, pageInfo)}
+  `;
+}
+
+function renderVideoHistoryList(jobs = videoHistoryRenderState().jobs) {
+  return jobs.length
+    ? jobs.map(renderVideoJob).join("")
+    : `<div class="empty compact">生成履歴はまだありません。</div>`;
+}
+
 function renderVideoAgent() {
   const work = byId(state.db.works, state.videoWorkId) || byId(state.db.works, state.selectedWorkId) || state.db.works[0] || null;
   if (!state.videoWorkId && work) state.videoWorkId = work.id;
@@ -14545,8 +14584,7 @@ function renderVideoAgent() {
     baseUrl: state.db.settings.seedanceBaseUrl,
     hasVideoInput: hasVideoInputReferences(selectedItems)
   });
-  const allJobs = visibleVideoHistoryItems();
-  const { items: jobs, pageInfo: historyPageInfo } = getPagedGenerationHistoryItems("video", allJobs);
+  const videoHistory = videoHistoryRenderState();
   const activeJobs = (state.db.videoJobs || []).filter((job) => activeVideoJobStatuses.includes(job.status));
   return `
     ${renderVideoCostSummary(monthlyCost, currentRate)}
@@ -14620,18 +14658,13 @@ function renderVideoAgent() {
               ${[["all", "全素材"], ["image", "画像"], ["video", "動画"], ["audio", "音声"]].map(([value, label]) => `<option value="${value}" ${state.videoReferenceKind === value ? "selected" : ""}>${label}</option>`).join("")}
             </select>
             <label class="reference-filter-field">キャラ
-              <select id="video-character">
-                <option value="">全キャラ</option>
-                ${referenceCharacters.map((char) => {
-                  const optionWork = byId(state.db.works, char.workId);
-                  const label = state.videoWorkId ? char.name : `${char.name}${optionWork ? ` / ${optionWork.name}` : ""}`;
-                  return `<option value="${char.id}" ${state.videoCharacterId === char.id ? "selected" : ""}>${escapeHtml(label)}</option>`;
-                }).join("")}
+              <select id="video-character" data-video-character-options>
+                ${renderVideoCharacterOptions(referenceCharacters)}
               </select>
             </label>
-            <div class="meta">画像 ${counts.image}/9 / 動画 ${counts.video}/3 / 音声 ${counts.audio}/3</div>
+            <div class="meta" data-video-reference-counts>${renderVideoReferenceCounts(counts)}</div>
           </div>
-          ${references.length ? `<div class="reference-grid">${references.map(renderVideoReferenceCard).join("")}</div>` : `<div class="empty compact">参照素材がありません。</div>`}
+          <div data-video-reference-results>${renderVideoReferenceResults(references, selectedItems)}</div>
         </div>
       </section>
       <section class="video-main">
@@ -14668,13 +14701,12 @@ function renderVideoAgent() {
             ${state.videoIsGenerating || state.videoPollingJobId ? renderSeedanceAnimation() : ""}
           </div>
         </section>
-        <section class="panel">
-          <div class="panel-header generation-history-header">
-            <h2>生成履歴</h2>
-            ${renderGenerationHistoryActions("video", allJobs, jobs, historyPageInfo)}
+        <section class="panel" data-video-history-section>
+          <div class="panel-header generation-history-header" data-video-history-header>
+            ${renderVideoHistoryHeader(videoHistory)}
           </div>
-          <div class="panel-body video-job-list">
-            ${jobs.length ? jobs.map(renderVideoJob).join("") : `<div class="empty compact">生成履歴はまだありません。</div>`}
+          <div class="panel-body video-job-list" data-video-history-list>
+            ${renderVideoHistoryList(videoHistory.jobs)}
           </div>
         </section>
       </section>
@@ -17211,6 +17243,138 @@ function bindAudioEditor() {
   bindGenerationHistoryControls("audio-edit", audioEditHistoryItems);
 }
 
+function refreshVideoCostPanel() {
+  const panel = document.querySelector("[data-video-cost-summary]");
+  if (!panel) return;
+  const controls = videoControlsFromDom();
+  const selectedItems = selectedVideoReferences();
+  const currentRate = currentVideoRateSummary(controls.model, controls.resolution, controls.ratio, {
+    baseUrl: state.db.settings.seedanceBaseUrl,
+    hasVideoInput: hasVideoInputReferences(selectedItems)
+  });
+  panel.outerHTML = renderVideoCostSummary(monthlyVideoCostSummary(), currentRate);
+  bindVideoCostControls();
+}
+
+function bindVideoCostControls() {
+  document.querySelector("[data-action='toggle-video-cost']")?.addEventListener("click", () => {
+    state.videoCostCollapsed = !state.videoCostCollapsed;
+    refreshVideoCostPanel();
+  });
+  document.querySelector("[data-action='refresh-video-pricing']")?.addEventListener("click", refreshVideoPricing);
+}
+
+function bindVideoReferenceCardControls(persistVideoControls) {
+  document.querySelectorAll("[data-action='load-reference-media-preview']").forEach((button) => {
+    button.addEventListener("click", () => loadReferenceMediaPreview(button));
+  });
+  document.querySelectorAll("[data-action='toggle-video-reference']").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => {
+      const id = checkbox.dataset.id;
+      const item = allVideoReferences().find((candidate) => candidate.key === id);
+      if (!item) return;
+      if (!checkbox.checked) {
+        persistVideoControls();
+        state.videoSelectedReferenceIds = state.videoSelectedReferenceIds.filter((key) => key !== id);
+        delete state.videoReferenceRoles[id];
+        render();
+        return;
+      }
+      const next = [...selectedVideoReferences(), item];
+      const counts = selectedVideoReferenceCounts(next);
+      if (counts.image > 9 || counts.video > 3 || counts.audio > 3) {
+        checkbox.checked = false;
+        return toast("参照素材の上限を超えています。");
+      }
+      persistVideoControls();
+      state.videoSelectedReferenceIds.push(id);
+      state.videoReferenceRoles[id] = seedanceRoleForKind(item.kind, videoControlValue("video-mode", "reference"));
+      render();
+    });
+  });
+  document.querySelectorAll("[data-action='change-video-ref-role']").forEach((select) => {
+    select.addEventListener("change", () => {
+      state.videoReferenceRoles[select.dataset.id] = select.value;
+    });
+  });
+  document.querySelectorAll("[data-action='save-video-media-frames']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const media = byId(state.db.videoMedia || [], button.dataset.id);
+      if (!media) return;
+      await saveVideoFrameScreenshots(videoFrameSourceFromMedia(media));
+    });
+  });
+}
+
+function bindVideoHistoryControls() {
+  document.querySelectorAll("[data-action='refresh-video-job']").forEach((button) => {
+    button.addEventListener("click", () => pollSeedanceJob(button.dataset.id));
+  });
+  document.querySelectorAll("[data-action='copy-video-job-prompt']").forEach((button) => {
+    button.addEventListener("click", () => {
+      const job = byId(state.db.videoJobs || [], button.dataset.id);
+      if (job) copyText(job.prompt || "");
+    });
+  });
+  document.querySelectorAll("[data-action='save-video-job-frames']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const job = byId(state.db.videoJobs || [], button.dataset.id);
+      if (!job) return;
+      await saveVideoFrameScreenshots(videoFrameSourceFromJob(job));
+    });
+  });
+  document.querySelectorAll("[data-action='save-video-last-frame']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const job = byId(state.db.videoJobs || [], button.dataset.id);
+      if (!job) return;
+      try {
+        const lastFrame = await saveVideoLastFrameReference(job);
+        await saveDb();
+        render();
+        toast(lastFrame ? "最終フレームを参照素材へ保存しました。" : "最終フレームはすでに保存済みです。");
+      } catch (error) {
+        job.lastFrameError = error.message;
+        await saveDb();
+        render();
+        toast(error.message);
+      }
+    });
+  });
+  bindGenerationHistoryControls("video", visibleVideoHistoryItems);
+}
+
+function refreshVideoWorkDependentSections(persistVideoControls) {
+  const referenceCharacters = videoCharacterOptions();
+  if (state.videoCharacterId && !referenceCharacters.some((char) => char.id === state.videoCharacterId)) {
+    state.videoCharacterId = "";
+  }
+  const selectedItems = selectedVideoReferences();
+  const references = filteredVideoReferences();
+  const counts = selectedVideoReferenceCounts(selectedItems);
+
+  const characterSelect = document.querySelector("[data-video-character-options]");
+  if (characterSelect) {
+    characterSelect.innerHTML = renderVideoCharacterOptions(referenceCharacters);
+    characterSelect.value = state.videoCharacterId;
+  }
+  const referenceCounts = document.querySelector("[data-video-reference-counts]");
+  if (referenceCounts) referenceCounts.textContent = renderVideoReferenceCounts(counts);
+  const referenceResults = document.querySelector("[data-video-reference-results]");
+  if (referenceResults) {
+    referenceResults.innerHTML = renderVideoReferenceResults(references, selectedItems);
+    bindVideoReferenceCardControls(persistVideoControls);
+  }
+
+  const videoHistory = videoHistoryRenderState();
+  const historyHeader = document.querySelector("[data-video-history-header]");
+  const historyList = document.querySelector("[data-video-history-list]");
+  if (historyHeader) historyHeader.innerHTML = renderVideoHistoryHeader(videoHistory);
+  if (historyList) historyList.innerHTML = renderVideoHistoryList(videoHistory.jobs);
+  if (historyHeader || historyList) bindVideoHistoryControls();
+
+  refreshVideoCostPanel();
+}
+
 function bindVideoAgent() {
   const persistVideoControls = () => {
     const controls = videoControlsFromDom();
@@ -17250,18 +17414,16 @@ function bindVideoAgent() {
   });
   document.querySelector("#video-work")?.addEventListener("change", (event) => {
     persistVideoControls();
-    state.videoWorkId = event.target.value || null;
+    state.videoWorkId = event.target.value || state.db.works[0]?.id || null;
     state.selectedWorkId = state.videoWorkId;
-    if (state.videoCharacterId && !videoCharacterOptions().some((char) => char.id === state.videoCharacterId)) {
-      state.videoCharacterId = "";
-    }
+    event.target.value = state.videoWorkId || "";
     state.videoSelectedReferenceIds = state.videoSelectedReferenceIds.filter((key) => {
       const item = allVideoReferences().find((candidate) => candidate.key === key);
       return !state.videoWorkId || !item?.workId || item.workId === state.videoWorkId;
     });
     resetGenerationHistoryPage("video");
     clearGenerationHistorySelection("video");
-    render();
+    refreshVideoWorkDependentSections(persistVideoControls);
   });
   document.querySelector("#video-reference-kind")?.addEventListener("change", (event) => {
     persistVideoControls();
@@ -17284,38 +17446,6 @@ function bindVideoAgent() {
     await uploadVideoReferenceFiles(event.target.files);
     event.target.value = "";
   });
-  document.querySelectorAll("[data-action='load-reference-media-preview']").forEach((button) => {
-    button.addEventListener("click", () => loadReferenceMediaPreview(button));
-  });
-  document.querySelectorAll("[data-action='toggle-video-reference']").forEach((checkbox) => {
-    checkbox.addEventListener("change", () => {
-      const id = checkbox.dataset.id;
-      const item = allVideoReferences().find((candidate) => candidate.key === id);
-      if (!item) return;
-      if (!checkbox.checked) {
-        persistVideoControls();
-        state.videoSelectedReferenceIds = state.videoSelectedReferenceIds.filter((key) => key !== id);
-        delete state.videoReferenceRoles[id];
-        render();
-        return;
-      }
-      const next = [...selectedVideoReferences(), item];
-      const counts = selectedVideoReferenceCounts(next);
-      if (counts.image > 9 || counts.video > 3 || counts.audio > 3) {
-        checkbox.checked = false;
-        return toast("参照素材の上限を超えています。");
-      }
-      persistVideoControls();
-      state.videoSelectedReferenceIds.push(id);
-      state.videoReferenceRoles[id] = seedanceRoleForKind(item.kind, videoControlValue("video-mode", "reference"));
-      render();
-    });
-  });
-  document.querySelectorAll("[data-action='change-video-ref-role']").forEach((select) => {
-    select.addEventListener("change", () => {
-      state.videoReferenceRoles[select.dataset.id] = select.value;
-    });
-  });
   document.querySelector(".video-layout")?.addEventListener("play", (event) => {
     const media = event.target;
     if (!media?.matches?.("[data-reference-media-preview]")) return;
@@ -17325,59 +17455,16 @@ function bindVideoAgent() {
   }, true);
   document.querySelector("[data-action='video-send-message']")?.addEventListener("click", () => handleVideoAgentMessage(false));
   document.querySelector("[data-action='video-make-draft']")?.addEventListener("click", () => handleVideoAgentMessage(true));
-  document.querySelector("[data-action='toggle-video-cost']")?.addEventListener("click", () => {
-    state.videoCostCollapsed = !state.videoCostCollapsed;
-    render();
-  });
-  document.querySelector("[data-action='refresh-video-pricing']")?.addEventListener("click", refreshVideoPricing);
   document.querySelector("[data-action='video-copy-prompt']")?.addEventListener("click", () => {
     const text = document.querySelector("#video-prompt-text")?.value || "";
     copyText(text);
   });
   document.querySelector("[data-action='discard-video-waiting']")?.addEventListener("click", discardVideoWaitingJobs);
   document.querySelector("[data-action='video-start-generation']")?.addEventListener("click", startSeedanceGeneration);
-  document.querySelectorAll("[data-action='refresh-video-job']").forEach((button) => {
-    button.addEventListener("click", () => pollSeedanceJob(button.dataset.id));
-  });
-  document.querySelectorAll("[data-action='copy-video-job-prompt']").forEach((button) => {
-    button.addEventListener("click", () => {
-      const job = byId(state.db.videoJobs || [], button.dataset.id);
-      if (job) copyText(job.prompt || "");
-    });
-  });
-  document.querySelectorAll("[data-action='save-video-job-frames']").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const job = byId(state.db.videoJobs || [], button.dataset.id);
-      if (!job) return;
-      await saveVideoFrameScreenshots(videoFrameSourceFromJob(job));
-    });
-  });
-  document.querySelectorAll("[data-action='save-video-media-frames']").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const media = byId(state.db.videoMedia || [], button.dataset.id);
-      if (!media) return;
-      await saveVideoFrameScreenshots(videoFrameSourceFromMedia(media));
-    });
-  });
-  document.querySelectorAll("[data-action='save-video-last-frame']").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const job = byId(state.db.videoJobs || [], button.dataset.id);
-      if (!job) return;
-      try {
-        const lastFrame = await saveVideoLastFrameReference(job);
-        await saveDb();
-        render();
-        toast(lastFrame ? "最終フレームを参照素材へ保存しました。" : "最終フレームはすでに保存済みです。");
-      } catch (error) {
-        job.lastFrameError = error.message;
-        await saveDb();
-        render();
-        toast(error.message);
-      }
-    });
-  });
+  bindVideoCostControls();
+  bindVideoReferenceCardControls(persistVideoControls);
+  bindVideoHistoryControls();
   if (isOpenRouterSeedanceBaseUrl()) loadOpenRouterVideoModels();
-  bindGenerationHistoryControls("video", visibleVideoHistoryItems);
 }
 
 async function classifyAsset(asset, knownDataUrl = null, fallbackPromptFormat = state.importPromptFormat, options = {}) {
